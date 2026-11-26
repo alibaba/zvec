@@ -89,9 +89,10 @@ class DiskAnnReadReservation {
     swap(replacement_charge);
   }
 
- private:
+  // Admit one aggregate reservation for related allocations.
   template <typename Allocate>
   void allocate(size_t maximum, Allocate &&allocate) {
+    ailego_assert(bytes_ == 0);
     auto &pool = ailego::MemoryLimitPool::get_instance();
     if (!pool.try_reserve_process_backing(maximum)) throw std::bad_alloc();
     size_t actual;
@@ -106,6 +107,7 @@ class DiskAnnReadReservation {
     stamp_ = pool.finish_reserved_process_backing(maximum, actual);
   }
 
+ private:
   void swap(DiskAnnReadReservation &other) noexcept {
     std::swap(bytes_, other.bytes_);
     std::swap(stamp_, other.stamp_);

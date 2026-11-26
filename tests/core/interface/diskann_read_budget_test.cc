@@ -5,17 +5,42 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <filesystem>
 #include <memory>
+#include <new>
 #include <random>
 #include <string>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "../../ailego/buffer/pool_payload_budget.h"
+
+namespace {
+thread_local size_t refused_aligned_size = 0;
+}  // namespace
+
+void *operator new(size_t size, std::align_val_t alignment) {
+  if (refused_aligned_size && size == refused_aligned_size)
+    throw std::bad_alloc();
+  void *memory =
+      ailego_aligned_malloc(size ? size : 1, static_cast<size_t>(alignment));
+  if (!memory) throw std::bad_alloc();
+  return memory;
+}
+
+void operator delete(void *memory, std::align_val_t) noexcept {
+  ailego_aligned_free(memory);
+}
+
+void operator delete(void *memory, size_t,
+                     std::align_val_t alignment) noexcept {
+  ::operator delete(memory, alignment);
+}
 
 namespace zvec::core_interface {
 namespace {
@@ -126,6 +151,48 @@ TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
   ASSERT_EQ(0, index->search(input, query, &result));
   ASSERT_EQ(1u, result.doc_list_.size());
   EXPECT_EQ(7u, result.doc_list_.front().key());
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchUsesCallerOutputBuffers) {
+  const auto path = (directory_ / "converted_fp16.index").string();
+  const auto param =
+      DiskAnnIndexParamBuilder()
+          .with_metric_type(MetricType::kL2sq)
+          .with_data_type(DataType::DT_FP32)
+          .with_quantizer_param(QuantizerParam(QuantizerType::kFP16))
+          .with_dimension(kDimension)
+          .with_max_degree(16)
+          .with_list_size(48)
+          .with_pq_chunk_num(8)
+          .build();
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+
+  constexpr uint32_t topk = 4096;
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = topk;
+  query->list_size = 48;
+  query->bf_pks = std::make_shared<std::vector<uint64_t>>(1, 7);
+  std::vector<int64_t> ids(topk, -42);
+  std::vector<float> scores(topk, -42.0f);
+  // Refuse only an aligned DiskAnnReadVector<int64_t> of length topk.
+  // The key lookup and its result should fit without a second ID buffer.
+  refused_aligned_size = ids.size() * sizeof(int64_t) +
+                         sizeof(ailego::ProcessRssBudget::MaterializationStamp);
+  const auto restore =
+      ailego::ScopeGuard::Make([] { refused_aligned_size = 0; });
+  const VectorData input{DenseVector{rows.data() + 7 * kDimension}};
+  ASSERT_EQ(
+      0, index->search_internal_ids(input, query, ids.data(), scores.data()));
+  EXPECT_EQ(7, ids.front());
+  EXPECT_GE(scores.front(), 0.0f);
+  EXPECT_LT(scores.front(), 1e-4f);
+  EXPECT_EQ(-1, ids.back());
+  EXPECT_TRUE(std::isnan(scores.back()));
   ASSERT_EQ(0, index->close());
 }
 

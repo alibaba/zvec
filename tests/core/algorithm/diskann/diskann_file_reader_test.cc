@@ -463,6 +463,13 @@ TEST(DiskAnnFileReaderTest,
   ASSERT_NE(output, nullptr);
   const size_t offset = native_page_size - sector_size;
   std::vector<AlignedRead> requests{{offset, 2 * sector_size, output.get()}};
+  // The required read workspace can use RSS headroom even when the only
+  // cache page is pinned and the cold slice must bypass the cache.
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const size_t previous_rss = rss.process_rss_limit();
+  const auto restore_rss = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss)); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(size_t{1} << 30));
   const auto before = pool->stats();
   IOContext ctx{};
   EXPECT_EQ(reader.read(requests, ctx), 0);

@@ -20,12 +20,16 @@
 #include <cstring>
 #include <cwchar>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
 #include "../../../ailego/buffer/pool_payload_budget.h"
@@ -284,6 +288,13 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   ASSERT_NE(output, nullptr);
   const size_t offset = native_page_size - kPageSize;
   std::vector<AlignedRead> requests{{offset, 2 * kPageSize, output.get()}};
+  // The required read workspace can use RSS headroom even when the only
+  // cache page is pinned and the cold slice must bypass the cache.
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const size_t previous_rss = rss.process_rss_limit();
+  const auto restore_rss = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss)); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(size_t{1} << 30));
   const auto before = pool->stats();
   IOContext ctx = nullptr;
   EXPECT_EQ(reader.read(requests, ctx), 0);
@@ -824,4 +835,55 @@ TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
   EXPECT_TRUE(verify_page(output.get(), 0));
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, CompletionLogFailureStillDrainsBatch) {
+  namespace ailego = zvec::ailego;
+  class FailingLogger final : public ailego::Logger {
+   public:
+    int init(const ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    void log(int, const char *, int, const char *format, va_list) override {
+      if (std::strstr(format, "completed with") == nullptr) return;
+      threw = true;
+      throw std::bad_alloc();
+    }
+    bool threw{false};
+  };
+
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+  AlignedBuffer output = make_aligned_buffer(2 * kPageSize);
+  ASSERT_NE(nullptr, output);
+  std::vector<AlignedRead> requests{
+      {0, kPageSize, output.get()},
+      {kPageSize, kPageSize, output.get() + kPageSize}};
+  PendingBatch batch;
+  IOContext ctx = nullptr;
+  ASSERT_EQ(0, setup_io_ctx(ctx));
+  const auto cleanup = ailego::ScopeGuard::Make([&] { destroy_io_ctx(ctx); });
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  // Force the short-read diagnostic on a terminal packet. The other request
+  // can still be outstanding or present in the same dequeued batch.
+  ++batch.expected_lengths[0];
+  auto logger = std::make_shared<FailingLogger>();
+  auto previous = ailego::LoggerBroker::Register(logger);
+  const auto restore_logger = ailego::ScopeGuard::Make(
+      [&] { ailego::LoggerBroker::Register(std::move(previous)); });
+
+  std::vector<uint32_t> completed;
+  EXPECT_EQ(IndexError_Runtime, reader.get_completed(batch, ctx, 2, completed));
+  EXPECT_TRUE(logger->threw);
+  EXPECT_TRUE(completed.empty());
+  EXPECT_FALSE(batch.has_async_requests());
+  ASSERT_EQ(0, reader.read(requests, ctx));
+  EXPECT_TRUE(verify_page(output.get(), 0));
+  EXPECT_TRUE(verify_page(output.get() + kPageSize, 1));
 }

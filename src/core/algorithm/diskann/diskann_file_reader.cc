@@ -137,6 +137,15 @@ static uint64_t next_windows_file_identity() {
   return 0;
 }
 
+// Diagnostics must not interrupt completion accounting or teardown.
+template <typename Log>
+static void log_windows_io_failure(Log log) noexcept {
+  try {
+    log();
+  } catch (...) {
+  }
+}
+
 // Cancel and reap every request that may still reference caller-owned buffers.
 // Closing the file or completion port before the cancellation packets have
 // arrived would allow the kernel to keep writing into buffers already returned
@@ -166,8 +175,10 @@ static void close_windows_io_handles(IOContext ctx) {
     if (!::CancelIoEx(ctx->file_handle, nullptr)) {
       DWORD error = ::GetLastError();
       if (error != ERROR_NOT_FOUND) {
-        LOG_WARN("CancelIoEx failed while draining DiskAnn I/O (error=%lu)",
-                 error);
+        log_windows_io_failure([&] {
+          LOG_WARN("CancelIoEx failed while draining DiskAnn I/O (error=%lu)",
+                   error);
+        });
       }
     }
 
@@ -1046,23 +1057,20 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     }
 #endif
 
-    // At most one page entry, occurrence, admission slot and bypass request
-    // per page occurrence. Admit the whole plan before allocating or pinning.
-    ailego::MemoryReservation plan_memory;
-    if (ailego::MemoryLimitPool::get_instance().process_rss_limit()) {
-      constexpr size_t kBytesPerPage =
-          sizeof(UniquePage) + sizeof(PageOccurrence) +
-          sizeof(ailego::block_id_t) + sizeof(size_t) + sizeof(char *) +
-          sizeof(AlignedRead);
-      if (total_pages > std::numeric_limits<size_t>::max() / kBytesPerPage)
-        return IndexError_NoMemory;
-      const size_t bytes = total_pages * kBytesPerPage;
-      plan_memory.add(bytes, bytes);
-    }
+    // Reserve required read workspace against RSS before acquiring cache pins.
+    DiskAnnReadReservation split_memory;
     std::vector<UniquePage> unique_pages;
     std::vector<PageOccurrence> occurrences;
-    unique_pages.reserve(total_pages);
-    occurrences.reserve(total_pages);
+    constexpr size_t kSplitBytes = sizeof(UniquePage) + sizeof(PageOccurrence);
+    if (total_pages > (std::numeric_limits<size_t>::max)() / kSplitBytes)
+      return IndexError_NoMemory;
+    split_memory.allocate(total_pages * kSplitBytes, [&] {
+      unique_pages.reserve(total_pages);
+      occurrences.reserve(total_pages);
+      return unique_pages.capacity() * sizeof(UniquePage) +
+             occurrences.capacity() * sizeof(PageOccurrence);
+    });
+    size_t unique_slices = 0;
     for (const AlignedRead &req : read_reqs) {
       size_t source_offset = static_cast<size_t>(req.offset);
       size_t remaining = static_cast<size_t>(req.len);
@@ -1091,6 +1099,7 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
             break;
           }
         }
+        if (canonical_index == occurrences.size()) ++unique_slices;
         occurrences.push_back(PageOccurrence{unique_index, destination,
                                              offset_in_page, copy_length,
                                              canonical_index});
@@ -1100,13 +1109,30 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       }
     }
 
+    DiskAnnReadReservation lookup_memory;
     std::vector<ailego::block_id_t> admitted_ids;
     std::vector<size_t> admitted_indices;
-    std::vector<char *> admitted_pages(unique_pages.size(), nullptr);
+    std::vector<char *> admitted_pages;
     std::vector<AlignedRead> bypass_requests;
-    admitted_ids.reserve(unique_pages.size());
-    admitted_indices.reserve(unique_pages.size());
-    bypass_requests.reserve(unique_pages.size());
+    const size_t page_count = unique_pages.size();
+    constexpr size_t kLookupBytes =
+        sizeof(ailego::block_id_t) + sizeof(size_t) + sizeof(char *);
+    if (total_pages > (std::numeric_limits<size_t>::max)() /
+                          (kLookupBytes + sizeof(AlignedRead)))
+      return IndexError_NoMemory;
+    // Distinct slices of one page can become separate bypass requests.
+    const size_t lookup_bytes =
+        page_count * kLookupBytes + unique_slices * sizeof(AlignedRead);
+    lookup_memory.allocate(lookup_bytes, [&] {
+      admitted_ids.reserve(page_count);
+      admitted_indices.reserve(page_count);
+      admitted_pages.resize(page_count);
+      bypass_requests.reserve(unique_slices);
+      return admitted_ids.capacity() * sizeof(ailego::block_id_t) +
+             admitted_indices.capacity() * sizeof(size_t) +
+             admitted_pages.capacity() * sizeof(char *) +
+             bypass_requests.capacity() * sizeof(AlignedRead);
+    });
 
     auto release_cached_pages = [&]() {
       for (UniquePage &page : unique_pages) {
@@ -2227,16 +2253,13 @@ int WindowsAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return ret;
   }
 
-  ailego::MemoryReservation memory;
   const size_t batch_size = std::min<size_t>(read_reqs.size(), MAX_IO_DEPTH);
-  if (ailego::MemoryLimitPool::get_instance().process_rss_limit()) {
-    const size_t bytes = batch_size * (sizeof(AlignedRead) + sizeof(uint32_t));
-    memory.add(bytes, bytes);
-  }
+  DiskAnnReadReservation completion_memory;
+  DiskAnnReadReservation request_memory;
   std::vector<uint32_t> completed;
   std::vector<AlignedRead> requests;
-  completed.reserve(batch_size);
-  requests.reserve(batch_size);
+  completion_memory.reserve(completed, batch_size);
+  request_memory.reserve(requests, batch_size);
 
   for (size_t start = 0; start < read_reqs.size(); start += MAX_IO_DEPTH) {
     const size_t count =
@@ -2311,11 +2334,13 @@ int WindowsAlignedFileReader::submit(PendingBatch &batch,
 
     BOOL queued = ::ReadFile(ctx->file_handle, req.buf,
                              static_cast<DWORD>(req.len), nullptr, &request);
-    if (!queued && ::GetLastError() != ERROR_IO_PENDING) {
-      LOG_ERROR("Error queuing IOCP read %zu (error=%lu)", i, ::GetLastError());
-      ctx->outstanding_count = issued_count;
+    const DWORD error = queued ? ERROR_SUCCESS : ::GetLastError();
+    if (!queued && error != ERROR_IO_PENDING) {
       reset_io_ctx(ctx);
       batch.generation = 0;
+      log_windows_io_failure([&] {
+        LOG_ERROR("Error queuing IOCP read %zu (error=%lu)", i, error);
+      });
       return IndexError_Runtime;
     }
 
@@ -2341,7 +2366,8 @@ int WindowsAlignedFileReader::get_completed(
   if (ctx->completion_port == nullptr || batch.generation == 0 ||
       batch.generation != ctx->generation || batch.n_submitted > MAX_IO_DEPTH ||
       ctx->outstanding_count != batch.n_submitted - batch.n_reaped) {
-    LOG_ERROR("Invalid or stale Windows IOCP batch");
+    log_windows_io_failure(
+        [&] { LOG_ERROR("Invalid or stale Windows IOCP batch"); });
     reset_io_ctx(ctx);
     batch.n_reaped = batch.n_submitted;
     return IndexError_Runtime;
@@ -2351,7 +2377,9 @@ int WindowsAlignedFileReader::get_completed(
     try {
       completed_indices.reserve(ctx->outstanding_count);
     } catch (const std::bad_alloc &) {
-      LOG_ERROR("Failed to allocate Windows IOCP completion metadata");
+      log_windows_io_failure([&] {
+        LOG_ERROR("Failed to allocate Windows IOCP completion metadata");
+      });
       reset_io_ctx(ctx);
       batch.n_reaped = batch.n_submitted;
       return IndexError_NoMemory;
@@ -2370,18 +2398,22 @@ int WindowsAlignedFileReader::get_completed(
     BOOL dequeued = ::GetQueuedCompletionStatusEx(
         ctx->completion_port, entries, max_entries, &removed, INFINITE, FALSE);
     if (!dequeued || removed == 0) {
-      LOG_ERROR("GetQueuedCompletionStatusEx failed (error=%lu)",
-                ::GetLastError());
+      const DWORD error = ::GetLastError();
       reset_io_ctx(ctx);
       batch.n_reaped = batch.n_submitted;
       completed_indices.clear();
+      log_windows_io_failure([&] {
+        LOG_ERROR("GetQueuedCompletionStatusEx failed (error=%lu)", error);
+      });
       return IndexError_Runtime;
     }
 
     bool completion_error = false;
     for (ULONG i = 0; i < removed; ++i) {
       if (entries[i].lpCompletionKey != reinterpret_cast<ULONG_PTR>(ctx)) {
-        LOG_ERROR("IOCP returned a completion for a different context");
+        log_windows_io_failure([&] {
+          LOG_ERROR("IOCP returned a completion for a different context");
+        });
         completion_error = true;
         continue;
       }
@@ -2393,7 +2425,8 @@ int WindowsAlignedFileReader::get_completed(
           static_cast<uintptr_t>(batch.n_submitted) * sizeof(OVERLAPPED);
       if (address < begin || address >= begin + span ||
           (address - begin) % sizeof(OVERLAPPED) != 0) {
-        LOG_ERROR("IOCP returned an unknown OVERLAPPED request");
+        log_windows_io_failure(
+            [&] { LOG_ERROR("IOCP returned an unknown OVERLAPPED request"); });
         completion_error = true;
         continue;
       }
@@ -2401,39 +2434,46 @@ int WindowsAlignedFileReader::get_completed(
       const uint32_t index =
           static_cast<uint32_t>((address - begin) / sizeof(OVERLAPPED));
       if (batch.completed[index] != 0) {
-        LOG_ERROR("IOCP returned duplicate completion for request %u", index);
+        log_windows_io_failure([&] {
+          LOG_ERROR("IOCP returned duplicate completion for request %u", index);
+        });
         completion_error = true;
         continue;
       }
 
       if (ctx->active_requests[index] == 0 || ctx->outstanding_count == 0) {
-        LOG_ERROR("IOCP returned an inactive or excess completion");
+        log_windows_io_failure([&] {
+          LOG_ERROR("IOCP returned an inactive or excess completion");
+        });
         completion_error = true;
         continue;
       }
 
       DWORD bytes_transferred = 0;
-      bool terminal = true;
-      if (!::GetOverlappedResult(ctx->file_handle, &ctx->reqs[index],
-                                 &bytes_transferred, FALSE)) {
-        DWORD error = ::GetLastError();
-        terminal = error != ERROR_IO_INCOMPLETE;
-        LOG_ERROR("IOCP read %u failed (error=%lu)", index, error);
-        completion_error = true;
-      } else if (static_cast<uint64_t>(bytes_transferred) !=
-                 batch.expected_lengths[index]) {
-        LOG_ERROR(
-            "IOCP read %u completed with %lu bytes, expected %llu", index,
-            static_cast<unsigned long>(bytes_transferred),
-            static_cast<unsigned long long>(batch.expected_lengths[index]));
-        completion_error = true;
-      }
-
-      if (terminal) {
+      const bool read_ok = ::GetOverlappedResult(
+          ctx->file_handle, &ctx->reqs[index], &bytes_transferred, FALSE);
+      const DWORD error = read_ok ? ERROR_SUCCESS : ::GetLastError();
+      if (read_ok || error != ERROR_IO_INCOMPLETE) {
         ctx->active_requests[index] = 0;
         --ctx->outstanding_count;
         batch.completed[index] = 1;
         ++batch.n_reaped;
+      }
+
+      if (!read_ok) {
+        completion_error = true;
+        log_windows_io_failure([&] {
+          LOG_ERROR("IOCP read %u failed (error=%lu)", index, error);
+        });
+      } else if (static_cast<uint64_t>(bytes_transferred) !=
+                 batch.expected_lengths[index]) {
+        completion_error = true;
+        log_windows_io_failure([&] {
+          LOG_ERROR(
+              "IOCP read %u completed with %lu bytes, expected %llu", index,
+              static_cast<unsigned long>(bytes_transferred),
+              static_cast<unsigned long long>(batch.expected_lengths[index]));
+        });
       }
       if (!completion_error) {
         completed_indices.push_back(index);

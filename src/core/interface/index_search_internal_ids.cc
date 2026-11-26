@@ -60,34 +60,6 @@ int Index::search_internal_ids(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (diskann_contexts_ && output_scores) {
-    const auto &refiner = search_param->refiner_param;
-    const auto *reference = refiner ? refiner->reference_index.get() : nullptr;
-    if (reformer_ || (reference && reference->reformer_)) {
-      // Reformers can allocate while normalizing scores after the search.
-      // Keep these results private until both stages have succeeded.
-      core::DiskAnnReadVector<int64_t> ids(search_param->topk);
-      core::DiskAnnReadVector<float> scores(search_param->topk);
-      const int ret = _search_internal_ids(vector_data, search_param,
-                                           ids.data(), scores.data());
-      if (ret == 0) {
-        std::copy(ids.begin(), ids.end(), output_ids);
-        std::copy(scores.begin(), scores.end(), output_scores);
-      }
-      return ret;
-    }
-  }
-  return _search_internal_ids(vector_data, search_param, output_ids,
-                              output_scores);
-} catch (const std::bad_alloc &) {
-  if (!diskann_contexts_) throw;
-  return core::IndexError_NoMemory;
-}
-
-int Index::_search_internal_ids(
-    const VectorData &vector_data,
-    const BaseIndexQueryParam::Pointer &search_param, int64_t *output_ids,
-    float *output_scores) {
   const size_t topk = search_param->topk;
   if (search_param->refiner_param && !search_param->bf_pks &&
       !search_param->is_linear) {
@@ -137,17 +109,15 @@ int Index::_search_internal_ids(
     const size_t count = std::min(topk, keys.size());
     if (output_scores && scores->size() != keys.size()) {
       ret = core::IndexError_Runtime;
-    } else {
+    } else if (output_scores) {
+      ret = _normalize_buffer_scores(vector_data, keys.data(), scores->data(),
+                                     count, diskann_contexts_ != nullptr);
+    }
+    if (ret == 0) {
       for (size_t i = 0; i < count; ++i) {
         output_ids[i] = static_cast<int64_t>(keys[i]);
         if (output_scores) output_scores[i] = (*scores)[i];
       }
-      if (output_scores) {
-        ret = _normalize_buffer_scores(vector_data, output_ids, output_scores,
-                                       count, diskann_contexts_ != nullptr);
-      }
-    }
-    if (ret == 0) {
       std::fill(output_ids + count, output_ids + topk, int64_t{-1});
       if (output_scores) {
         std::fill(output_scores + count, output_scores + topk,
@@ -158,6 +128,9 @@ int Index::_search_internal_ids(
   context->reset();
   acquired.keep_on_success(ret);
   return ret;
+} catch (const std::bad_alloc &) {
+  if (!diskann_contexts_) throw;
+  return core::IndexError_NoMemory;
 }
 
 int Index::_search_refine_internal_ids(
@@ -232,10 +205,37 @@ int Index::_search_refine_internal_ids(
       ret = reference->_prepare_dense_query(
           vector_data, &reference_query_storage, &query, &query_meta);
       if (ret == 0) {
-        ret = flat->search_by_p_keys_fast(query, keys, output_ids,
-                                          output_scores, search_param->topk,
-                                          query_meta, reference_context);
-        if (ret == core::IndexError_NotImplemented) {
+        const size_t topk = search_param->topk;
+        int fast_status = core::IndexError_NotImplemented;
+        auto run_fast = [&](int64_t *ids, float *scores) {
+          fast_status = flat->search_by_p_keys_fast(
+              query, keys, ids, scores, topk, query_meta, reference_context);
+          if (fast_status != 0 || !scores) return fast_status;
+          return reference->_normalize_buffer_scores(
+              vector_data, ids, scores, topk, diskann_contexts_ != nullptr);
+        };
+        if (diskann_contexts_ && output_scores && reference->reformer_ &&
+            keys.size() >= topk) {
+          // A reformer can fail after the fast path has produced its scores.
+          core::DiskAnnReadVector<int64_t> ids;
+          core::DiskAnnReadVector<float> scores;
+          try {
+            ids.resize(topk);
+            scores.resize(topk);
+          } catch (const std::bad_alloc &) {
+            // The existing refiner fallback can publish its result directly.
+          }
+          if (ids.size() == topk && scores.size() == topk) {
+            ret = run_fast(ids.data(), scores.data());
+            if (ret == 0) {
+              std::copy(ids.begin(), ids.end(), output_ids);
+              std::copy(scores.begin(), scores.end(), output_scores);
+            }
+          }
+        } else {
+          ret = run_fast(output_ids, output_scores);
+        }
+        if (fast_status == core::IndexError_NotImplemented) {
           // The coarse search has already completed. Reuse its candidates
           // with the ordinary refiner instead of repeating the entire search.
           reference_context->reset();
@@ -249,10 +249,6 @@ int Index::_search_refine_internal_ids(
             CopySearchResult(result, search_param->topk, output_ids,
                              output_scores);
           }
-        } else if (ret == 0 && output_scores) {
-          ret = reference->_normalize_buffer_scores(
-              vector_data, output_ids, output_scores, search_param->topk,
-              diskann_contexts_ != nullptr);
         }
       }
       reference_context->reset();
@@ -263,8 +259,9 @@ int Index::_search_refine_internal_ids(
   return ret;
 }
 
+template <typename Id>
 int Index::_normalize_buffer_scores(const VectorData &vector_data,
-                                    const int64_t *output_ids,
+                                    const Id *output_ids,
                                     float *output_scores, size_t count,
                                     bool process_rss) {
   if (!output_scores || count == 0) return 0;

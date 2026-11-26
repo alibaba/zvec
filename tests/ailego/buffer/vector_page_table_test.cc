@@ -1124,6 +1124,65 @@ TEST_F(BufferPoolTest, ExternalReadReleasesClaimWhenReclaimThrows) {
   pool.cancel_read_page(0, claimed);
 }
 
+#if defined(__APPLE__)
+TEST_F(BufferPoolTest, BatchReadRollsBackPinsAndClaimsWhenReclaimThrows) {
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/3);
+  VecBufferPool pool(new_file(3), /*writable=*/false);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_TRUE(pool.cache_enabled());
+  QueueResidentSampleTestPeer::stop_background();
+
+  const block_id_t hot = 0;
+  ASSERT_NE(nullptr, pool.acquire_buffer(hot, 1));
+  pool.release_pages(&hot, 1);
+
+  auto &memory = PoolPayloadBudget::get_instance();
+  std::array<char *, 2> held{};
+  const auto release = ScopeGuard::Make([&] {
+    for (char *buffer : held) {
+      if (buffer) memory.release_buffer(buffer, kVectorPageSize);
+    }
+  });
+  for (char *&buffer : held)
+    ASSERT_TRUE(memory.try_acquire_buffer(kVectorPageSize, buffer));
+  const auto used_before = memory.stats().page_used;
+
+  class FailingReclaimer final : public EvictableBlockOwner {
+   public:
+    bool is_dead_block(eviction_key_t, version_t) override {
+      return false;
+    }
+    bool evict_block(eviction_key_t) override {
+      throw std::bad_alloc();
+    }
+  } reclaimer;
+  auto &queue = BlockEvictionQueue::get_instance();
+  queue.set_valid(&reclaimer);
+  const auto remove_owner =
+      ScopeGuard::Make([&] { queue.set_invalid(&reclaimer); });
+  BlockEvictionQueue::BlockType item;
+  item.owner = &reclaimer;
+  ASSERT_TRUE(queue.add_single_block(item, 0));
+
+  // The batch pins the hit and allocates the first cold page before reclaim.
+  const std::array<block_id_t, 3> ids{hot, 1, 2};
+  std::array<char *, 3> pages{};
+  EXPECT_THROW(pool.acquire_pages(ids.data(), ids.size(), pages.data()),
+               std::bad_alloc);
+  EXPECT_EQ((std::array<char *, 3>{}), pages);
+  EXPECT_EQ(used_before, memory.stats().page_used);
+  ASSERT_FALSE(pool.should_join_cache_path(1));
+  ASSERT_FALSE(pool.should_join_cache_path(2));
+  EXPECT_TRUE(pool.page_table_.force_evict_block(hot));
+
+  for (char *&buffer : held)
+    memory.release_buffer(std::exchange(buffer, nullptr), kVectorPageSize);
+  ASSERT_TRUE(pool.acquire_pages(ids.data(), ids.size(), pages.data()));
+  for (size_t i = 0; i < ids.size(); ++i) ExpectPageContent(pages[i], ids[i]);
+  pool.release_pages(ids.data(), ids.size());
+}
+#endif
+
 TEST_F(BufferPoolTest, ExternalReadReleasesInstallPinOnQueueLogFailure) {
   init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/2);
   VecBufferPool pool(new_file(2), /*writable=*/false);
