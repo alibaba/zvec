@@ -26,19 +26,6 @@ InvertedColumnIndexer::~InvertedColumnIndexer() {
 }
 
 
-void InvertedColumnIndexer::build_range_cache() {
-  range_cache_.reset();
-  if (!sealed_ || !enable_range_optimization_ || !cf_ranges_) return;
-  try {
-    range_cache_ = InvertedRangeCache::Build(
-        ctx_, cf_ranges_, cf_terms_, max_id_.load(), null_bitmap_.bitmap());
-  } catch (const std::bad_alloc &) {
-    LOG_WARN("Skipping range prefixes for %s: insufficient memory",
-             id().c_str());
-  }
-}
-
-
 Status InvertedColumnIndexer::open() {
   if (field_.index_type() != IndexType::INVERT) {
     return Status::InvalidArgument();
@@ -117,7 +104,7 @@ Status InvertedColumnIndexer::open() {
   // Get null bitmap if exists
   s = ctx_.db_->Get(ctx_.read_opts_, key_null(), &value);
   if (s.ok()) {
-    if (auto status = null_bitmap_.deserialize(value); !status.ok()) {
+    if (auto status = null_bitmap_->deserialize(value); !status.ok()) {
       LOG_ERROR("Failed to deserialize null bitmap from %s", id().c_str());
       return status;
     }
@@ -131,6 +118,28 @@ Status InvertedColumnIndexer::open() {
   if (s.ok()) {
     sealed_ = true;
     read_only_ = true;
+    if (enable_range_optimization_ &&
+        value != InvertedRangeCache::kNoCacheSealValue) {
+      try {
+        if (value == "sealed") {
+          // Legacy indexes lack prefix records, including on read-only opens.
+          range_cache_ = InvertedRangeCache::Build(
+              ctx_, cf_ranges_, cf_terms_, max_id_.load(), null_bitmap_->bitmap());
+        } else {
+          range_cache_ = InvertedRangeCache::Load(
+              ctx_, field_.name(), value, max_id_.load(), null_bitmap_->bitmap());
+          if (!range_cache_) {
+            LOG_WARN("Could not load stored range prefixes for %s", id().c_str());
+          }
+        }
+        if (range_cache_) {
+          range_cache_ready_.store(true, std::memory_order_release);
+        }
+      } catch (const std::bad_alloc &) {
+        LOG_WARN("Skipping range prefixes for %s: insufficient memory",
+                 id().c_str());
+      }
+    }
   } else if (s.code() == rocksdb::Status::kNotFound) {
     sealed_ = false;
   } else {
@@ -138,7 +147,6 @@ Status InvertedColumnIndexer::open() {
     return Status::InternalError();
   }
 
-  build_range_cache();
   LOG_INFO("Opened %s", id().c_str());
   return Status::OK();
 }
@@ -178,7 +186,6 @@ Status InvertedColumnIndexer::drop_storage() {
     }
   }
   if (enable_range_optimization_) {
-    range_cache_.reset();
     if (s = ctx_.drop_cf(cf_name_ranges()); !s.ok()) {
       return s;
     }
@@ -209,7 +216,14 @@ Status InvertedColumnIndexer::drop_storage() {
     return s;
   }
 
-  rs = ctx_.db_->Delete(ctx_.write_opts_, key_sealed());
+  rocksdb::WriteBatch batch;
+  rs = batch.Delete(key_sealed());
+  if (rs.ok() && enable_range_optimization_) {
+    rs = InvertedRangeCache::Delete(batch, field_.name());
+  }
+  if (rs.ok()) {
+    rs = ctx_.db_->Write(ctx_.write_opts_, &batch);
+  }
   if (!rs.ok()) {
     LOG_ERROR("Failed to delete indexer state of %s", id().c_str());
     s = Status::InternalError();

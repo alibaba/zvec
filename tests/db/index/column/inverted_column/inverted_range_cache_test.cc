@@ -20,6 +20,7 @@
 #include <thread>
 #include <gtest/gtest.h>
 #include <rocksdb/utilities/stackable_db.h>
+#include <ailego/pattern/defer.h>
 #include "db/index/column/inverted_column/inverted_indexer.h"
 #include "db/index/column/inverted_column/inverted_rocksdb_merger.h"
 #include "tests/test_util.h"
@@ -63,6 +64,15 @@ class ReadCounter : public rocksdb::StackableDB {
     if (cf && cf->GetName() == "value$RANGES") ++range_iters;
     return StackableDB::NewIterator(options, cf);
   }
+  rocksdb::Status Put(const rocksdb::WriteOptions &options,
+                      rocksdb::ColumnFamilyHandle *cf, const rocksdb::Slice &key,
+                      const rocksdb::Slice &value) override {
+    if (key == fail_put_key) {
+      return rocksdb::Status::IOError("injected prefix write failure");
+    }
+    return StackableDB::Put(options, cf, key, value);
+  }
+  std::string fail_put_key;
   std::atomic<size_t> reads{0};
   std::atomic<size_t> term_gets{0};
   std::atomic<size_t> term_iters{0};
@@ -93,7 +103,7 @@ class InvertedRangeCacheTest : public testing::Test {
                                                    context_, false);
     ASSERT_NE(column_, nullptr);
   }
-  void reopen() {
+  void reopen(bool expect_rebuild = false) {
     column_.reset();
     ASSERT_TRUE(context_.flush().ok());
     ASSERT_TRUE(context_.close().ok());
@@ -101,9 +111,20 @@ class InvertedRangeCacheTest : public testing::Test {
         context_
             .open(path_, true, std::make_shared<InvertedRocksdbValueMerger>())
             .ok());
+    auto original = std::move(context_.db_);
+    auto counter = std::make_unique<ReadCounter>(original.get());
+    auto *reader = counter.get();
+    context_.db_ = std::move(counter);
+    AILEGO_DEFER([&]() { context_.db_ = std::move(original); });
     column_ = InvertedColumnIndexer::CreateAndOpen("prefix_test", field_,
                                                    context_, true);
     ASSERT_NE(column_, nullptr);
+    if (expect_rebuild) {
+      EXPECT_GT(reader->range_iters.load(), 0);
+    } else {
+      EXPECT_EQ(reader->range_iters.load(), 0);
+      EXPECT_EQ(reader->term_iters.load(), 0);
+    }
   }
   std::vector<std::optional<int32_t>> values(bool nulls = true,
                                             bool hot = false,
@@ -154,7 +175,7 @@ class InvertedRangeCacheTest : public testing::Test {
   InvertedColumnIndexer::Ptr column_;
 };
 
-TEST_F(InvertedRangeCacheTest, BuildsSixteenthsInMemoryAndReopensReadOnly) {
+TEST_F(InvertedRangeCacheTest, PersistsSixteenthsAndLoadsThemWhenReopenedReadOnly) {
   create();
   auto data = values();
   ASSERT_EQ(column_->range_cache(), nullptr);
@@ -172,19 +193,122 @@ TEST_F(InvertedRangeCacheTest, BuildsSixteenthsInMemoryAndReopensReadOnly) {
       ASSERT_EQ(roaring_bitmap_contains(prefix.bitmap.get(), id),
                 data[id].has_value() && *data[id] <= bound);
   }
-  EXPECT_EQ(context_.get_cf("value$PREFIXES"), nullptr);
+  std::string value;
+  ASSERT_TRUE(context_.db_->Get(context_.read_opts_,
+                                 "value$ZVEC$RANGE_PREFIX$a", &value).ok());
+  EXPECT_FALSE(value.empty());
   verify(data, bounds, Raw);
   reopen();
   ASSERT_NE(column_->range_cache(), nullptr);
   ASSERT_EQ(column_->range_cache()->prefixes.size(), 15);
-  EXPECT_EQ(context_.get_cf("value$PREFIXES"), nullptr);
   verify(data, bounds, Raw);
+}
+
+TEST_F(InvertedRangeCacheTest, LegacySealRebuildsOnReadOnlyOpen) {
+  create();
+  const auto data = values();
+  ASSERT_TRUE(column_->seal().ok());
+  rocksdb::WriteBatch batch;
+  ASSERT_TRUE(InvertedRangeCache::Delete(batch, "value").ok());
+  ASSERT_TRUE(batch.Put("value" + INVERT_KEY_SEALED, "sealed").ok());
+  ASSERT_TRUE(context_.db_->Write(context_.write_opts_, &batch).ok());
+  reopen(/*expect_rebuild=*/true);
+  ASSERT_NE(column_->range_cache(), nullptr);
+  verify(data, {-4001, -1, 0, 1, 4001}, Raw);
+  std::string marker;
+  ASSERT_TRUE(context_.db_->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED,
+                                 &marker).ok());
+  EXPECT_EQ(marker, "sealed");
+}
+
+TEST_F(InvertedRangeCacheTest, InvalidPrefixFallsBackToRangeScans) {
+  create();
+  const auto data = values();
+  ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->range_cache(), nullptr);
+  ASSERT_TRUE(context_.db_->Put(context_.write_opts_,
+                                 "value$ZVEC$RANGE_PREFIX$b", "invalid").ok());
+  reopen();
+  EXPECT_EQ(column_->range_cache(), nullptr);
+  verify(data, {-4001, -1, 0, 1, 4001}, Raw);
+}
+
+TEST_F(InvertedRangeCacheTest, FailedPrefixWriteDoesNotPublishAndCanBeRetried) {
+  create();
+  auto data = values();
+  {
+    auto original = std::move(context_.db_);
+    auto writer = std::make_unique<ReadCounter>(original.get());
+    writer->fail_put_key = "value$ZVEC$RANGE_PREFIX$b";
+    context_.db_ = std::move(writer);
+    AILEGO_DEFER([&]() { context_.db_ = std::move(original); });
+    EXPECT_FALSE(column_->seal().ok());
+  }
+
+  std::string value;
+  EXPECT_TRUE(context_.db_->Get(context_.read_opts_, "value" + INVERT_KEY_SEALED,
+                                 &value).IsNotFound());
+  ASSERT_TRUE(context_.db_->Get(context_.read_opts_,
+                                 "value$ZVEC$RANGE_PREFIX$a", &value).ok());
+  EXPECT_FALSE(column_->is_sealed());
+  EXPECT_EQ(column_->range_cache(), nullptr);
+  column_.reset();
+  column_ = InvertedColumnIndexer::CreateAndOpen("prefix_test", field_,
+                                                 context_, false);
+  ASSERT_NE(column_, nullptr);
+  EXPECT_FALSE(column_->is_sealed());
+  EXPECT_EQ(column_->range_cache(), nullptr);
+  ASSERT_TRUE(column_->insert(data.size(), Raw(42)).ok());
+  data.emplace_back(42);
+  ASSERT_TRUE(column_->seal().ok());
+  reopen();
+  ASSERT_NE(column_->range_cache(), nullptr);
+  verify(data, {-1, 0, 42, 43}, Raw);
+}
+
+TEST_F(InvertedRangeCacheTest, SealedNullResultsSurviveCloseAndDetachOnWrite) {
+  create();
+  ASSERT_TRUE(column_->insert_null(0).ok());
+  ASSERT_TRUE(column_->insert(1, Raw(1)).ok());
+  auto unsealed = column_->search_null();
+  ASSERT_NE(unsealed, nullptr);
+  ASSERT_TRUE(column_->insert_null(2).ok());
+  EXPECT_EQ(unsealed->count(), 1);
+  ASSERT_TRUE(column_->seal().ok());
+  auto original = column_->search_null();
+  auto intersection = column_->search_null();
+  auto combination = column_->search_null();
+  auto non_null = column_->search_non_null();
+  ASSERT_NE(original, nullptr);
+  ASSERT_NE(intersection, nullptr);
+  ASSERT_NE(combination, nullptr);
+  ASSERT_NE(non_null, nullptr);
+  auto iterator = original->create_iterator();
+  column_.reset();
+  ASSERT_TRUE(context_.close().ok());
+  EXPECT_EQ(original->count(), 2);
+  EXPECT_TRUE(original->contains(0));
+  EXPECT_TRUE(original->contains(2));
+
+  intersection->AND(*non_null);
+  combination->OR(*non_null);
+  EXPECT_EQ(intersection->count(), 0);
+  EXPECT_EQ(combination->count(), 3);
+  std::vector<uint32_t> ids;
+  original->extract_ids(&ids);
+  EXPECT_EQ(ids, (std::vector<uint32_t>{0, 2}));
+  ASSERT_TRUE(iterator->valid());
+  EXPECT_EQ(iterator->doc_id(), 0);
+  iterator->next();
+  ASSERT_TRUE(iterator->valid());
+  EXPECT_EQ(iterator->doc_id(), 2);
 }
 
 TEST_F(InvertedRangeCacheTest, ExactPrefixQueriesAvoidRocksdbReads) {
   create();
   auto data = values(false);
   ASSERT_TRUE(column_->seal().ok());
+  reopen();
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   const auto &prefix = cache->prefixes[3];
@@ -220,6 +344,7 @@ TEST_F(InvertedRangeCacheTest, ExactBucketEndpointsUseOneTermGet) {
   create();
   auto data = values();
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   const size_t end = cache->prefixes[3].end_bucket;
@@ -250,6 +375,7 @@ TEST_F(InvertedRangeCacheTest, PlannerReducesOwnedRangeDecoding) {
   create();
   auto data = values(false);
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   const size_t boundary = cache->buckets.size() * 9 / 10;
@@ -266,6 +392,7 @@ TEST_F(InvertedRangeCacheTest, SubtractsFullBucketsAndRestoresBoundaryTerms) {
   create();
   auto data = values(true, false, 2 << 16);
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GE(cache->prefixes.size(), 2);
@@ -300,6 +427,7 @@ TEST_F(InvertedRangeCacheTest, MixedPrefixKeepsAdditiveBoundaryPlan) {
   constexpr int32_t kCount = kFirstBlock + (1 << 14);
   values(true, false, kCount);
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GE(cache->prefixes.size(), 2);
@@ -328,6 +456,7 @@ TEST_F(InvertedRangeCacheTest, NearPrefixSubtractUsesBoundedTermProbe) {
     ASSERT_TRUE(column_->insert(id, Raw(*data[id])).ok());
   }
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   ASSERT_GT(cache->prefixes.size(), 3);
@@ -373,6 +502,7 @@ TEST_F(InvertedRangeCacheTest, RepeatedValuesAndNullsKeepUniqueBoundaries) {
   create();
   auto data = values(true, true);
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   EXPECT_LT(cache->prefixes.size(), 15);
@@ -390,6 +520,7 @@ TEST_F(InvertedRangeCacheTest, ConcurrentQueriesDoNotMutateSharedPrefixes) {
   create();
   auto data = values();
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search(Raw(0), CompareOp::LE), nullptr);
   const auto *cache = column_->range_cache();
   ASSERT_NE(cache, nullptr);
   std::vector<std::string> snapshots;
@@ -425,6 +556,7 @@ TEST_F(InvertedRangeCacheTest, BinaryStringsKeepRangeSemantics) {
   for (uint32_t i = 0; i < data.size(); ++i)
     ASSERT_TRUE(column_->insert(i, *data[i]).ok());
   ASSERT_TRUE(column_->seal().ok());
+  ASSERT_NE(column_->search("", CompareOp::LE), nullptr);
   ASSERT_NE(column_->range_cache(), nullptr);
   std::vector<std::string> bounds{"", std::string(1, '\0'),
                                   std::string(1, char(255)), *data[23],
@@ -444,6 +576,7 @@ TEST_F(InvertedRangeCacheTest, SparseDocidsDoNotEnableNewComplementPlans) {
   auto result = column_->search(Raw(1000), CompareOp::LT);
   ASSERT_NE(result, nullptr);
   EXPECT_EQ(result->count(), 500);
+  EXPECT_EQ(column_->range_cache(), nullptr);
 }
 
 TEST_F(InvertedRangeCacheTest, AllNullValuesUseLegacySearch) {
@@ -454,6 +587,7 @@ TEST_F(InvertedRangeCacheTest, AllNullValuesUseLegacySearch) {
   ASSERT_TRUE(column_->seal().ok());
   EXPECT_EQ(column_->range_cache(), nullptr);
   verify(data, {-1, 0, 1}, Raw);
+  EXPECT_EQ(column_->range_cache(), nullptr);
   reopen();
   verify(data, {-1, 0, 1}, Raw);
 }
@@ -468,6 +602,7 @@ TEST_F(InvertedRangeCacheTest, RecreatedFieldDoesNotReuseOldCache) {
   for (int32_t i = 0; i < 8000; ++i)
     ASSERT_TRUE(column->insert(i, Raw(i)).ok());
   ASSERT_TRUE(index->seal().ok());
+  ASSERT_NE(column->search(Raw(0), CompareOp::LE), nullptr);
   ASSERT_NE(column->range_cache(), nullptr);
   column.reset();
   ASSERT_TRUE(index->remove_column_indexer("value").ok());
@@ -490,6 +625,10 @@ TEST_F(InvertedRangeCacheTest, UnsupportedBucketOrderKeepsSealCompatible) {
     ASSERT_TRUE(column_->insert(id, value).ok());
   }
   ASSERT_TRUE(column_->seal().ok());
+  EXPECT_EQ(column_->range_cache(), nullptr);
+  auto range = column_->search("z", CompareOp::LT);
+  ASSERT_NE(range, nullptr);
+  EXPECT_EQ(range->count(), 16);
   EXPECT_EQ(column_->range_cache(), nullptr);
   reopen();
   auto result = column_->search("a", CompareOp::EQ);

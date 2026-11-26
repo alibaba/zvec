@@ -53,6 +53,8 @@ class InvertedRangeCache {
   // Byte-work proxy for setting up an owned container and its payload.
   static constexpr uint64_t kContainerSetupWork = 128;
   static constexpr size_t kMaxBoundaryProbeTerms = 2048;
+  static constexpr unsigned kQuantiles = 16;
+  static constexpr const char *kNoCacheSealValue = "sealed-no-range-prefix-v1";
   static uint64_t short_term_work(const rocksdb::Slice &value);
   struct BitmapDeleter {
     void operator()(roaring_bitmap_t *bitmap) const {
@@ -64,10 +66,7 @@ class InvertedRangeCache {
     std::string key;
     std::string begin;
     std::string end;
-    uint64_t cardinality{0};
-    uint64_t bytes{0};
     uint64_t cumulative_cardinality{0};
-    uint64_t cumulative_bytes{0};
     uint64_t cumulative_decode_work{0};
   };
   struct SuffixCheckpoint {
@@ -86,6 +85,18 @@ class InvertedRangeCache {
       RocksdbContext &context, rocksdb::ColumnFamilyHandle *ranges,
       rocksdb::ColumnFamilyHandle *terms, uint32_t max_id,
       const roaring_bitmap_t *null_bitmap);
+
+  // Store the bitmaps separately to avoid assembling a single large value.
+  // The caller publishes the resulting metadata as the column's seal value.
+  rocksdb::Status Store(RocksdbContext &context, const std::string &field,
+                        std::string &metadata) const;
+  static std::unique_ptr<InvertedRangeCache> Load(
+      RocksdbContext &context, const std::string &field,
+      const std::string &metadata, uint32_t max_id,
+      const roaring_bitmap_t *null_bitmap);
+  static rocksdb::Status Delete(rocksdb::WriteBatch &batch,
+                                const std::string &field,
+                                size_t keep = 0);
 
   std::vector<Bucket> buckets;
   std::vector<Prefix> prefixes;

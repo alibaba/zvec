@@ -18,8 +18,8 @@
 namespace zvec {
 
 InvertedRangeCache::BitmapPtr InvertedColumnIndexer::try_subtract_boundary(
-    const std::string &term, const RangeQueryPlan &plan) const {
-  const auto &index = *range_cache_;
+    const std::string &term, const RangeQueryPlan &plan,
+    const InvertedRangeCache &index) const {
   const auto &bucket = index.buckets[plan.boundary_bucket];
   std::unique_ptr<rocksdb::Iterator> terms(
       ctx_.db_->NewIterator(ctx_.read_opts_, cf_terms_));
@@ -61,16 +61,17 @@ InvertedRangeCache::BitmapPtr InvertedColumnIndexer::try_subtract_boundary(
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::search_range(
     const std::string &term, bool query_left, bool include_eq) const {
-  const auto plan = plan_range(term, query_left, include_eq);
+  const auto *cache = range_cache();
+  const auto plan = plan_range(term, query_left, include_eq, cache);
   if (plan.boundary_subtract_budget) {
-    auto bitmap = try_subtract_boundary(term, plan);
+    auto bitmap = try_subtract_boundary(term, plan, *cache);
     if (bitmap) {
       // Both plans build the left result, so they share the flip decision.
       if (plan.flip) flip_bitmap(bitmap.get());
       return bitmap.release();
     }
   }
-  return execute_range_plan(term, plan);
+  return execute_range_plan(term, plan, cache);
 }
 
 }  // namespace zvec

@@ -29,22 +29,21 @@ RangeQueryPlan InvertedColumnIndexer::explain_range(const std::string &value,
                                                     CompareOp op) const {
   switch (op) {
     case CompareOp::LT:
-      return plan_range(encode(value), true, false);
+      return plan_range(encode(value), true, false, range_cache());
     case CompareOp::LE:
-      return plan_range(encode(value), true, true);
+      return plan_range(encode(value), true, true, range_cache());
     case CompareOp::GT:
-      return plan_range(encode(value), false, false);
+      return plan_range(encode(value), false, false, range_cache());
     case CompareOp::GE:
-      return plan_range(encode(value), false, true);
+      return plan_range(encode(value), false, true, range_cache());
     default:
       return {};
   }
 }
 
-RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
-                                                 bool query_left,
-                                                 bool include_eq) const {
-  const auto *index = range_cache_.get();
+RangeQueryPlan InvertedColumnIndexer::plan_range(
+    const std::string &term, bool query_left, bool include_eq,
+    const InvertedRangeCache *index) const {
   RangeQueryPlan plan;
   // Every candidate builds either L or its complement R. GT is the complement
   // of LE, and GE is the complement of LT, including at a repeated value.
@@ -234,8 +233,8 @@ RangeQueryPlan InvertedColumnIndexer::plan_range(const std::string &term,
 }
 
 Result<roaring_bitmap_t *> InvertedColumnIndexer::execute_range_plan(
-    const std::string &term, const RangeQueryPlan &plan) const {
-  const auto *index = range_cache_.get();
+    const std::string &term, const RangeQueryPlan &plan,
+    const InvertedRangeCache *index) const {
   if (!index) {
     auto result = plan.path == RangeQueryPath::ScanLeft
                       ? get_bitmap_lt_raw(term, plan.left_inclusive)

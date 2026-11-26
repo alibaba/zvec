@@ -663,14 +663,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_suffix(
 }
 
 
-Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_null() const {
-  return null_bitmap_.copy();
-}
-
-
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
   if (sealed_) {
-    roaring_bitmap_t *bitmap = null_bitmap_.copy();
+    roaring_bitmap_t *bitmap = null_bitmap_->copy();
     roaring_bitmap_flip_inplace(bitmap, 0, max_id_ + 1);
     return bitmap;
   } else {
@@ -861,16 +856,15 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
-  auto search_res = std::make_shared<InvertedSearchResult>();
-  auto bitmap_res = get_bitmap_null();
-  if (bitmap_res) {
-    search_res->set_and_own_bitmap(bitmap_res.value());
-    return search_res;
+  auto result = std::make_shared<InvertedSearchResult>();
+  if (sealed_) {
+    // The aliased owner keeps the sealed bitmap alive after the column closes.
+    result->set_shared_bitmap(std::shared_ptr<const roaring_bitmap_t>(
+        null_bitmap_, null_bitmap_->bitmap()));
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
-              static_cast<int>(bitmap_res.error().code()));
-    return nullptr;
+    result->set_and_own_bitmap(null_bitmap_->copy());
   }
+  return result;
 }
 
 
@@ -952,9 +946,9 @@ roaring_bitmap_t *InvertedColumnIndexer::flip_bitmap(
     roaring_bitmap_t *bitmap) const {
   roaring_bitmap_t *ret;
   if (ret = bitmap; ret == nullptr) {
-    ret = null_bitmap_.copy();
+    ret = null_bitmap_->copy();
   } else {
-    roaring_bitmap_or_inplace(ret, null_bitmap_.bitmap());
+    roaring_bitmap_or_inplace(ret, null_bitmap_->bitmap());
   }
   roaring_bitmap_flip_inplace(ret, 0, max_id_ + 1);
   return ret;
