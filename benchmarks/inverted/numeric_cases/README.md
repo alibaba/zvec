@@ -24,3 +24,9 @@ When the run finishes, open the printed `report.md` path to see dataset statisti
 index build time and size, memory use, and query results.
 See the [example report](example-report.md) for a run with 10 million documents per workload.
 For scripted runs, add `--help` to the Python command to see the available options.
+
+## Measured comparisons
+
+The [PR #938 range-prefix comparison](results/pr938-20261126/report.md) includes
+80 workloads, complete paired query results, build and memory costs, and measured
+slowdown cases for baseline `8d978b06e` versus PR revision `bdd20e0c8`.
