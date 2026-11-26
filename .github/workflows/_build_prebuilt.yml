@@ -85,14 +85,15 @@ jobs:
             # and [tool.cibuildwheel.linux] in pyproject.toml.
             container: 'quay.io/pypa/musllinux_1_2_x86_64:2026.03.01-1'
           - target: x86_64-pc-windows-msvc
-            os: windows-2025
+            # Keep x64 SDK link compatibility with VS 2022 consumers.
+            os: windows-2022
             os_name: windows
             arch: amd64
             msvc_arch: x64
             ext: zip
             container: ''
           - target: aarch64-pc-windows-msvc
-            os: windows-11-arm
+            os: windows-11-vs2026-arm
             os_name: windows
             arch: arm64
             msvc_arch: arm64
@@ -170,7 +171,7 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -305,7 +306,7 @@ jobs:
           docker exec "$MUSL_CONTAINER" cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX=/work/install \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -425,7 +426,7 @@ jobs:
             -DANDROID_STL=c++_static \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$ZVEC_INSTALL_DIR" \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
             -DBUILD_C_BINDINGS=ON \
             -DBUILD_ZVEC_SHARED=ON \
@@ -560,7 +561,7 @@ jobs:
               -DCMAKE_OSX_SYSROOT="$(xcrun --sdk "$sdk" --show-sdk-path)" \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/install_${slice}" \
-              -DBUILD_TOOLS=OFF \
+              -DBUILD_BENCHMARKS=OFF \
               -DBUILD_PYTHON_BINDINGS=OFF \
               -DBUILD_C_BINDINGS=ON \
               -DBUILD_ZVEC_SHARED=ON \

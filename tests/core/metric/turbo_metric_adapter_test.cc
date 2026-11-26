@@ -11,9 +11,11 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <string>
 #include <vector>
 #include <gtest/gtest.h>
 #include <zvec/ailego/utility/type_helper.h>
@@ -32,6 +34,85 @@ double Fp32SumRelativeError(size_t dim) {
   return nu / (1.0 - nu);
 }
 }  // namespace
+
+TEST(TurboMetricAdapter, Int8RecordMatrixPreservesCancellation) {
+  constexpr size_t dim = 6144, bytes = dim + 20;
+  std::vector<int8_t> row(bytes), query(bytes), matrix(2 * bytes);
+  int32_t sum = 0;
+  for (size_t i = 0; i < dim; ++i) {
+    row[i] = i >= 2048 && i < 4096 ? int(i % 4 == 0) : (i % 2 ? 127 : -127);
+    query[i] = i >= 4096 ? -row[i] : row[i];
+    sum += row[i];
+  }
+  const float tail[] = {1.0f, 0.0f, float(sum), float(4096 * 127 * 127 + 512)};
+  for (auto *v : {row.data(), query.data()}) {
+    std::memcpy(v + dim, tail, sizeof(tail));
+    std::memcpy(v + dim + sizeof(tail), &sum, sizeof(sum));
+  }
+  for (size_t d = 0; d < bytes; d += 4)
+    for (size_t i = 0; i < 2; ++i)
+      std::memcpy(matrix.data() + 2 * d + i * 4, row.data() + d, 4);
+  ailego::Params params;
+  params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME, "InnerProduct");
+  auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT8, bytes), params));
+  float single, results[2];
+  metric->distance()(row.data(), query.data(), bytes, &single);
+  metric->distance_matrix(2, 1)(matrix.data(), query.data(), bytes, results);
+  EXPECT_EQ(-512.0f, single);
+  for (float score : results) EXPECT_EQ(single, score);
+}
+
+TEST(TurboMetricAdapter, Int4RecordMatricesPreserveStoredMoments) {
+  for (size_t dim : {8U, 16U, 128U, 512U}) {
+    for (size_t rows : {2U, 32U}) {
+      const size_t bytes = dim / 2 + 16;
+      // Codes repeat [-8, 7]. The stored moments deliberately differ from
+      // the rounded codes, as they can in records written by old quantizers.
+      const float query_tail[] = {0.5f, -0.25f, -0.75f * dim, 60.0f * dim};
+      std::vector<uint8_t> query(bytes, 0x78), matrix(rows * bytes, 0);
+      std::memcpy(query.data() + dim / 2, query_tail, sizeof(query_tail));
+      for (size_t i = 0; i < rows; ++i) {
+        for (size_t word = 0; word < dim / 8; ++word)
+          std::memset(matrix.data() + (word * rows + i) * 4, 0x78, 4);
+        const float tail[] = {0.25f * (i + 1), float(int(i % 3) - 1),
+                              -0.75f * dim, 60.0f * dim};
+        for (size_t k = 0; k < 4; ++k)
+          std::memcpy(matrix.data() + ((dim / 8 + k) * rows + i) * 4, tail + k,
+                      4);
+      }
+      for (bool ip : {false, true}) {
+        SCOPED_TRACE(testing::Message()
+                     << dim << " rows=" << rows << " ip=" << ip);
+        ailego::Params params;
+        params.set(QUANTIZED_INTEGER_METRIC_ORIGIN_METRIC_NAME,
+                   ip ? "InnerProduct" : "SquaredEuclidean");
+        auto metric = IndexFactory::CreateMetric("QuantizedInteger");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(
+            0, metric->init(IndexMeta(IndexMeta::DT_INT4, dim + 32), params));
+        auto kernel = metric->distance_matrix(rows, 1);
+        ASSERT_TRUE(kernel);
+        std::vector<float> output(rows);
+        kernel(matrix.data(), query.data(), dim + 32, output.data());
+        for (size_t i = 0; i < rows; ++i) {
+          const double a = 0.25 * (i + 1), b = int(i % 3) - 1;
+          const double qa = query_tail[0], qb = query_tail[1];
+          const double sum = -0.75 * dim, sum2 = 60.0 * dim;
+          const double dot = 56.5 * dim;
+          const double expected =
+              ip ? -(a * qa * dot + b * qa * sum + qb * a * sum + dim * qb * b)
+                 : a * a * sum2 + qa * qa * sum2 - 2 * a * qa * dot +
+                       (b - qb) * (b - qb) * dim +
+                       2 * (b - qb) * (a * sum - qa * sum);
+          EXPECT_NEAR(expected, output[i],
+                      1e-5 * std::max(1.0, std::abs(expected)));
+        }
+      }
+    }
+  }
+}
 
 TEST(TurboMetricAdapter, RawSignedIntegerExtremesAndOddDimensions) {
   for (auto type : {turbo::DataType::kInt8, turbo::DataType::kInt4}) {
@@ -108,6 +189,177 @@ TEST(TurboMetricAdapter, InterleavedMatricesKeepQueryMajorOutput) {
       }
     }
   }
+}
+
+TEST(TurboMetricAdapter, MipsMatricesMatchPairsAcrossLayouts) {
+  for (auto type : {IndexMeta::DT_FP32, IndexMeta::DT_FP16, IndexMeta::DT_INT8,
+                    IndexMeta::DT_INT4}) {
+    const bool floating =
+        type == IndexMeta::DT_FP32 || type == IndexMeta::DT_FP16;
+    for (size_t dim : {8U, 11U, 128U}) {
+      if (dim == 11 && !floating) continue;
+      const IndexMeta meta(type, dim);
+      const size_t bytes = meta.element_size();
+      const size_t unit = type == IndexMeta::DT_FP16 ? 2 : 4;
+      auto fill = [&](size_t count, int salt) {
+        std::vector<uint8_t> data(count * bytes);
+        for (size_t i = 0; i < count; ++i) {
+          for (size_t d = 0; d < dim; ++d) {
+            auto *p = data.data() + i * bytes;
+            const int value = int((i * 7 + d * 3 + salt) % 16) - 8;
+            if (type == IndexMeta::DT_FP32) {
+              const float v = value / 7.0f;
+              std::memcpy(p + d * 4, &v, 4);
+            } else if (type == IndexMeta::DT_FP16) {
+              const ailego::Float16 v(value / 7.0f);
+              std::memcpy(p + d * 2, &v, 2);
+            } else if (type == IndexMeta::DT_INT8) {
+              p[d] = uint8_t(value);
+            } else {
+              p[d / 2] |= (value & 15) << (4 * (d % 2));
+            }
+          }
+        }
+        return data;
+      };
+      auto interleave = [&](const std::vector<uint8_t> &data, size_t count) {
+        std::vector<uint8_t> result(data.size());
+        for (size_t d = 0; d < bytes / unit; ++d)
+          for (size_t i = 0; i < count; ++i)
+            std::memcpy(result.data() + (d * count + i) * unit,
+                        data.data() + i * bytes + d * unit, unit);
+        return result;
+      };
+      for (int injection = 0; injection < 4; ++injection) {
+        ailego::Params params;
+        params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, injection);
+        params.set(MIPS_EUCLIDEAN_METRIC_M_VALUE, 2);
+        params.set(MIPS_EUCLIDEAN_METRIC_U_VALUE, 0.5f);
+        params.set(MIPS_EUCLIDEAN_METRIC_MAX_L2_NORM, 256.0f);
+        auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+        ASSERT_TRUE(metric);
+        ASSERT_EQ(0, metric->init(meta, params));
+        const auto pair = metric->distance();
+        for (size_t m : {2U, 4U, 8U, 16U, 32U}) {
+          const auto rows = fill(m, 0), packed_rows = interleave(rows, m);
+          for (size_t n = 1; n <= m; n *= 2) {
+            SCOPED_TRACE(testing::Message()
+                         << int(type) << " dim=" << dim
+                         << " injection=" << injection << " " << m << "x" << n);
+            const auto queries = fill(n, 5),
+                       packed_queries = interleave(queries, n);
+            std::vector<float> output(m * n);
+            auto matrix = metric->distance_matrix(m, n);
+            ASSERT_TRUE(matrix);
+            matrix(packed_rows.data(), packed_queries.data(), dim,
+                   output.data());
+            for (size_t j = 0; j < n; ++j) {
+              for (size_t i = 0; i < m; ++i) {
+                float expected;
+                pair(rows.data() + i * bytes, queries.data() + j * bytes, dim,
+                     &expected);
+                if (floating) {
+                  EXPECT_EQ(expected, output[j * m + i]);
+                } else {
+                  EXPECT_NEAR(expected, output[j * m + i],
+                              1e-5f * std::max(1.0f, std::abs(expected)));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(TurboMetricAdapter, Int8MipsIdentityKeepsThresholdAcrossLayouts) {
+  constexpr size_t dim = 1032;
+  constexpr float threshold = 16777216.0f;
+  ailego::Params params;
+  params.set(MIPS_EUCLIDEAN_METRIC_INJECTION_TYPE, 3);  // Identity
+  auto metric = IndexFactory::CreateMetric("MipsSquaredEuclidean");
+  ASSERT_TRUE(metric);
+  ASSERT_EQ(0, metric->init(IndexMeta(IndexMeta::DT_INT8, dim), params));
+
+  // The first 1024 squares sum to 2^24. Each of the next two words adds 1.
+  std::vector<int8_t> row(dim), query(dim), rows(2 * dim);
+  std::fill_n(row.begin(), 1024, -128);
+  row[1024] = row[1028] = 1;
+  for (size_t d = 0; d < dim; ++d) rows[d / 4 * 8 + d % 4] = row[d];
+
+  float pair, scores[2];
+  metric->distance()(row.data(), query.data(), dim, &pair);
+  auto matrix = metric->distance_matrix(2, 1);
+  ASSERT_TRUE(matrix);
+  matrix(rows.data(), query.data(), dim, scores);
+  EXPECT_EQ(threshold + 2, pair);
+  EXPECT_EQ(pair, scores[0]);
+  EXPECT_GT(scores[0], threshold);
+  EXPECT_EQ(0.0f, scores[1]);
+}
+
+namespace {
+template <typename T>
+void CheckMipsCancellation(IndexMeta::DataType type, size_t dim, size_t prefix,
+                           float magnitude, size_t unit) {
+  std::vector<T> row(dim), query(dim);
+  for (size_t d = 0; d < prefix; ++d) {
+    row[d] = query[d] = row[dim - prefix + d] = T(magnitude);
+    query[dim - prefix + d] = T(-magnitude);
+  }
+  for (size_t k = 0; k < 8; ++k)
+    row[prefix + k * unit] = query[prefix + k * unit] = T(1.0f);
+
+  // The second row is the first query, so the 2x2 tile also checks self scores.
+  const size_t padded = (dim + unit - 1) / unit * unit;
+  std::vector<T> rows(2 * padded), queries(2 * padded);
+  for (size_t d = 0; d < dim; ++d) {
+    const size_t offset = d / unit * 2 * unit + d % unit;
+    rows[offset] = queries[offset + unit] = row[d];
+    rows[offset + unit] = queries[offset] = query[d];
+  }
+
+  for (const std::string name : {"MipsSquaredEuclidean", "InnerProduct"}) {
+    if (name == "InnerProduct" && type != IndexMeta::DT_INT8) continue;
+    SCOPED_TRACE(testing::Message() << name << " type=" << int(type));
+    auto metric = IndexFactory::CreateMetric(name);
+    ASSERT_TRUE(metric);
+    ASSERT_EQ(0, metric->init(IndexMeta(type, dim), ailego::Params()));
+    const auto pair = metric->distance();
+    const T *candidates[] = {row.data(), query.data()};
+    const T *probes[] = {query.data(), row.data()};
+    for (size_t n : {1u, 2u}) {
+      auto matrix = metric->distance_matrix(2, n);
+      ASSERT_TRUE(matrix);
+      float scores[4];
+      matrix(rows.data(), n == 1 ? query.data() : queries.data(), dim, scores);
+      for (size_t j = 0; j < n; ++j) {
+        for (size_t i = 0; i < 2; ++i) {
+          float expected;
+          pair(candidates[i], probes[j], dim, &expected);
+          EXPECT_EQ(expected, scores[j * 2 + i]);
+          if (type == IndexMeta::DT_INT8 && i == j && name == "InnerProduct")
+            EXPECT_EQ(-8.0f, expected);
+          if (type == IndexMeta::DT_INT8 && i != j &&
+              name == "MipsSquaredEuclidean")
+            EXPECT_EQ(0.0f, expected);
+          const float threshold = std::nextafter(2.0f, 0.0f);
+          EXPECT_EQ(expected <= threshold, scores[j * 2 + i] <= threshold);
+        }
+      }
+    }
+  }
+}
+}  // namespace
+
+TEST(TurboMetricAdapter, CancellationPreservesMipsMatrixScores) {
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 2176, 1056, 127, 4);
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 2179, 1056, 127, 4);
+  // Squared norms exceed INT32_MAX, including for a single contiguous row.
+  CheckMipsCancellation<int8_t>(IndexMeta::DT_INT8, 140035, 70000, 127, 4);
+  CheckMipsCancellation<float>(IndexMeta::DT_FP32, 10, 1, 4096, 1);
+  CheckMipsCancellation<ailego::Float16>(IndexMeta::DT_FP16, 10, 1, 4096, 1);
 }
 
 TEST(TurboMetricAdapter, MipsInjectionsKeepTheirDistanceSemantics) {

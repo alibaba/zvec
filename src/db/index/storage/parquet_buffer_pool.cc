@@ -206,12 +206,13 @@ std::shared_ptr<ScanBufferLease> MakeScanLease(
   const auto *source = handle.borrowed_data();
   if (!source) return nullptr;
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t capacity = pool.capacity();
+  const auto budget = detail::GetParquetCacheBudget(pool);
   // Borrowing pins already-accounted cache buffers; it allocates no data.
   // Use idle headroom to avoid copying an otherwise resident scan. Keep at
   // least three quarters reclaimable, and restore the smaller bound when
   // live consumers use more than half the pool. Existing leases stay valid.
-  const size_t limit = capacity / (pool.used() <= capacity / 2 ? 4 : 8);
+  const size_t limit =
+      budget.payload_capacity / (pool.used() <= budget.idle_limit ? 4 : 8);
   size_t bytes = 0;
   for (const auto &chunk : source->chunks()) {
     if (!ScanBufferBytes(chunk->data(), limit, &bytes)) return nullptr;

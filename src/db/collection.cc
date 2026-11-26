@@ -534,9 +534,9 @@ Status CollectionImpl::destroy() {
 Status CollectionImpl::flush() {
   CHECK_COLLECTION_READONLY_RETURN_STATUS;
 
-  // The exclusive schema lock also excludes all readers, which the writing
-  // segment's flush() relies on (it runs finish_memory_components() without
-  // the segment lock).
+  // The exclusive schema lock also excludes all readers while the writing
+  // segment's flush() (which takes the segment lock itself) migrates its
+  // memory components into persisted stores.
   std::lock_guard lock(schema_handle_mtx_);
   CHECK_DESTROY_RETURN_STATUS(destroyed_, false);
   CHECK_CLOSED_RETURN_STATUS(closed_, false);

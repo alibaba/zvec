@@ -21,32 +21,18 @@ inline int32_t Reduce(__m512i value) {
 // keeps the entire reduction in SIMD registers.
 static ailego_force_inline __m128i ReduceFour(__m512i a, __m512i b, __m512i c,
                                               __m512i d) {
-  const __m256i a8 = _mm256_add_epi32(_mm512_castsi512_si256(a),
-                                      _mm512_extracti64x4_epi64(a, 1));
-  const __m256i b8 = _mm256_add_epi32(_mm512_castsi512_si256(b),
-                                      _mm512_extracti64x4_epi64(b, 1));
-  const __m256i c8 = _mm256_add_epi32(_mm512_castsi512_si256(c),
-                                      _mm512_extracti64x4_epi64(c, 1));
-  const __m256i d8 = _mm256_add_epi32(_mm512_castsi512_si256(d),
-                                      _mm512_extracti64x4_epi64(d, 1));
-
-  const __m128i a4 = _mm_add_epi32(_mm256_castsi256_si128(a8),
-                                   _mm256_extracti128_si256(a8, 1));
-  const __m128i b4 = _mm_add_epi32(_mm256_castsi256_si128(b8),
-                                   _mm256_extracti128_si256(b8, 1));
-  const __m128i c4 = _mm_add_epi32(_mm256_castsi256_si128(c8),
-                                   _mm256_extracti128_si256(c8, 1));
-  const __m128i d4 = _mm_add_epi32(_mm256_castsi256_si128(d8),
-                                   _mm256_extracti128_si256(d8, 1));
-
-  const __m128i ab_low = _mm_unpacklo_epi32(a4, b4);
-  const __m128i cd_low = _mm_unpacklo_epi32(c4, d4);
-  const __m128i ab_high = _mm_unpackhi_epi32(a4, b4);
-  const __m128i cd_high = _mm_unpackhi_epi32(c4, d4);
-  return _mm_add_epi32(_mm_add_epi32(_mm_unpacklo_epi64(ab_low, cd_low),
-                                     _mm_unpackhi_epi64(ab_low, cd_low)),
-                       _mm_add_epi32(_mm_unpacklo_epi64(ab_high, cd_high),
-                                     _mm_unpackhi_epi64(ab_high, cd_high)));
+  // Fold the four rows together while all four 128-bit lanes are active.
+  // Each lane of abcd holds the partial sums for rows a, b, c and d.
+  const __m512i ab = _mm512_add_epi32(_mm512_unpacklo_epi32(a, b),
+                                      _mm512_unpackhi_epi32(a, b));
+  const __m512i cd = _mm512_add_epi32(_mm512_unpacklo_epi32(c, d),
+                                      _mm512_unpackhi_epi32(c, d));
+  const __m512i abcd = _mm512_add_epi32(_mm512_unpacklo_epi64(ab, cd),
+                                        _mm512_unpackhi_epi64(ab, cd));
+  const __m256i halves = _mm256_add_epi32(_mm512_castsi512_si256(abcd),
+                                          _mm512_extracti64x4_epi64(abcd, 1));
+  return _mm_add_epi32(_mm256_castsi256_si128(halves),
+                       _mm256_extracti128_si256(halves, 1));
 }
 
 static ailego_force_inline void StoreFour(const __m512i *sums,

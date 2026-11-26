@@ -346,6 +346,23 @@ class MockSegment : public Segment {
     return nullptr;
   }
 
+  // The mock proves no buffer ownership: always per-candidate fetch.
+  arrow::Result<ForwardReadState> prepare_forward_read(
+      const std::vector<std::string> &columns, bool) override {
+    ARROW_ASSIGN_OR_RAISE(auto table, CreateTable(1000));
+    arrow::FieldVector fields;
+    for (const auto &name : columns) {
+      auto field = table->schema()->GetFieldByName(name);
+      if (!field) {
+        return arrow::Status::Invalid("Unknown forward column: ", name);
+      }
+      fields.push_back(std::move(field));
+    }
+    return ForwardReadState{arrow::schema(std::move(fields)),
+                            static_cast<uint64_t>(table->num_rows()), nullptr,
+                            nullptr};
+  }
+
   static std::string get_column_names(const std::vector<std::string> &columns) {
     std::string s = "";
     for (auto i : columns) {

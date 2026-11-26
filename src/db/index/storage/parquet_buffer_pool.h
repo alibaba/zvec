@@ -15,6 +15,7 @@
 #pragma once
 
 #include <sys/stat.h>
+#include <algorithm>
 #include <array>
 #include <condition_variable>
 #include <cstdint>
@@ -42,7 +43,22 @@ namespace zvec {
 
 namespace detail {
 struct ParquetScanBufferLease;
+
+struct ParquetCacheBudget {
+  size_t payload_capacity;
+  size_t idle_limit;
+};
+
+inline ParquetCacheBudget GetParquetCacheBudget(
+    const ailego::MemoryLimitPool &pool) {
+  const size_t capacity = pool.capacity();
+  // Queue backing is charged to the pool for its lifetime. Apply the
+  // Parquet thresholds to the capacity left for live consumers.
+  const size_t queue_bytes = std::min(pool.queue_metadata_used(), capacity);
+  const size_t payload_capacity = capacity - queue_bytes;
+  return {payload_capacity, queue_bytes + payload_capacity / 2};
 }
+}  // namespace detail
 
 struct ParquetBufferID {
   int column{0};
@@ -241,7 +257,8 @@ class ParquetBufferPool {
     auto key = ParquetBufferID::borrowed(context.buffer_id, column, row_group);
     auto &cache = cache_for(key);
     auto &pool = ailego::MemoryLimitPool::get_instance();
-    if (row >= 0 && pool.committed() <= pool.capacity() / 2) {
+    if (row >= 0 &&
+        pool.committed() <= detail::GetParquetCacheBudget(pool).idle_limit) {
       auto copied = cache.read_if_cached(
           key,
           [&](const detail::ParquetBufferPayload &payload)
@@ -280,7 +297,8 @@ class ParquetBufferPool {
   using Cache =
       ailego::ExternalCache<ParquetBufferID, detail::ParquetBufferPayload,
                             detail::ParquetBufferLoader, ParquetBufferIDHash,
-                            ParquetBufferIDEqual, detail::ParquetCacheMutex>;
+                            ParquetBufferIDEqual, false,
+                            detail::ParquetCacheMutex>;
 
   ParquetBufferPool() = default;
 

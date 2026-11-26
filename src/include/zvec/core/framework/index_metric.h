@@ -23,6 +23,13 @@
 namespace zvec {
 namespace core {
 
+// Optional interface kept separate from the IndexMetric plugin ABI.
+struct InterleavedDistanceProvider {
+  virtual ~InterleavedDistanceProvider() = default;
+  virtual turbo::InterleavedManyToManyDistanceFunc interleaved_many_distance(
+      size_t rows) const = 0;
+};
+
 /*! Index Metric
  */
 struct IndexMetric : public IndexModule {

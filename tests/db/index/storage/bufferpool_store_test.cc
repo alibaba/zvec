@@ -40,6 +40,7 @@
 #include "db/index/storage/parquet_buffer_pool.h"
 #include "db/index/storage/selected_rows_plan.h"
 #include "utils/utils.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 
@@ -51,7 +52,7 @@ class BufferPoolStoreTest : public testing::Test {
       std::cout << "err: " << s.message() << std::endl;
       exit(1);
     }
-    zvec::ailego::MemoryLimitPool::get_instance().init(10 * 1024 * 1024);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(10 * 1024 * 1024);
   }
 
   void TearDown() override {
@@ -1504,7 +1505,8 @@ TEST_F(BufferPoolStoreTest,
       pool.release_external(bytes);
     }
   } release{memory, pressure_bytes};
-  ASSERT_GT(memory.used(), memory.capacity() / 2);
+  const auto &payload = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_GT(payload.used(), payload.capacity() / 2);
   // Under live memory pressure the historical eighth-pool bound is restored.
   auto pressured =
       ParquetBufferPool::get_instance().acquire_buffer(context->buffer_id);

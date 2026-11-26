@@ -83,6 +83,11 @@ class VamanaContext : public IndexContext {
   // Once prepared, unchanged requests reuse the cached effective values.
   int update(const ailego::Params &params) override;
 
+  // Typed query boundary: avoid building and looking up three Params entries
+  // for every search. Keep the same default-resolution policy as update().
+  void update_query_params(uint32_t ef, uint32_t requested_po,
+                           uint32_t requested_pl);
+
   // Streaming contexts are also used for construction. Resolve query defaults
   // only when preparing a search (or explicitly updating query parameters).
   inline void prepare_query_prefetch() {
