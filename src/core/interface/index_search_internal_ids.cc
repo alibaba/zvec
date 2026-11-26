@@ -77,9 +77,13 @@ int Index::search_internal_ids(const VectorData &vector_data,
     return 0;
   }
 
-  if (!is_trained_ && train() != 0) {
-    LOG_ERROR("Failed to train index");
-    return core::IndexError_Runtime;
+  if (!is_trained_) {
+    const int status = train();
+    if (status != 0) {
+      LOG_ERROR("Failed to train index");
+      return status == core::IndexError_NoMemory ? status
+                                                 : core::IndexError_Runtime;
+    }
   }
   QueryContext acquired(*this);
   auto &context = acquired.get();
@@ -157,8 +161,14 @@ int Index::_search_refine_internal_ids(
   const auto *flat =
       dynamic_cast<const core::FlatStreamer<32> *>(reference->streamer_.get());
   if (!flat) return core::IndexError_NotImplemented;
-  if ((!is_trained_ && train() != 0) ||
-      (!reference->is_trained_ && reference->train() != 0)) {
+  if (!is_trained_) {
+    const int status = train();
+    if (status != 0) {
+      return status == core::IndexError_NoMemory ? status
+                                                 : core::IndexError_Runtime;
+    }
+  }
+  if (!reference->is_trained_ && reference->train() != 0) {
     return core::IndexError_Runtime;
   }
   QueryContext acquired(*this);

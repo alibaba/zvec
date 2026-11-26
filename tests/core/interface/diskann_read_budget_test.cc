@@ -6,12 +6,14 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <cstring>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <new>
 #include <random>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
@@ -44,6 +46,26 @@ void operator delete(void *memory, size_t,
                      std::align_val_t alignment) noexcept {
   ::operator delete(memory, alignment);
 }
+
+namespace zvec::ailego {
+struct QueueResidentSampleTestPeer {
+  static bool configure_fixed_rss(MemoryLimitPool &pool, size_t limit) {
+    return pool.process_rss_.configure(
+        limit, +[]() -> size_t { return 32UL << 20; });
+  }
+  static size_t available(MemoryLimitPool &pool) {
+    return pool.process_rss_.available();
+  }
+  static bool pause_background(MemoryLimitPool &pool) {
+    const bool running = pool.bg_running_.load();
+    pool.stop_background_evictor();
+    return running;
+  }
+  static void resume_background(MemoryLimitPool &pool) {
+    pool.start_background_evictor();
+  }
+};
+}  // namespace zvec::ailego
 
 namespace zvec::core_interface {
 namespace {
@@ -231,25 +253,53 @@ TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchGrowsHeapWithMatches) {
   ASSERT_EQ(0, index->close());
 }
 
-class StartupPressureLogger final : public ailego::Logger {
+class StartupFaultLogger final : public ailego::Logger {
  public:
+  StartupFaultLogger(std::string_view format_prefix,
+                     std::function<void()> fault)
+      : format_prefix_(format_prefix), fault_(std::move(fault)) {}
+
   int init(const ailego::Params &) override {
     return 0;
   }
   int cleanup() override {
     return 0;
   }
+
   void log(int, const char *, int, const char *format, va_list) override {
-    if (std::strcmp(format, "Loading centroid data from medoid vector data") ==
-        0) {
-      tightened =
-          ailego::MemoryLimitPool::get_instance().configure_process_rss_limit(
-              1);
+    if (std::this_thread::get_id() == caller_ &&
+        std::string_view(format).substr(0, format_prefix_.size()) ==
+            format_prefix_) {
+      fault_();
     }
   }
 
-  bool tightened{false};
+ private:
+  const std::thread::id caller_{std::this_thread::get_id()};
+  const std::string_view format_prefix_;
+  const std::function<void()> fault_;
 };
+
+int WithStartupFault(std::string_view format_prefix,
+                     const std::function<void()> &fault,
+                     const std::function<int()> &run) {
+  auto previous = ailego::LoggerBroker::Register(
+      std::make_shared<StartupFaultLogger>(format_prefix, fault));
+  int previous_level = ailego::Logger::LEVEL_DEBUG;
+  while (previous_level < ailego::Logger::LEVEL_FATAL &&
+         !ailego::LoggerBroker::IsLevelEnabled(previous_level)) {
+    ++previous_level;
+  }
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    ailego::LoggerBroker::SetLevel(previous_level);
+    ailego::LoggerBroker::Register(std::move(previous));
+  });
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_INFO);
+  return run();
+}
+
+constexpr std::string_view kMedoidReadLog =
+    "Loading centroid data from medoid vector data";
 
 TEST_P(DiskAnnReadBudgetTest, MedoidReadPreservesNoMemoryAndCanRetry) {
   if (GetParam() != StorageType::kBufferPool) GTEST_SKIP();
@@ -262,25 +312,158 @@ TEST_P(DiskAnnReadBudgetTest, MedoidReadPreservesNoMemoryAndCanRetry) {
   auto &rss = ailego::MemoryLimitPool::get_instance();
   ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
   const auto options = StorageOptions{GetParam(), false, true};
-  {
-    const auto logger = std::make_shared<StartupPressureLogger>();
-    auto previous = ailego::LoggerBroker::Register(logger);
-    int previous_level = ailego::Logger::LEVEL_DEBUG;
-    while (previous_level < ailego::Logger::LEVEL_FATAL &&
-           !ailego::LoggerBroker::IsLevelEnabled(previous_level)) {
-      ++previous_level;
-    }
-    const auto restore = ailego::ScopeGuard::Make([&] {
-      ailego::LoggerBroker::SetLevel(previous_level);
-      ailego::LoggerBroker::Register(std::move(previous));
-    });
-    ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_INFO);
-    EXPECT_EQ(core::IndexError_NoMemory, index->open(path, options));
-    ASSERT_TRUE(logger->tightened);
-  }
+  bool tightened = false;
+  const int status = WithStartupFault(
+      kMedoidReadLog, [&] { tightened = rss.configure_process_rss_limit(1); },
+      [&] { return index->open(path, options); });
+  EXPECT_TRUE(tightened);
+  EXPECT_EQ(core::IndexError_NoMemory, status);
   EXPECT_EQ(0u, ailego::PoolPayloadBudget::get_instance().used());
   ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
   ASSERT_EQ(0, index->open(path, options));
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, OptionalWarmupLogFailureDoesNotFailOpen) {
+  if (GetParam() != StorageType::kBufferPool) GTEST_SKIP();
+  const auto path = (directory_ / "warmup.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 77));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  size_t attempts = 0;
+  const auto options = StorageOptions{GetParam(), false, true};
+  const int status = WithStartupFault(
+      "DiskANN PQ preparation: status=",
+      [&] {
+        ++attempts;
+        throw std::bad_alloc();
+      },
+      [&] { return index->open(path, options); });
+  EXPECT_EQ(1u, attempts);
+  ASSERT_EQ(0, status);
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 1;
+  query->list_size = 48;
+  SearchResult result;
+  ASSERT_EQ(
+      0, index->search(VectorData{DenseVector{rows.data()}}, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, index->fetch(result.doc_list_.front().key(), &fetched));
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, InternalIdsPreserveNoMemoryFromAutoTrain) {
+  if (GetParam() != StorageType::kBufferPool) GTEST_SKIP();
+  const auto fine_param = FlatIndexParamBuilder()
+                              .with_metric_type(MetricType::kL2sq)
+                              .with_data_type(DataType::DT_FP32)
+                              .with_dimension(kDimension)
+                              .with_use_contiguous_memory(true)
+                              .build();
+  const auto fine_path = (directory_ / "flat.index").string();
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(fine_path, *fine_param, &rows, 77));
+  auto fine = IndexFactory::CreateAndInitIndex(*fine_param);
+  ASSERT_NE(nullptr, fine);
+  ASSERT_EQ(0, fine->open(fine_path, {StorageType::kMMAP, false, true}));
+
+  const auto param = parameters(false);
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
+  for (bool refine : {false, true}) {
+    SCOPED_TRACE(refine);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    const auto path =
+        (directory_ / (refine ? "refined.index" : "coarse.index")).string();
+    ASSERT_EQ(0, index->open(path, {GetParam(), true}));
+    for (uint32_t id = 0; id < kDocs; ++id) {
+      ASSERT_EQ(
+          0, index->add(VectorData{DenseVector{rows.data() + id * kDimension}},
+                        id));
+    }
+
+    auto query = std::make_shared<DiskAnnQueryParam>();
+    query->topk = 1;
+    query->list_size = 48;
+    if (refine) {
+      query->refiner_param = std::make_shared<RefinerParam>();
+      query->refiner_param->scale_factor_ = 2;
+      query->refiner_param->reference_index = fine;
+    }
+    const VectorData input{DenseVector{rows.data()}};
+    int64_t id = -42;
+    float score = -42.0f;
+    bool tightened = false;
+    const auto search = [&] {
+      return index->search_internal_ids(input, query, &id, &score);
+    };
+    const int status = WithStartupFault(
+        kMedoidReadLog, [&] { tightened = rss.configure_process_rss_limit(1); },
+        search);
+    EXPECT_TRUE(tightened);
+    EXPECT_EQ(core::IndexError_NoMemory, status);
+    EXPECT_EQ(-42, id);
+    EXPECT_EQ(-42.0f, score);
+    ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
+    ASSERT_EQ(0, search());
+    EXPECT_GE(id, 0);
+    EXPECT_LT(id, kDocs);
+    EXPECT_TRUE(std::isfinite(score));
+    ASSERT_EQ(0, index->close());
+  }
+  ASSERT_EQ(0, fine->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, LargeVectorSearchReleasesIdleCandidateSlots) {
+  const auto path = (directory_ / "candidate_slots.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 77));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  // Keep real background RSS samples out of the fixed-footprint ledger.
+  const bool background_running = Budget::pause_background(rss);
+  const auto restore_budget = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(0));
+    if (background_running) Budget::resume_background(rss);
+  });
+  constexpr size_t kLargeLimit = 64UL << 20;
+  constexpr size_t kFetchAllowance = 16UL << 10;
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, kLargeLimit));
+
+  const VectorData input{DenseVector{rows.data()}};
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = kDocs;
+  query->list_size = 48;
+  query->is_linear = true;
+  {
+    SearchResult result;
+    ASSERT_EQ(0, index->search(input, query, &result));
+    ASSERT_EQ(kDocs, result.doc_list_.size());
+  }
+  // Reobserve the fixed footprint to compare only live budget charges.
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, kLargeLimit));
+  const size_t used_without_vectors = kLargeLimit - Budget::available(rss);
+  query->fetch_vector = true;
+  {
+    SearchResult result;
+    ASSERT_EQ(0, index->search(input, query, &result));
+    ASSERT_EQ(kDocs, result.doc_list_.size());
+    EXPECT_EQ(kDimension * sizeof(float),
+              result.doc_list_.front().vector_string().size());
+  }
+  ASSERT_TRUE(Budget::configure_fixed_rss(
+      rss, used_without_vectors + kFetchAllowance));
+  VectorDataBuffer fetched;
+  EXPECT_EQ(0, index->fetch(7, &fetched));
+  EXPECT_EQ(0, index->fetch(8, &fetched));
   ASSERT_EQ(0, index->close());
 }
 

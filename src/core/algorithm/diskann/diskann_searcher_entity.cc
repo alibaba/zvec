@@ -235,13 +235,17 @@ void DiskAnnSearcherEntity::prepare_pq() {
   const size_t last = (offset + bytes - 1) / ailego::kVectorPageSize;
   const auto start = ailego::Monotime::MilliSeconds();
   const auto result = pool->prepare_pages_if_fits(first, last - first + 1);
-  LOG_INFO(
-      "DiskANN PQ preparation: status=%d pages=%zu/%zu read_bytes=%zu "
-      "elapsed_ms=%llu",
-      static_cast<int>(result.status), result.pages_loaded, last - first + 1,
-      result.bytes_read,
-      static_cast<unsigned long long>(ailego::Monotime::MilliSeconds() -
-                                      start));
+  try {
+    LOG_INFO(
+        "DiskANN PQ preparation: status=%d pages=%zu/%zu read_bytes=%zu "
+        "elapsed_ms=%llu",
+        static_cast<int>(result.status), result.pages_loaded, last - first + 1,
+        result.bytes_read,
+        static_cast<unsigned long long>(ailego::Monotime::MilliSeconds() -
+                                        start));
+  } catch (...) {
+    // Diagnostics must not prevent the index from opening.
+  }
 }
 
 int DiskAnnSearcherEntity::read_pq_quantizer_meta_buffer(

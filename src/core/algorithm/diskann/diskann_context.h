@@ -364,7 +364,7 @@ class DiskAnnContext : public IndexContext,
 
  private:
   void clear_scratch(bool discard_slots = false);
-  void release_search_heaps();
+  void release_result_scratch(bool discard_slots = false);
   void prepare_vector_candidates();
 
   //! Hooks required by TopkResultBuilder.
