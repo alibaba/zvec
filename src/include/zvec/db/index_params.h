@@ -982,7 +982,9 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
 /*
  * FTS (Full-Text Search) index params
  * Supported tokenizers: "standard", "ngram", "jieba", "whitespace".
- * Supported filters: "lowercase", "ascii_folding", "stemmer".
+ * Supported filters: "code", "lowercase", "ascii_folding", "stemmer".
+ * Place "code" first to split on dots and split ASCII identifier segments at
+ * underscores and case changes. It preserves case and emits only the parts.
  *
  * extra_params must be either empty or a JSON object string. Supported keys are
  * grouped by tokenizer/filter:

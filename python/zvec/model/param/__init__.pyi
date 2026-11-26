@@ -1011,7 +1011,9 @@ class FtsIndexParam(IndexParam):
             "jieba", "whitespace").
             Default is "standard".
         filters (list[str]): List of token filter names applied after tokenization.
-            Supported filters are "lowercase", "ascii_folding", and "stemmer".
+            Supported filters are "code", "lowercase", "ascii_folding", and "stemmer".
+            Place "code" first to split dotted names and ASCII identifiers at
+            underscores and case changes. It preserves case and emits only the parts.
             Default is ["lowercase"].
         extra_params (str): Additional tokenizer/filter parameters as an empty
             string or JSON object string. Supported keys are grouped by component:
@@ -1067,7 +1069,7 @@ class FtsIndexParam(IndexParam):
         Args:
             tokenizer_name (str, optional): Tokenizer name. Defaults to "standard".
             filters (list[str], optional): Token filter names. Supports
-                "lowercase", "ascii_folding", and "stemmer". Defaults to
+                "code", "lowercase", "ascii_folding", and "stemmer". Defaults to
                 ["lowercase"].
             extra_params (str, optional): Extra tokenizer/filter parameters as an
                 empty string or JSON object string. Supported keys:
