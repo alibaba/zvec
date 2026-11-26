@@ -19,6 +19,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <rocksdb/db.h>
 #include <rocksdb/write_batch.h>
@@ -108,8 +109,9 @@ struct RocksdbContext {
   Status reset_cf(const std::string &cf_name);
 
 
-  // Compact db
-  Status compact();
+  // Force bottommost compaction for the named column families.
+  Status compact(
+      const std::unordered_set<std::string> &force_bottommost_for = {});
 
 
   // Get the size of the SST files
