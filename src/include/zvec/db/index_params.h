@@ -24,6 +24,17 @@
 
 namespace zvec {
 
+namespace core {
+// Opaque engine type.  HnswIndexParams holds a shared_ptr to it as a build-only
+// source of raw vectors, so this header forward declares it instead of pulling
+// in zvec/core/framework/index_provider.h: shared_ptr supports declaration,
+// copy and destruction of an incomplete pointee, which keeps zvec/core/** out
+// of the stable closure.  The engine's core::IndexProvider::Pointer alias is
+// exactly std::shared_ptr<IndexProvider>, so spelling it out here is the same
+// type and engine callers are unaffected.
+struct IndexProvider;
+}  // namespace core
+
 namespace detail {
 struct FtsState;
 struct FtsPipelineHelper;
@@ -427,15 +438,15 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
   }
 
   // Build-only provider: shared while training/building, never persisted.
-  const core::IndexProvider::Pointer &raw_vector_provider() const {
+  const std::shared_ptr<core::IndexProvider> &raw_vector_provider() const {
     return raw_vector_provider_;
   }
-  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+  void set_raw_vector_provider(std::shared_ptr<core::IndexProvider> provider) {
     raw_vector_provider_ = std::move(provider);
   }
 
  protected:
-  core::IndexProvider::Pointer raw_vector_provider_;
+  std::shared_ptr<core::IndexProvider> raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena
