@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <chrono>
+#include <cstring>
 #include <type_traits>
 #include <vector>
 #include <ailego/parallel/lock.h>
@@ -105,9 +106,50 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   }
 
  private:
+  struct DuplicateProbe {
+    static constexpr dist_t kBeta = 1e-6f;
+    const void *vector;
+    size_t size;
+    node_id_t representative{kInvalidNodeId};
+
+    bool check(node_id_t id, dist_t distance, const void *candidate) {
+      // A permissive candidate gate, not an equality test. In the negative
+      // inner-product space it also admits nonidentical vectors. Only full
+      // stored-byte equality can remove a node from navigation.
+      if (distance < kBeta && std::memcmp(vector, candidate, size) == 0) {
+        representative = id;
+        return true;
+      }
+      return false;
+    }
+  };
+
+  bool check_duplicate(node_id_t id, dist_t distance, DuplicateProbe *probe,
+                       HnswContext *ctx) const;
+  int attach_duplicate(node_id_t id, node_id_t representative);
+
+  template <typename Visitor>
+  int visit_duplicate_group(node_id_t representative, HnswContext *ctx,
+                            Visitor &&visit) const {
+    const auto &entity = static_cast<const EntityType &>(ctx->get_entity());
+    typename EntityType::DuplicateLinks head;
+    node_id_t doc_count;
+    {
+      // Only the representative's head changes. Published leaf records are
+      // immutable, so a snapshot lets queries expand without holding a lock.
+      std::lock_guard<std::mutex> lock(lock_pool_[representative & kLockMask]);
+      doc_count = entity_.doc_cnt();
+      int ret = entity.get_duplicate_links(representative, doc_count, &head);
+      if (ret != 0) return ret;
+    }
+    return entity.visit_duplicate_group(representative, doc_count, head,
+                                        std::forward<Visitor>(visit));
+  }
+
   //! Select in upper layer to get entry point for next layer search
   void select_entry_point(level_t level, node_id_t *entry_point, dist_t *dist,
-                          HnswContext *ctx) const;
+                          HnswContext *ctx,
+                          DuplicateProbe *probe = nullptr) const;
 
   //! update node id neighbors from topkHeap, and reverse link is also updated
   void add_neighbors(node_id_t id, level_t level, TopkHeap &topk_heap,
@@ -122,7 +164,11 @@ class HnswAlgorithm : public HnswAlgorithmBase {
   //! add_node, filtered queries, and upper levels for every backend.
   //! Note: entry_point and dist will be updated to current level nearest node.
   void search_neighbors(level_t level, node_id_t *entry_point, dist_t *dist,
-                        TopkHeap &topk, HnswContext *ctx) const;
+                        TopkHeap &topk, HnswContext *ctx,
+                        bool duplicate_filter = false,
+                        DuplicateProbe *probe = nullptr) const;
+
+  int expand_duplicates(HnswContext *ctx) const;
 
   //! Update the node's neighbors
   void update_neighbors(HnswDistCalculator &dc, node_id_t id, level_t level,

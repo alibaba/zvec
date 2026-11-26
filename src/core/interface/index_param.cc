@@ -271,6 +271,9 @@ ailego::JsonObject HNSWIndexParam::serialize_to_json_object(
   auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("m", ailego::JsonValue(m));
   json_obj.set("ef_construction", ailego::JsonValue(ef_construction));
+  if (!omit_empty_value || deduplicate_vectors) {
+    json_obj.set("deduplicate_vectors", ailego::JsonValue(deduplicate_vectors));
+  }
   if (!omit_empty_value || use_contiguous_memory) {
     json_obj.set("use_contiguous_memory",
                  ailego::JsonValue(use_contiguous_memory));
@@ -364,6 +367,7 @@ bool HNSWIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, m);
   DESERIALIZE_VALUE_FIELD(json_obj, ef_construction);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  DESERIALIZE_VALUE_FIELD(json_obj, deduplicate_vectors);
 
   return true;
 }
