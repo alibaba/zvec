@@ -15,12 +15,12 @@
 
 #include <memory>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_meta.h>
-#include <ailego/pattern/scope_guard.h>
 #include "diskann_entity.h"
 #include "diskann_pq_read_batch.h"
 #include "diskann_resident_pq_batch.h"

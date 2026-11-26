@@ -15,7 +15,6 @@
 
 #include <utility>
 #include <zvec/core/framework/index_framework.h>
-
 #include "diskann_read_memory.h"
 
 namespace zvec {
@@ -55,9 +54,10 @@ struct KeyValueVectorHeapComparer {
 
 /*! Key Value Vector Heap
  */
-using TopkHeap = ailego::Heap<std::pair<diskann_id_t, VectorInfo>,
-                             KeyValueVectorHeapComparer,
-                             DiskAnnReadVector<std::pair<diskann_id_t, VectorInfo>>>;
+using TopkHeap =
+    ailego::Heap<std::pair<diskann_id_t, VectorInfo>,
+                 KeyValueVectorHeapComparer,
+                 DiskAnnReadVector<std::pair<diskann_id_t, VectorInfo>>>;
 
 struct DiskAnnMetaHeader {
  public:

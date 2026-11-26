@@ -134,6 +134,7 @@ struct AlignedRead {
 struct PendingBatch {
   std::shared_ptr<BufferReadBatch> buffer;
 #if defined(__linux__) && !defined(__ANDROID__)
+  DiskAnnReadVector<AlignedRead> ring_reads;
   ailego::BudgetedVector<struct iocb> cbs;
   ailego::BudgetedVector<struct iocb *> cb_ptrs;
   ailego::BudgetedVector<struct io_event> events;

@@ -116,10 +116,10 @@ class DiskAnnReadReservation {
 
 template <typename T>
 class DiskAnnReadAllocator {
-  struct alignas(alignof(T) > alignof(ailego::ProcessRssBudget::MaterializationStamp)
-                     ? alignof(T)
-                     : alignof(ailego::ProcessRssBudget::MaterializationStamp))
-      Header {
+  struct alignas(
+      alignof(T) > alignof(ailego::ProcessRssBudget::MaterializationStamp)
+          ? alignof(T)
+          : alignof(ailego::ProcessRssBudget::MaterializationStamp)) Header {
     ailego::ProcessRssBudget::MaterializationStamp stamp;
   };
 

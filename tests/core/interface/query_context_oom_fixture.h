@@ -31,17 +31,27 @@ thread_local AllocationProbe *probe = nullptr;
 }  // namespace
 
 void *operator new(std::size_t size) {
-  if (probe && probe->context && !probe->refused_filter &&
-      size == probe->filter_size) {
-    probe->refused_filter = true;
-    throw std::bad_alloc();
-  }
   void *ptr = std::malloc(size ? size : 1);
   if (!ptr) throw std::bad_alloc();
   if (probe && !probe->context && size == probe->context_size) {
     probe->context = ptr;
   }
   return ptr;
+}
+
+void *operator new(std::size_t size, const std::nothrow_t &) noexcept {
+  // VisitByteMap uses nothrow new for its context. The distance callable can
+  // allocate the same size through throwing new before the filter is created.
+  if (probe && probe->context && !probe->refused_filter &&
+      size == probe->filter_size) {
+    probe->refused_filter = true;
+    return nullptr;
+  }
+  try {
+    return ::operator new(size);
+  } catch (...) {
+    return nullptr;
+  }
 }
 
 void operator delete(void *ptr) noexcept {
@@ -77,7 +87,7 @@ class ContextFailureLogger final : public ailego::Logger {
 };
 
 template <typename Index>
-void CheckContextFailure(Index &index, size_t context_size, size_t filter_size) {
+void check_context_failure(Index &index, size_t context_size, size_t filter_size) {
   auto previous_logger =
       ailego::LoggerBroker::Register(std::make_shared<ContextFailureLogger>());
   const auto restore = ailego::ScopeGuard::Make([&] {
@@ -126,7 +136,7 @@ class QueryContextOomTest : public ::testing::TestWithParam<bool> {
     EXPECT_EQ(0, pool.init(previous_capacity_));
   }
 
-  void OpenReadStorage(const std::string &path,
+  void open_read_storage(const std::string &path,
                        core::IndexStorage::Pointer *storage) {
     *storage = core::IndexFactory::CreateStorage(
         GetParam() ? "BufferReadStorage" : "FileReadStorage");

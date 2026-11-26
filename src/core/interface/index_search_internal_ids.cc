@@ -67,7 +67,9 @@ int Index::search_internal_ids(const VectorData &vector_data,
     if (ret != core::IndexError_NotImplemented) return ret;
   }
   if (RequiresSearchFallback(search_param)) {
-    thread_local SearchResult result;
+    thread_local SearchResult shared_result;
+    SearchResult diskann_result;
+    auto &result = diskann_contexts_ ? diskann_result : shared_result;
     const int ret = search(vector_data, search_param, &result);
     if (ret != 0) return ret;
     CopySearchResult(result, topk, output_ids, output_scores);
@@ -91,12 +93,13 @@ int Index::search_internal_ids(const VectorData &vector_data,
                                &query_meta);
   }
 
-  thread_local std::vector<uint64_t> keys;
-  std::vector<float> *scores = nullptr;
-  if (output_scores) {
-    thread_local std::vector<float> score_buffer;
-    scores = &score_buffer;
-  }
+  thread_local std::vector<uint64_t> shared_keys;
+  thread_local std::vector<float> shared_scores;
+  std::vector<uint64_t> diskann_keys;
+  std::vector<float> diskann_scores;
+  auto &keys = diskann_contexts_ ? diskann_keys : shared_keys;
+  auto &score_buffer = diskann_contexts_ ? diskann_scores : shared_scores;
+  auto *scores = output_scores ? &score_buffer : nullptr;
   if (ret == 0) {
     ret = streamer_->search_candidates_impl(query, query_meta, keys, context,
                                             scores);

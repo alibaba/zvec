@@ -687,7 +687,8 @@ class BufferReadStorage : public IndexStorage {
 
       // IndexUnpacker requires a stable pointer until its next callback.
       ailego::BudgetedAlignedBuffer scratch;
-      auto read_data = [this, &candidate_handle, &scratch, candidate_index_offset,
+      auto read_data = [this, &candidate_handle, &scratch,
+                        candidate_index_offset,
                         container_size](size_t offset, const void **data,
                                         size_t len) -> size_t {
         if (offset > container_size) {
@@ -802,7 +803,8 @@ class BufferReadStorage : public IndexStorage {
       return {};
     }
     return std::make_shared<BufferReadStorage::Segment>(
-        handle_, cache_enabled_, process_rss_scratch_, index_offset_, it->second);
+        handle_, cache_enabled_, process_rss_scratch_, index_offset_,
+        it->second);
   }
 
   std::map<std::string, IndexStorage::Segment::Pointer> get_all()

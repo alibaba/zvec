@@ -1418,7 +1418,7 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_EQ(0, fetch());
   const auto expected_vector = vector_after_failure;
   EXPECT_EQ(IndexError_NoMemory, fail_read(Phase::kRead, fetch));
-  EXPECT_TRUE(vector_after_failure.empty());
+  EXPECT_EQ(expected_vector, vector_after_failure);
   ASSERT_EQ(0, fetch());
   EXPECT_EQ(expected_vector, vector_after_failure);
 
@@ -1431,7 +1431,8 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   for (auto phase : {Phase::kSubmit, Phase::kCompletion}) {
     SCOPED_TRACE(static_cast<int>(phase));
     EXPECT_EQ(IndexError_NoMemory, fail_read(phase, graph_search));
-    EXPECT_TRUE(knn_ctx->result().empty());
+    ASSERT_EQ(topk, knn_ctx->result().size());
+    EXPECT_EQ(expected_key, knn_ctx->result().front().key());
     ASSERT_EQ(0, graph_search());
     ASSERT_EQ(topk, knn_ctx->result().size());
     EXPECT_EQ(expected_key, knn_ctx->result().front().key());
@@ -1440,8 +1441,12 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   auto linear_search = [&] {
     return searcher->search_bf_impl(vec.data(), qmeta, linear_ctx);
   };
+  ASSERT_EQ(0, linear_search());
+  ASSERT_EQ(topk, linear_ctx->result().size());
+  const auto linear_key = linear_ctx->result().front().key();
   EXPECT_EQ(IndexError_NoMemory, fail_read(Phase::kRead, linear_search));
-  EXPECT_TRUE(linear_ctx->result().empty());
+  ASSERT_EQ(topk, linear_ctx->result().size());
+  EXPECT_EQ(linear_key, linear_ctx->result().front().key());
   ASSERT_EQ(0, linear_search());
   EXPECT_EQ(topk, linear_ctx->result().size());
 
@@ -1451,8 +1456,10 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
     return searcher->search_bf_by_p_keys_impl(vec.data(), keys, qmeta,
                                               linear_by_p_keys_ctx);
   };
+  ASSERT_EQ(0, keyed_search());
   EXPECT_EQ(IndexError_NoMemory, fail_read(Phase::kRead, keyed_search));
-  EXPECT_TRUE(linear_by_p_keys_ctx->result().empty());
+  ASSERT_EQ(1u, linear_by_p_keys_ctx->result().size());
+  EXPECT_EQ(fetch_key, linear_by_p_keys_ctx->result().front().key());
   ASSERT_EQ(0, keyed_search());
   ASSERT_EQ(1u, linear_by_p_keys_ctx->result().size());
   EXPECT_EQ(fetch_key, linear_by_p_keys_ctx->result().front().key());
@@ -1466,11 +1473,20 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   auto group_search = [&] {
     return searcher->search_impl(vec.data(), qmeta, grouped_ctx);
   };
-  EXPECT_EQ(IndexError_NoMemory, fail_read(Phase::kRead, group_search));
-  EXPECT_TRUE(grouped_ctx->group_result().empty());
   ASSERT_EQ(0, group_search());
   ASSERT_EQ(1u, grouped_ctx->group_result().size());
-  EXPECT_EQ(3u, grouped_ctx->group_result().front().docs().size());
+  ASSERT_EQ(3u, grouped_ctx->group_result().front().docs().size());
+  const auto previous_group = grouped_ctx->group_result();
+  EXPECT_EQ(IndexError_NoMemory, fail_read(Phase::kRead, group_search));
+  ASSERT_EQ(1u, grouped_ctx->group_result().size());
+  const auto &previous_docs = previous_group.front().docs();
+  const auto &retained_docs = grouped_ctx->group_result().front().docs();
+  ASSERT_EQ(previous_docs.size(), retained_docs.size());
+  for (size_t i = 0; i < previous_docs.size(); ++i) {
+    EXPECT_EQ(previous_docs[i].key(), retained_docs[i].key());
+    EXPECT_EQ(previous_docs[i].score(), retained_docs[i].score());
+  }
+  ASSERT_EQ(0, group_search());
 
   // A context retained from the other searcher must survive refusal while
   // allocating its replacement and remain usable on the next attempt.

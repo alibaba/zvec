@@ -39,8 +39,7 @@ class ResidentPqBatch {
   // Fixed-stride segment adapter used by DiskANN PQ codes.
   bool read(ailego::VecBufferPool &pool, const IndexStorage::Segment &segment,
             const uint32_t *ids, size_t count, size_t code_size,
-            DiskAnnReadVector<const void *> &views,
-            bool load_misses = false) {
+            DiskAnnReadVector<const void *> &views, bool load_misses = false) {
     const size_t capacity = segment.capacity();
     const size_t base = segment.data_offset();
     if (!code_size || code_size > capacity ||

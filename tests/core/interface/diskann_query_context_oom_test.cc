@@ -35,8 +35,8 @@ TEST_P(QueryContextOomTest, DiskAnnReadersReleaseFailedContexts) {
 
   core::IndexStorage::Pointer searcher_storage;
   core::IndexStorage::Pointer streamer_storage;
-  ASSERT_NO_FATAL_FAILURE(OpenReadStorage(path, &searcher_storage));
-  ASSERT_NO_FATAL_FAILURE(OpenReadStorage(path, &streamer_storage));
+  ASSERT_NO_FATAL_FAILURE(open_read_storage(path, &searcher_storage));
+  ASSERT_NO_FATAL_FAILURE(open_read_storage(path, &streamer_storage));
   auto searcher = core::IndexFactory::CreateSearcher("DiskAnnSearcher");
   auto streamer = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
   ASSERT_NE(nullptr, searcher);
@@ -52,7 +52,7 @@ TEST_P(QueryContextOomTest, DiskAnnReadersReleaseFailedContexts) {
   const float query = 256.0F;
   auto check_reader = [&](auto &reader) {
     ASSERT_NO_FATAL_FAILURE(
-        CheckContextFailure(reader, sizeof(core::DiskAnnContext),
+        check_context_failure(reader, sizeof(core::DiskAnnContext),
                             sizeof(core::VisitByteMap::Context)));
     auto context = reader.create_context();
     ASSERT_NE(nullptr, context);

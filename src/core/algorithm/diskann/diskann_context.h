@@ -77,14 +77,37 @@ class DiskAnnContext : public IndexContext,
                      const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
                      const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
+  class SearchResults {
+   public:
+    explicit SearchResults(DiskAnnContext &context);
+    ~SearchResults();
+    SearchResults(const SearchResults &) = delete;
+    SearchResults &operator=(const SearchResults &) = delete;
+
+    void commit();
+
+   private:
+    friend class DiskAnnContext;
+    DiskAnnContext &context_;
+    std::vector<IndexDocumentList> results_;
+    std::vector<IndexGroupDocumentList> group_results_;
+    bool committed_{false};
+  };
+
+  void swap_results(DiskAnnContext &other) noexcept {
+    results_.swap(other.results_);
+    group_results_.swap(other.group_results_);
+  }
+
   //! Retrieve search result
   const IndexDocumentList &result() const override {
-    return results_[0];
+    return result(0);
   }
 
   //! Retrieve search result
   const IndexDocumentList &result(size_t idx) const override {
-    return results_[idx];
+    static const IndexDocumentList empty;
+    return idx < results_.size() ? results_[idx] : empty;
   }
 
   //! Retrieve result object for output
@@ -95,12 +118,13 @@ class DiskAnnContext : public IndexContext,
 
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result() const override {
-    return group_results_[0];
+    return group_result(0);
   }
 
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result(size_t idx) const override {
-    return group_results_[idx];
+    static const IndexGroupDocumentList empty;
+    return idx < group_results_.size() ? group_results_[idx] : empty;
   }
 
   IndexGroupDocumentList *mutable_group_result() override {
@@ -208,9 +232,9 @@ class DiskAnnContext : public IndexContext,
 
   inline void resize_results(size_t size) {
     if (group_by_search()) {
-      group_results_.resize(size);
+      mutable_group_results().resize(size);
     } else {
-      results_.resize(size);
+      mutable_results().resize(size);
     }
   }
 
@@ -230,30 +254,14 @@ class DiskAnnContext : public IndexContext,
     error_code_ = status;
   }
 
-  inline void clear(bool discard_slots = false) {
-    release_candidates();
-    if (candidate_vectors_.capacity() &&
-        (discard_slots || candidate_vectors_.capacity() / 2 > topk_ ||
-         ailego::MemoryLimitPool::get_instance().under_process_rss_pressure())) {
-      decltype(candidate_vectors_){}.swap(candidate_vectors_);
-    }
-    for (auto &it : results_) {
-      it.clear();
-    }
-    for (auto &it : group_results_) {
-      it.clear();
-    }
-
-    best_list_nodes_.clear();
-    expanded_nodes_.clear();
-    visit_filter_.clear();
-    group_topk_heaps_.clear();
-    error_code_ = 0;
+  inline void clear() {
+    clear_scratch();
+    for (auto &it : results_) it.clear();
+    for (auto &it : group_results_) it.clear();
   }
 
   //! Preserve query-time options when replacing an incompatible pooled
-  //! context. Search scratch space and previous results are intentionally not
-  //! copied.
+  //! context. Search scratch space is always owned by the original context.
   void copy_query_options_from(const DiskAnnContext &rhs) {
     copy_common_query_options_from(rhs);
     topk_ = rhs.topk_;
@@ -353,20 +361,21 @@ class DiskAnnContext : public IndexContext,
     uint32_t size = result_ids.size();
 
     for (uint32_t i = 0; i < size; ++i) {
-      results_[idx].emplace_back(result_ids[i], result_dists[i], 0);
+      mutable_results()[idx].emplace_back(result_ids[i], result_dists[i], 0);
     }
   }
 
  private:
+  void clear_scratch(bool discard_slots = false);
   void prepare_vector_candidates();
 
   //! Hooks required by TopkResultBuilder.
   std::vector<IndexDocumentList> &mutable_results() {
-    return results_;
+    return staged_results_ ? staged_results_->results_ : results_;
   }
 
   std::vector<IndexGroupDocumentList> &mutable_group_results() {
-    return group_results_;
+    return staged_results_ ? staged_results_->group_results_ : group_results_;
   }
 
   float result_score(const VectorInfo &info) const {
@@ -429,6 +438,7 @@ class DiskAnnContext : public IndexContext,
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};
+  SearchResults *staged_results_{nullptr};
 
   bool fetch_vector_{false};
   int error_code_{0};

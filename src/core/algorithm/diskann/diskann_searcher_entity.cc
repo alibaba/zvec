@@ -80,7 +80,8 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   entity->key_buffer_ = key_buffer_;
   entity->key_mapping_buffer_ = key_mapping_buffer_;
   if (!key_buffer_.data()) entity->key_segment_ = key_segment_;
-  if (!key_mapping_buffer_.data()) entity->key_mapping_segment_ = key_mapping_segment_;
+  if (!key_mapping_buffer_.data())
+    entity->key_mapping_segment_ = key_mapping_segment_;
   entity->entrypoints_ = entrypoints_;
 
   return DiskAnnEntity::Pointer(entity.release());
@@ -406,7 +407,8 @@ int DiskAnnSearcherEntity::find_id(diskann_key_t key, diskann_id_t *id) const
     diskann_id_t local_id;
     if (key_mapping_buffer_.data()) {
       std::memcpy(&local_id,
-                  static_cast<const char *>(key_mapping_buffer_.data()) + idx * sizeof(local_id),
+                  static_cast<const char *>(key_mapping_buffer_.data()) +
+                      idx * sizeof(local_id),
                   sizeof(local_id));
     } else {
       IndexStorage::MemoryBlock block;
@@ -448,7 +450,8 @@ int DiskAnnSearcherEntity::read_key(diskann_id_t id, diskann_key_t *key) const
   if (!key || id >= doc_cnt()) return IndexError_InvalidArgument;
   const size_t offset = static_cast<size_t>(id) * sizeof(*key);
   if (key_buffer_.data()) {
-    std::memcpy(key, static_cast<const char *>(key_buffer_.data()) + offset, sizeof(*key));
+    std::memcpy(key, static_cast<const char *>(key_buffer_.data()) + offset,
+                sizeof(*key));
   } else {
     IndexStorage::MemoryBlock block;
     if (!key_segment_) return IndexError_ReadData;

@@ -857,8 +857,8 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
     }
 
     if (!frontier.empty()) {
-      const int reserve = ctx->ensure_sector_buffer(
-          frontier.size() * sector_num_per_node);
+      const int reserve =
+          ctx->ensure_sector_buffer(frontier.size() * sector_num_per_node);
       if (reserve != 0) return reserve;
       auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       for (uint64_t i = 0; i < frontier.size(); i++) {
@@ -917,8 +917,8 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      const int status = emplace_candidate(
-          frontier_neighbor.first, cur_expanded_dist, data_buf);
+      const int status = emplace_candidate(frontier_neighbor.first,
+                                           cur_expanded_dist, data_buf);
       if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
@@ -1028,8 +1028,8 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
     }
 
     if (!frontier.empty()) {
-      const int reserve = ctx->ensure_sector_buffer(
-          frontier.size() * sector_num_per_node);
+      const int reserve =
+          ctx->ensure_sector_buffer(frontier.size() * sector_num_per_node);
       if (reserve != 0) return reserve;
       auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       for (uint64_t i = 0; i < frontier.size(); i++) {
@@ -1088,8 +1088,8 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
       float cur_expanded_dist = dc.dist(aligned_query_raw, data_buf);
 
-      const int status = emplace_candidate(
-          frontier_neighbor.first, cur_expanded_dist, data_buf);
+      const int status = emplace_candidate(frontier_neighbor.first,
+                                           cur_expanded_dist, data_buf);
       if (status != 0) return status;
 
       stats.cpu_us += cpu_timer.micro_seconds();
@@ -1379,8 +1379,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
     }
 
     if (!frontier.empty()) {
-      const int reserve = ctx->ensure_sector_buffer(
-          frontier.size() * sector_num_per_node);
+      const int reserve =
+          ctx->ensure_sector_buffer(frontier.size() * sector_num_per_node);
       if (reserve != 0) return reserve;
       auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
       stats.hop_num++;
@@ -1595,8 +1595,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
                                    max_node_size_, DiskAnnUtil::kSectorSize);
 
     dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_,
-                    paged_quant_codes_,
-                    storage_ ? storage_->vec_buffer_pool().get() : nullptr);
+                      paged_quant_codes_,
+                      storage_ ? storage_->vec_buffer_pool().get() : nullptr);
     const int quantize_status = dc.quantize_query(ctx->query_rotated());
     if (quantize_status != 0) return quantize_status;
 
@@ -1639,8 +1639,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
       }
 
       if (!frontier.empty()) {
-        const int reserve = ctx->ensure_sector_buffer(
-            frontier.size() * sector_num_per_node);
+        const int reserve =
+            ctx->ensure_sector_buffer(frontier.size() * sector_num_per_node);
         if (reserve != 0) return reserve;
         auto *sector_buffer = static_cast<uint8_t *>(ctx->sector_buffer());
         stats.hop_num++;

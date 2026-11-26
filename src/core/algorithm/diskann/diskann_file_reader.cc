@@ -323,11 +323,23 @@ static int execute_one_pread(int fd, const AlignedRead &req) {
   auto *buf = static_cast<uint8_t *>(req.buf);
   uint64_t offset = req.offset;
   uint64_t remaining = req.len;
+#if defined(__linux__) && !defined(__ANDROID__)
+  const auto expected = req.expected_len;
+  if (expected > req.len) return IndexError_InvalidArgument;
+#endif
 
   while (remaining > 0) {
     ssize_t bytes_read =
         ::pread(fd, buf, static_cast<size_t>(remaining), offset);
     if (bytes_read > 0) {
+#if defined(__linux__) && !defined(__ANDROID__)
+      if (expected && expected < req.len) {
+        if (static_cast<uint64_t>(bytes_read) != expected)
+          return IndexError_ReadData;
+        std::memset(buf + expected, 0, req.len - expected);
+        return 0;
+      }
+#endif
       buf += bytes_read;
       offset += static_cast<uint64_t>(bytes_read);
       remaining -= static_cast<uint64_t>(bytes_read);
@@ -1649,9 +1661,16 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
     return read_synchronously();
 
   if (ctx->type == ailego::IOBackendType::kIoUring) {
-    int ring_ret = ctx->ring.submit_reads(this->file_desc, read_reqs.data(),
-                                          read_reqs.size());
-    if (ring_ret != 0) {
+    if (n_ops > ailego::kIoUringMaxBatch) return read_synchronously();
+    try {
+      batch.ring_reads.assign(read_reqs.begin(), read_reqs.end());
+    } catch (const std::bad_alloc &) {
+      return read_synchronously();
+    }
+    const int ret =
+        ctx->ring.submit_reads(file_desc, read_reqs.data(), read_reqs.size());
+    if (ret != 0) {
+      batch.ring_reads.clear();
       LOG_WARN("submit: io_uring submission failed; falling back to pread");
       return read_synchronously();
     }
@@ -1765,8 +1784,7 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
 
 // Drain or quarantine any remaining requests before returning the error.
 static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
-  // Only the libaio path leaves requests in flight: pread and io_uring
-  // batches are complete before submit() returns (used_pread == true).
+  // The io_uring path quiesces its own requests before returning a failure.
   if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
     reset_aio_context(*ctx);
     batch.n_reaped = batch.n_submitted;
@@ -1808,13 +1826,32 @@ int LinuxAlignedFileReader::get_completed(
     const int count = ctx->ring.get_completed_reads(
         std::max(0, min_completed), indices.data(), indices.size());
     if (count < 0) {
+      // The ring has drained or quarantined its staging. Retry only requests
+      // that were not delivered by an earlier call to get_completed().
       ctx->ring_batch = nullptr;
       batch.n_reaped = batch.n_submitted;
-      return IndexError_ReadData;
+      for (uint32_t index = 0; index < batch.ring_reads.size(); ++index) {
+        const auto &request = batch.ring_reads[index];
+        if (!request.buf) continue;
+        const int status = execute_one_pread(file_desc, request);
+        if (status != 0) {
+          completed_indices.clear();
+          batch.ring_reads.clear();
+          return status;
+        }
+        completed_indices.push_back(index);
+      }
+      batch.ring_reads.clear();
+      return static_cast<int>(completed_indices.size());
     }
     completed_indices.assign(indices.begin(), indices.begin() + count);
+    for (const auto index : completed_indices)
+      batch.ring_reads[index].buf = nullptr;
     batch.n_reaped += count;
-    if (batch.n_reaped == batch.n_submitted) ctx->ring_batch = nullptr;
+    if (batch.n_reaped == batch.n_submitted) {
+      ctx->ring_batch = nullptr;
+      batch.ring_reads.clear();
+    }
     return count;
   }
 

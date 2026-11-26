@@ -17,8 +17,8 @@
 #include <cmath>
 #include <limits>
 #include <map>
-#include <thread>
 #include <new>
+#include <thread>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -275,7 +275,8 @@ Index::QueryContext::QueryContext(Index &index) : index_(index) {
     auto slot = registry->idle.find(std::this_thread::get_id());
     if (slot != registry->idle.end()) diskann_ = std::move(slot->second);
   }
-  status_ = diskann_ ? 0 : index_.streamer_->create_context_with_status(diskann_);
+  status_ =
+      diskann_ ? 0 : index_.streamer_->create_context_with_status(diskann_);
 }
 
 Index::QueryContext::~QueryContext() {
@@ -882,7 +883,7 @@ int Index::search(const VectorData &vector_data,
     if (status != 0) {
       LOG_ERROR("Failed to train index");
       return status == core::IndexError_NoMemory ? status
-                                                  : core::IndexError_Runtime;
+                                                 : core::IndexError_Runtime;
     }
   }
 
@@ -953,7 +954,7 @@ int Index::search(const VectorData &vector_data,
         LOG_ERROR("Failed to search");
         if (context) context->reset();
         return ret == core::IndexError_NoMemory ? ret
-                                                 : core::IndexError_Runtime;
+                                                : core::IndexError_Runtime;
       }
       result->reverted_vector_list_.clear();
       ret = reference_index->_refine_dense_candidates(vector_data, search_param,

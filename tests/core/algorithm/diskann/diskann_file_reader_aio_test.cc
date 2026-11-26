@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstdio>
@@ -32,6 +33,64 @@
 #include <ailego/pattern/defer.h>
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
+
+namespace zvec::ailego {
+
+class IoUringStagingTestPeer {
+ public:
+  IoUringStagingTestPeer(IoUringRing &ring, int fd) : ring_(ring) {
+    current_ = this;
+    ring.ring_fd_ = ::dup(fd);
+    ring.sq_entries_ = sqes_.size();
+    ring.sq_tail_ = &sq_tail_;
+    ring.sq_ring_mask_ = &mask_;
+    ring.sq_array_ = sq_array_.data();
+    ring.sqes_ = sqes_.data();
+    ring.cq_head_ = &cq_head_;
+    ring.cq_tail_ = &cq_tail_;
+    ring.cq_ring_mask_ = &mask_;
+    ring.cqes_ = cqes_.data();
+    ring.enter_override_ = enter;
+  }
+
+  ~IoUringStagingTestPeer() {
+    ring_.teardown();
+    current_ = nullptr;
+  }
+
+ private:
+  static int enter(int, unsigned submitted, unsigned, unsigned) {
+    auto &self = *current_;
+    if (submitted == 3) {
+      const auto &sqe = self.sqes_[1];
+      std::memset(reinterpret_cast<void *>(sqe.addr), 0x37, sqe.len);
+      self.cqes_[0].user_data = sqe.user_data;
+      self.cqes_[0].res = static_cast<int32_t>(sqe.len);
+      self.cq_tail_ = 1;
+      return 3;
+    }
+
+    EXPECT_EQ(0u, submitted);
+    self.cqes_[1].user_data = self.sqes_[0].user_data;
+    self.cqes_[1].res = -EIO;
+    self.cqes_[2].user_data = self.sqes_[2].user_data;
+    self.cqes_[2].res = static_cast<int32_t>(self.sqes_[2].len);
+    self.cq_tail_ = 3;
+    return 0;
+  }
+
+  inline static thread_local IoUringStagingTestPeer *current_{nullptr};
+  IoUringRing &ring_;
+  unsigned sq_tail_{0};
+  unsigned cq_head_{0};
+  unsigned cq_tail_{0};
+  unsigned mask_{3};
+  std::array<unsigned, 4> sq_array_{0, 1, 2, 3};
+  std::array<io_uring_sqe, 4> sqes_{};
+  std::array<io_uring_cqe, 4> cqes_{};
+};
+
+}  // namespace zvec::ailego
 
 namespace zvec {
 namespace core {
@@ -537,6 +596,55 @@ TEST(DiskAnnLinuxAioTest, FailedCancellationKeepsChargedStagingIsolated) {
     EXPECT_EQ(0, std::memcmp(output.get(), source.data(), source.size()));
   }
   EXPECT_EQ(baseline, pool.external_used());
+}
+
+TEST(DiskAnnLinuxAioTest, FailedRingCompletionRetriesUndeliveredReads) {
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const auto source = make_source();
+  ASSERT_EQ(static_cast<ssize_t>(source.size()),
+            ::pwrite(file.fd(), source.data(), source.size(), 0));
+  constexpr uint64_t kTailSize = 127;
+  ASSERT_EQ(0, ::ftruncate(file.fd(), 2 * kBlockSize + kTailSize));
+  auto output =
+      std::unique_ptr<void, decltype(&std::free)>(allocate_aligned(source.size()),
+                                                 &std::free);
+  ASSERT_NE(nullptr, output);
+
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const auto old_capacity = pool.capacity();
+  ASSERT_EQ(0, pool.init(4 * 1024 * 1024));
+  const auto restore = ailego::ScopeGuard::Make(
+      [&] { EXPECT_EQ(0, pool.init(old_capacity)); });
+  const size_t before = pool.external_used();
+  IoBackend backend;
+  backend.type = ailego::IOBackendType::kIoUring;
+  ailego::IoUringStagingTestPeer ring(backend.ring, file.fd());
+  IOContext ctx = &backend;
+  LinuxAlignedFileReader reader(::dup(file.fd()));
+  auto requests = make_requests(output.get());
+  requests.resize(3);
+  requests[2].expected_len = kTailSize;
+  PendingBatch batch;
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  ASSERT_FALSE(batch.used_pread);
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(1, reader.get_completed(batch, ctx, 1, completed));
+  EXPECT_EQ((std::vector<uint32_t>{1}), completed);
+  ASSERT_EQ(2, reader.get_completed(batch, ctx, 1, completed));
+  EXPECT_EQ((std::vector<uint32_t>{0, 2}), completed);
+  EXPECT_EQ(0, reader.get_completed(batch, ctx, 1, completed));
+  EXPECT_FALSE(backend.ring.has_pending_reads());
+  EXPECT_EQ(before, pool.external_used());
+  const auto *bytes = static_cast<const uint8_t *>(output.get());
+  EXPECT_EQ(0, std::memcmp(bytes, source.data(), kBlockSize));
+  EXPECT_TRUE(std::all_of(bytes + kBlockSize, bytes + 2 * kBlockSize,
+                          [](uint8_t value) { return value == 0x37; }));
+  EXPECT_EQ(0, std::memcmp(bytes + 2 * kBlockSize,
+                           source.data() + 2 * kBlockSize, kTailSize));
+  EXPECT_TRUE(std::all_of(bytes + 2 * kBlockSize + kTailSize,
+                          bytes + 3 * kBlockSize,
+                          [](uint8_t value) { return value == 0; }));
 }
 
 TEST(DiskAnnLinuxAioTest, DrainsPartialSubmissionBeforePreadFallback) {

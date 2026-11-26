@@ -13,10 +13,10 @@
 // limitations under the License.
 
 #include "diskann_context.h"
-#include "diskann_result_payloads.h"
 #include <chrono>
 #include <new>
 #include "diskann_params.h"
+#include "diskann_result_payloads.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -29,6 +29,53 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
     : IndexContext(measure),
       dc_(entity.get(), meta, measure, data_quantizer),
       entity_{entity} {}
+
+DiskAnnContext::SearchResults::SearchResults(DiskAnnContext &context)
+    : context_(context) {
+  context_.clear_scratch();
+  context_.staged_results_ = this;
+}
+
+DiskAnnContext::SearchResults::~SearchResults() {
+  context_.staged_results_ = nullptr;
+  if (committed_) {
+    context_.release_candidates();
+  } else {
+    context_.clear_scratch(/*discard_slots=*/true);
+  }
+}
+
+void DiskAnnContext::SearchResults::commit() {
+  const auto publish = [](auto &current, auto &staged) {
+    // Grow before publishing any document. Swap individual lists so a caller
+    // that holds result(i) across searches can still use that reference.
+    current.resize(staged.size());
+    for (size_t i = 0; i < staged.size(); ++i) current[i].swap(staged[i]);
+  };
+  if (context_.group_by_search()) {
+    publish(context_.group_results_, group_results_);
+    for (auto &result : context_.results_) result.clear();
+  } else {
+    publish(context_.results_, results_);
+    for (auto &result : context_.group_results_) result.clear();
+  }
+  committed_ = true;
+}
+
+void DiskAnnContext::clear_scratch(bool discard_slots) {
+  release_candidates();
+  topk_heap_.clear();
+  if (candidate_vectors_.capacity() &&
+      (discard_slots || candidate_vectors_.capacity() / 2 > topk_ ||
+       ailego::MemoryLimitPool::get_instance().under_process_rss_pressure())) {
+    decltype(candidate_vectors_){}.swap(candidate_vectors_);
+  }
+  best_list_nodes_.clear();
+  expanded_nodes_.clear();
+  visit_filter_.clear();
+  group_topk_heaps_.clear();
+  error_code_ = 0;
+}
 
 void DiskAnnContext::prepare_vector_candidates() {
   // Prepay at most one sector of small result vectors. Under RSS pressure,
@@ -66,8 +113,8 @@ void DiskAnnContext::prepare_vector_candidates() {
 void DiskAnnContext::emplace_vector_candidate(diskann_id_t id, float score,
                                               const void *src) {
   if (topk_heap_.full() && !(score < topk_heap_.front().second.dist_)) return;
-  diskann_id_t slot = topk_heap_.full() ? topk_heap_.front().second.vector_slot_
-                                      : kInvalidId;
+  diskann_id_t slot =
+      topk_heap_.full() ? topk_heap_.front().second.vector_slot_ : kInvalidId;
   if (slot == kInvalidId) {
     if (candidate_vectors_.empty()) prepare_vector_candidates();
     slot = candidate_slots_used_;
@@ -89,33 +136,33 @@ void DiskAnnContext::topk_to_result(uint32_t idx) {
   }
   auto release = ailego::ScopeGuard::Make([&] { release_candidates(); });
   candidate_vectors_.resize(candidate_slots_used_);
-  Builder::topk_to_single_result(idx, [&](IndexDocumentList &docs,
-                                          TopkHeap &heap, uint32_t size) {
-    uint32_t accepted = 0;
-    while (accepted < size && !(heap[accepted].second.dist_ > threshold()))
-      ++accepted;
-    DiskAnnResultPayloads batch(accepted);
-    IndexDocumentList result;
-    result.reserve(accepted);
-    for (uint32_t i = 0; i < accepted; ++i) {
-      const auto &entry = heap[i];
-      diskann_key_t key;
-      const int ret = entity_->read_key(entry.first, &key);
-      if (ret != 0) {
-        set_error_code(ret);
-        return;
-      }
-      auto &candidate = candidate_vectors_[entry.second.vector_slot_];
-      auto payload = std::allocate_shared<std::string>(
-          DiskAnnResultPayloads::Allocator<std::string>{},
-          std::move(candidate.bytes));
-      batch.attach_vector(std::move(candidate.memory));
-      result.emplace_back(key, entry.second.dist_, entry.first,
-                          std::move(payload));
-    }
-    batch.commit();
-    docs.swap(result);
-  });
+  Builder::topk_to_single_result(
+      idx, [&](IndexDocumentList &docs, TopkHeap &heap, uint32_t size) {
+        uint32_t accepted = 0;
+        while (accepted < size && !(heap[accepted].second.dist_ > threshold()))
+          ++accepted;
+        DiskAnnResultPayloads batch(accepted);
+        IndexDocumentList result;
+        result.reserve(accepted);
+        for (uint32_t i = 0; i < accepted; ++i) {
+          const auto &entry = heap[i];
+          diskann_key_t key;
+          const int ret = entity_->read_key(entry.first, &key);
+          if (ret != 0) {
+            set_error_code(ret);
+            return;
+          }
+          auto &candidate = candidate_vectors_[entry.second.vector_slot_];
+          auto payload = std::allocate_shared<std::string>(
+              DiskAnnResultPayloads::Allocator<std::string>{},
+              std::move(candidate.bytes));
+          batch.attach_vector(std::move(candidate.memory));
+          result.emplace_back(key, entry.second.dist_, entry.first,
+                              std::move(payload));
+        }
+        batch.commit();
+        docs.swap(result);
+      });
 }
 
 DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(

@@ -139,7 +139,7 @@ class BudgetedAlignedBuffer {
       ::operator delete(data_, std::align_val_t{alignment_});
       if (process_only_) {
         MemoryLimitPool::get_instance().release_heap_process_backing(size_,
-                                                                    stamp_);
+                                                                     stamp_);
       }
     }
   }
@@ -167,7 +167,8 @@ class BudgetedAlignedBuffer {
       if (process_only) {
         if (!pool.try_reserve_process_backing(bytes)) throw std::bad_alloc();
         try {
-          replacement.data_ = ::operator new(bytes, std::align_val_t{alignment});
+          replacement.data_ =
+              ::operator new(bytes, std::align_val_t{alignment});
         } catch (...) {
           pool.finish_process_backing(bytes, false);
           throw;
@@ -212,6 +213,7 @@ class BudgetedAlignedBuffer {
     }
     swap(replacement);
   }
+
  public:
   void resize_array(size_t count, size_t width, size_t alignment) {
     if (width && count > std::numeric_limits<size_t>::max() / width)

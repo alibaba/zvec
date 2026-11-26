@@ -26,8 +26,7 @@ class DiskAnnResultPayloads {
 
  public:
   explicit DiskAnnResultPayloads(size_t count)
-      : count_(count),
-        previous_(std::exchange(active_, this)) {}
+      : count_(count), previous_(std::exchange(active_, this)) {}
   ~DiskAnnResultPayloads() {
     active_ = previous_;
     if (pending_bytes_)
@@ -79,8 +78,8 @@ class DiskAnnResultPayloads {
     }
 
    private:
-    struct alignas(alignof(T) > alignof(Charge) ? alignof(T) : alignof(Charge))
-        Block {
+    struct alignas(alignof(T) > alignof(Charge) ? alignof(T)
+                                                : alignof(Charge)) Block {
       Charge charge;
     };
   };

@@ -264,9 +264,15 @@ class ZVEC_CORE_API Index {
     QueryContext(const QueryContext &) = delete;
     QueryContext &operator=(const QueryContext &) = delete;
 
-    core::IndexContext::Pointer &get() { return *context_; }
-    int status() const { return status_; }
-    void keep_on_success(int status) { reusable_ = status == 0; }
+    core::IndexContext::Pointer &get() {
+      return *context_;
+    }
+    int status() const {
+      return status_;
+    }
+    void keep_on_success(int status) {
+      reusable_ = status == 0;
+    }
 
    private:
     Index &index_;
