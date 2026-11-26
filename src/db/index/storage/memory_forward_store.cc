@@ -389,12 +389,17 @@ Status MemForwardStore::close() {
   // Exclusive: flush_locked() and the clears below rewrite cache_/batches_.
   std::lock_guard lock(cache_mtx_);
   if (!cache_.empty() || !batches_.empty()) {
-    flush_locked();
+    auto status = flush_locked();
+    if (!status.ok()) {
+      return status;
+    }
   }
   if (writer_) {
     auto status = writer_->close();
     if (!status.ok()) {
       LOG_WARN("failed to close writer: %s", status.ToString().c_str());
+      return Status::InternalError("failed to close forward writer: ",
+                                   status.ToString());
     }
     writer_.reset();
   }

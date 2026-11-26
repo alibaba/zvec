@@ -256,7 +256,7 @@ class IVFBuilder : public IndexBuilder {
   int read_vector(size_t id, uint64_t *key, const void **data);
 
   //! Prepare the quantizer for inverted index
-  int prepare_quantizer(IndexThreads *threads);
+  int prepare_quantizer(const IndexThreads::Pointer &threads);
 
   //! Quantize the centrods list
   int quantize_centroids();

@@ -372,8 +372,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     // original vectors), dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
+    // A trained RaBitQ model still owns the rotation and centroids for its
+    // codes.
     const bool same_layout =
         target_builder_ == nullptr && !quantizer->require_train() &&
+        !quantizer->requires_original_vectors() &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.metric_name() == source_meta.metric_name() &&
@@ -395,6 +398,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     return IndexError_Runtime;
   }
 
+  const auto originals =
+      !target_builder_ && target_streamer_quantizer_ &&
+              target_streamer_quantizer_->requires_original_vectors()
+          ? target_streamer_->original_provider()
+          : nullptr;
   while (iterator->is_valid()) {
     if (iterator->status() != 0) {
       return iterator->status();
@@ -413,9 +421,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       continue;
     }
 
-    const void *vector_data = iterator->data();
-    if (iterator->status() != 0) {
-      return iterator->status();
+    // The build provider is keyed by the rewritten ID, including on append.
+    IndexStorage::MemoryBlock original_block;
+    const void *vector_data;
+    if (originals) {
+      int ret = originals->get_vector(*next_id, original_block);
+      if (ret != 0) return ret;
+      vector_data = original_block.data();
+    } else {
+      vector_data = iterator->data();
+      if (iterator->status() != 0) return iterator->status();
     }
     if (!vector_data) {
       LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
@@ -425,7 +440,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
     std::vector<uint8_t> bytes;
     bool needs_convert = false;
-    if (quantizer != nullptr && need_encode) {
+    if (originals) {
+      const auto *raw = static_cast<const uint8_t *>(vector_data);
+      bytes.assign(raw, raw + originals->element_size());
+      needs_convert = true;
+    } else if (quantizer != nullptr && need_encode) {
       std::string original_vector;
       if (quantizer->dequantize(vector_data, source_streamer_query_meta,
                                 &original_vector) != 0) {
@@ -507,15 +526,28 @@ void MixedStreamerReducer::add_vec(int *result) {
       // the target layout. A target without quantizer or reformer stores
       // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
-        new_vector.resize(
-            target_streamer_quantizer_->quantized_datapoint_vector_length());
-        target_streamer_quantizer_->quantize_data(vector, new_vector.data());
+        IndexQueryMeta quantized_meta;
+        if (target_streamer_quantizer_->requires_original_vectors()) {
+          if (target_streamer_quantizer_->quantize_datapoint(
+                  vector, original_query_meta_, &new_vector, &quantized_meta) !=
+              0) {
+            LOG_ERROR("Failed to quantize vector. pkey[%zu]",
+                      (size_t)vector_item.pkey_);
+            *result = IndexError_Runtime;
+            return;
+          }
+        } else {
+          new_vector.resize(
+              target_streamer_quantizer_->quantized_datapoint_vector_length());
+          target_streamer_quantizer_->quantize_data(vector, new_vector.data());
+          quantized_meta.set_meta(
+              target_streamer_query_meta.data_type(),
+              target_streamer_query_meta.dimension(),
+              static_cast<uint32_t>(target_streamer_quantizer_->type()),
+              target_streamer_query_meta.extra_meta_size());
+        }
         vector = new_vector.data();
-        add_meta.set_meta(
-            target_streamer_query_meta.data_type(),
-            target_streamer_query_meta.dimension(),
-            static_cast<uint32_t>(target_streamer_quantizer_->type()),
-            target_streamer_query_meta.extra_meta_size());
+        add_meta = quantized_meta;
       } else if (target_streamer_reformer_ != nullptr) {
         IndexQueryMeta new_meta;
         if (target_streamer_reformer_->convert(vector, original_query_meta_,

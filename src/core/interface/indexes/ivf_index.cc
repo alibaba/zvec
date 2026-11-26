@@ -20,13 +20,43 @@
 #include "algorithm/cluster/cluster_params.h"
 #include "algorithm/ivf/ivf_params.h"
 #include "algorithm/ivf/ivf_streamer.h"
+#include "algorithm/ivf_rabitq/ivf_rabitq_params.h"
 #include "utility/utility_params.h"
 #include "holder_builder.h"
+#if RABITQ_SUPPORTED
+#include "algorithm/hnsw_rabitq/rabitq_params.h"
+#include "algorithm/ivf_rabitq/ivf_rabitq_context.h"
+#endif
 
 namespace zvec::core_interface {
 
 int IVFIndex::create_and_init_converter_reformer(
     const QuantizerParam &param, const BaseIndexParam &index_param) {
+  if (param.type == QuantizerType::kRabitq) {
+#if !RABITQ_SUPPORTED
+    return Index::create_and_init_converter_reformer(param, index_param);
+#else
+    const auto &ivf = dynamic_cast<const IVFIndexParam &>(index_param);
+    if (index_param.is_sparse || index_param.data_type != DataType::DT_FP32 ||
+        (index_param.metric_type != MetricType::kL2sq &&
+         index_param.metric_type != MetricType::kInnerProduct &&
+         index_param.metric_type != MetricType::kCosine)) {
+      return core::IndexError_Unsupported;
+    }
+    if (ivf.nlist <= 0 || ivf.niters <= 0 || ivf.use_soar)
+      return core::IndexError_InvalidArgument;
+    const auto *typed = dynamic_cast<const RabitqQuantizerParam *>(&param);
+    const RabitqQuantizerParam config = typed ? *typed : RabitqQuantizerParam{};
+    ivf_quantizer_ = core::IndexFactory::CreateQuantizer("RabitqQuantizer");
+    if (!ivf_quantizer_) return core::IndexError_NoExist;
+    const auto params = config.to_params();
+    const int ret = ivf_quantizer_->init(proxima_index_meta_, params);
+    if (ret != 0) return ret;
+    // IVF retains raw metadata for clustering; the builder owns code metadata.
+    proxima_index_meta_.set_quantizer("RabitqQuantizer", 0, params);
+    return 0;
+#endif
+  }
   // Clustering and centroid selection use the input vectors. Only the
   // inverted lists are encoded, after their centroid assignments are known.
   if (index_param.is_sparse ||
@@ -72,8 +102,13 @@ int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   }
 
   param_ = dynamic_cast<const IVFIndexParam &>(param);
-  param_.nlist = std::max(1, std::min(1024, param_.nlist));
-  param_.niters = std::max(1, std::min(1024, param_.niters));
+  use_rabitq_ = param_.quantizer_param &&
+                param_.quantizer_param->type == QuantizerType::kRabitq;
+  legacy_rabitq_ = false;
+  if (!use_rabitq_) {
+    param_.nlist = std::max(1, std::min(1024, param_.nlist));
+    param_.niters = std::max(1, std::min(1024, param_.niters));
+  }
 
   proxima_index_params_.set(core::PARAM_IVF_BUILDER_CENTROID_COUNT,
                             param_.nlist);
@@ -116,60 +151,89 @@ int IVFIndex::create_and_init_streamer(const BaseIndexParam &param) {
   return 0;
 }
 
-int IVFIndex::restore_legacy_pipeline() {
-  ivf_quantizer_.reset();
-  converter_.reset();
-  reformer_.reset();
-  proxima_index_meta_ = IndexMeta{};
-  proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
-  int ret = parse_metric_name(param_);
+int IVFIndex::load_streamer(const core::IndexStorage::Pointer &storage) {
+  const bool dedicated =
+      storage->get(core::IVF_RABITQ_HEADER_SEG_ID) != nullptr;
+  IndexMeta persisted;
+  int ret =
+      core::IndexHelper::DeserializeFromStorage(storage.get(), &persisted);
   if (ret != 0) return ret;
-  const auto quantizer_param =
-      param_.quantizer_param ? *param_.quantizer_param : QuantizerParam{};
-  ret = Index::create_and_init_converter_reformer(quantizer_param, param_);
-  if (ret != 0) return ret;
-  ret = create_and_init_metric(param_);
-  if (ret != 0) return ret;
-  return create_and_init_streamer(param_);
-}
+#if !RABITQ_SUPPORTED
+  if (dedicated || persisted.quantizer_name() == "RabitqQuantizer")
+    return core::IndexError_Unsupported;
+#endif
 
-int IVFIndex::load_streamer() {
-  IndexMeta persisted_meta;
-  int ret = core::IndexHelper::DeserializeFromStorage(storage_.get(),
-                                                      &persisted_meta);
-  if (ret != 0) return ret;
-  if (persisted_meta.quantizer_name().empty()) {
-    if (ivf_quantizer_) {
-      ret = restore_legacy_pipeline();
+  // Prepare a read pipeline without disturbing a build that may be retried.
+  IVFIndex loaded;
+  loaded.streamer_vector_meta_ = input_vector_meta_;
+  if (dedicated || persisted.quantizer_name().empty()) {
+    if (!dedicated && !legacy_rabitq_ && !ivf_quantizer_) {
+      // A legacy builder can supply a trained converter and reformer.
+      loaded.proxima_index_meta_ = proxima_index_meta_;
+      loaded.streamer_vector_meta_ = streamer_vector_meta_;
+      loaded.converter_ = converter_;
+      loaded.reformer_ = reformer_;
+    } else {
+      loaded.proxima_index_meta_.set_meta(param_.data_type, param_.dimension);
+      ret = loaded.parse_metric_name(param_);
+      if (ret != 0) return ret;
+      const QuantizerParam fallback(dedicated ? QuantizerType::kRabitq
+                                              : QuantizerType::kNone);
+      const auto &quantizer = !dedicated && param_.quantizer_param
+                                  ? *param_.quantizer_param
+                                  : fallback;
+      ret = loaded.Index::create_and_init_converter_reformer(quantizer, param_);
       if (ret != 0) return ret;
     }
-  } else {
-    // Persisted descriptors decide the posting format, including when a
-    // caller reopens an index with the default quantizer configuration.
-    if (persisted_meta.data_type() != input_vector_meta_.data_type() ||
-        persisted_meta.dimension() != input_vector_meta_.dimension() ||
-        persisted_meta.metric_name() !=
-            get_metric_name(param_.metric_type, false)) {
+    if (persisted.data_type() != loaded.proxima_index_meta_.data_type() ||
+        persisted.dimension() != loaded.proxima_index_meta_.dimension() ||
+        persisted.metric_name() != loaded.proxima_index_meta_.metric_name()) {
       return core::IndexError_Mismatch;
     }
-    converter_.reset();
-    reformer_.reset();
-    proxima_index_meta_ = persisted_meta;
-    ret = create_and_init_metric(param_);
+  } else {
+    if (persisted.data_type() != input_vector_meta_.data_type() ||
+        persisted.dimension() != input_vector_meta_.dimension() ||
+        persisted.metric_name() != get_metric_name(param_.metric_type, false)) {
+      return core::IndexError_Mismatch;
+    }
+    loaded.proxima_index_meta_ = persisted;
+  }
+  ret = loaded.create_and_init_metric(param_);
+  if (ret != 0) return ret;
+  auto streamer = core::IndexFactory::CreateStreamer(
+      dedicated ? "IvfRabitqStreamer" : "IVFStreamer");
+  if (!streamer) return core::IndexError_NoExist;
+  auto params = proxima_index_params_;
+#if RABITQ_SUPPORTED
+  if (dedicated) {
+    params.set(core::PARAM_RABITQ_GENERAL_DIMENSION,
+               input_vector_meta_.dimension());
+  }
+#endif
+  ret = streamer->init(persisted, params);
+  if (ret != 0) return ret;
+  ret = streamer->open(storage);
+  if (ret != 0) return ret;
+  if (loaded.reformer_) {
+    ret = loaded.reformer_->load(storage);
     if (ret != 0) return ret;
   }
-  // close() cleans up the streamer; reinitialize it before each load so
-  // reopening the same public Index instance follows the same lifecycle.
-  ret = streamer_->init(proxima_index_meta_, proxima_index_params_);
-  if (ret != 0) return ret;
-  ret = streamer_->open(storage_);
-  if (ret != 0) return ret;
-  auto ivf_streamer = std::dynamic_pointer_cast<core::IVFStreamer>(streamer_);
-  ivf_quantizer_ = ivf_streamer->quantizer();
-  if (reformer_) {
-    ret = reformer_->load(storage_);
-  }
-  return ret;
+  ivf_quantizer_ =
+      dedicated
+          ? nullptr
+          : std::static_pointer_cast<core::IVFStreamer>(streamer)->quantizer();
+  legacy_rabitq_ = dedicated;
+  use_rabitq_ =
+      dedicated ||
+      (ivf_quantizer_ && ivf_quantizer_->type() == turbo::QuantizeType::kRabit);
+  streamer_ = std::move(streamer);
+  proxima_index_meta_ = std::move(loaded.proxima_index_meta_);
+  streamer_vector_meta_ = loaded.streamer_vector_meta_;
+  converter_ = std::move(loaded.converter_);
+  reformer_ = std::move(loaded.reformer_);
+  metric_ = std::move(loaded.metric_);
+  builder_.reset();
+  return 0;
 }
 
 int IVFIndex::open(const std::string &file_path,
@@ -178,65 +242,45 @@ int IVFIndex::open(const std::string &file_path,
     LOG_ERROR("Cannot create storage for a read-only index");
     return core::IndexError_Runtime;
   }
+#if !RABITQ_SUPPORTED
+  if (storage_options.create_new && param_.quantizer_param &&
+      param_.quantizer_param->type == QuantizerType::kRabitq) {
+    return core::IndexError_Unsupported;
+  }
+#endif
   ailego::Params storage_params;
-  file_path_ = file_path;
-  is_read_only_ = storage_options.read_only;
+  const char *name;
   switch (storage_options.type) {
-    case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("MMapFileReadStorage");
-      if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create MMapFileStorage");
-        return core::IndexError_Runtime;
-      }
-      int ret = storage_->init(storage_params);
-      if (ret != 0) {
-        LOG_ERROR("Failed to init MMapFileStorage, path: %s, err: %s",
-                  file_path_.c_str(), core::IndexError::What(ret));
-        return ret;
-      }
+    case StorageOptions::StorageType::kMMAP:
+      name = "MMapFileReadStorage";
       break;
-    }
-    case StorageOptions::StorageType::kBufferPool: {
-      // IVF is immutable after training and FileDumper already emits the
-      // IndexFormat consumed by BufferReadStorage. Keep construction on the
-      // FileDumper path and use the bounded page cache after dump/reopen.
-      // Opening an index must not prewarm the entire file or displace other
-      // collections' cached pages. Populate the cache on demand instead.
+    case StorageOptions::StorageType::kBufferPool:
+      // Populate the bounded page cache on demand after dump/reopen.
+      name = "BufferReadStorage";
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
                          core::BUFFER_READ_STORAGE_WARMUP_NONE);
-      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
-      if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create BufferReadStorage for IVF");
-        return core::IndexError_Runtime;
-      }
-      int ret = storage_->init(storage_params);
-      if (ret != 0) {
-        LOG_ERROR(
-            "Failed to init BufferReadStorage for IVF, path: %s, "
-            "err: %s",
-            file_path_.c_str(), core::IndexError::What(ret));
-        return ret;
-      }
       break;
-    }
-    default: {
-      LOG_ERROR("Unsupported storage type");
+    default:
       return core::IndexError_Unsupported;
-    }
   }
-
-  if (is_read_only_ || !storage_options.create_new) {
-    // read_options.create_new
-    int ret = storage_->open(file_path_, false);
+  auto storage = core::IndexFactory::CreateStorage(name);
+  if (!storage) return core::IndexError_NoExist;
+  int ret = storage->init(storage_params);
+  if (ret != 0) return ret;
+  if (!storage_options.create_new) {
+    ret = storage->open(file_path, false);
     if (ret != 0) {
-      LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
+      LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
                 core::IndexError::What(ret));
       return core::IndexError_Runtime;
     }
-    ret = load_streamer();
+    ret = load_streamer(storage);
     if (ret != 0) return ret;
     is_trained_ = true;
   }
+  storage_ = std::move(storage);
+  file_path_ = file_path;
+  is_read_only_ = storage_options.read_only;
   is_open_ = true;
   return 0;
 }
@@ -302,12 +346,24 @@ int IVFIndex::reset_builder() {
   if (!next_builder) {
     return core::IndexError_NoExist;
   }
+  auto quantizer = ivf_quantizer_;
+  if (quantizer && quantizer->type() == turbo::QuantizeType::kRabit &&
+      !quantizer->require_train()) {
+    // Explicit merge inputs start a new training run, even after a failed dump.
+    quantizer = core::IndexFactory::CreateQuantizer(
+        proxima_index_meta_.quantizer_name());
+    if (!quantizer) return core::IndexError_NoExist;
+    int ret = quantizer->init(proxima_index_meta_,
+                              proxima_index_meta_.quantizer_params());
+    if (ret != 0) return ret;
+  }
   int ret =
       next_builder->init(converter_ ? converter_->meta() : proxima_index_meta_,
-                         proxima_index_params_, ivf_quantizer_);
+                         proxima_index_params_, quantizer);
   if (ret != 0) {
     return ret;
   }
+  ivf_quantizer_ = std::move(quantizer);
   builder_ = std::move(next_builder);
   return 0;
 }
@@ -341,12 +397,8 @@ int IVFIndex::dump_and_open() {
     }
     dumper.reset();
 
-    // Release the full builder state before opening the persisted index.
-    // If opening fails, retry only open: the replacement builder is empty.
-    ret = reset_builder();
-    if (ret != 0) {
-      return ret;
-    }
+    // A retry at kDumped only reopens the file.
+    builder_.reset();
     build_stage_ = BuildStage::kDumped;
   } else if (build_stage_ != BuildStage::kDumped) {
     return core::IndexError_NoReady;
@@ -364,7 +416,7 @@ int IVFIndex::dump_and_open() {
               core::IndexError::What(ret));
     return core::IndexError_Runtime;
   }
-  ret = load_streamer();
+  ret = load_streamer(storage_);
   if (ret != 0) return ret;
   is_trained_ = true;
   // Only the reformer is needed after the persisted index is ready. Destroy
@@ -379,6 +431,7 @@ int IVFIndex::dump_and_open() {
 int IVFIndex::_dense_fetch(const uint32_t doc_id,
                            VectorDataBuffer *vector_data_buffer) {
   if (is_trained_) {
+    if (use_rabitq_) return core::IndexError_Unsupported;
     if (ivf_quantizer_) {
       auto provider = streamer_->create_provider();
       if (!provider) return core::IndexError_NoReady;
@@ -439,13 +492,53 @@ int IVFIndex::_prepare_for_search(
     LOG_ERROR("Invalid search param type, expected IVFQueryParam");
     return core::IndexError_InvalidArgument;
   }
-
-  if (search_param->group_by_param && search_param->group_by_param->group_by) {
+  // Pruning controls the base scan; dot reuse also supports the kFlat refiner.
+  const bool disable_pruning = !ivf_search_param->rabitq_pruning;
+  const bool reuse = ivf_search_param->rabitq_reuse_coarse_dot;
+  if ((reuse || disable_pruning) &&
+      (!use_rabitq_ || legacy_rabitq_ || search_param->bf_pks)) {
+    LOG_ERROR("RaBitQ scan options require Turbo IVF without bf_pks");
+    return core::IndexError_Unsupported;
+  }
+  if (disable_pruning && search_param->refiner_param) {
+    LOG_ERROR("Disabling RaBitQ pruning requires Turbo IVF without refiner");
+    return core::IndexError_Unsupported;
+  }
+  if (use_rabitq_ &&
+      (ivf_search_param->fetch_vector || ivf_search_param->nprobe <= 0)) {
+    return core::IndexError_InvalidArgument;
+  }
+  if (!supports_group_by() && search_param->group_by_param &&
+      search_param->group_by_param->group_by) {
     LOG_ERROR("group_by search is not supported for IVF index");
     return core::IndexError_Unsupported;
   }
 
-  context->reset_threshold();
+  // The public IVF type shares one thread-local context slot across its
+  // posting formats. Replace an incompatible context before applying options.
+  auto *ivf_context = dynamic_cast<core::IVFSearcherContext *>(context.get());
+  auto *ivf_streamer = dynamic_cast<core::IVFStreamer *>(streamer_.get());
+  // Bind the current entity before applying nprobe. A later entity switch in
+  // search_impl would otherwise replace query options with index defaults.
+  bool compatible =
+      ivf_context && ivf_streamer && ivf_streamer->owns_context(*ivf_context);
+#if RABITQ_SUPPORTED
+  if (legacy_rabitq_) {
+    compatible = dynamic_cast<core::IvfRabitqContext *>(context.get());
+  }
+#endif
+  if (!compatible) {
+    auto replacement = streamer_->create_context();
+    if (!replacement) return core::IndexError_NoReady;
+    context = std::move(replacement);
+  }
+  // Always reapply defaults as well: pooled contexts must not leak A/B modes.
+  if (auto *ctx = dynamic_cast<core::IVFSearcherContext *>(context.get())) {
+    ctx->entity()->set_packed_scan_pruning(ivf_search_param->rabitq_pruning);
+    ctx->entity()->set_packed_scan_reuse_dot(
+        ivf_search_param->rabitq_reuse_coarse_dot);
+  }
+  _set_group_by_on_context(search_param, context);
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
   if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
@@ -459,11 +552,14 @@ int IVFIndex::_prepare_for_search(
       metric_->denormalize(&threshold);
     }
     context->set_threshold(threshold);
+  } else {
+    context->reset_threshold();
   }
 
   ailego::Params params;
   // Zero explicitly restores scan_ratio instead of retaining a previous query.
-  params.set(core::PARAM_IVF_SEARCHER_NPROBE,
+  params.set(legacy_rabitq_ ? core::PARAM_IVF_RABITQ_NPROBE
+                            : core::PARAM_IVF_SEARCHER_NPROBE,
              static_cast<uint32_t>(std::max(0, ivf_search_param->nprobe)));
   return context->update(params);
 }
