@@ -15,37 +15,25 @@
 #include "code_token_filter.h"
 #include <algorithm>
 #include <limits>
+#include <locale>
 #include <string_view>
 #include <zvec/ailego/logger/logger.h>
 
 namespace zvec::fts {
 namespace {
 
-bool is_upper(char ch) {
-  return ch >= 'A' && ch <= 'Z';
-}
+using CType = std::ctype<char>;
 
-bool is_lower(char ch) {
-  return ch >= 'a' && ch <= 'z';
-}
-
-bool is_digit(char ch) {
-  return ch >= '0' && ch <= '9';
-}
-
-bool is_identifier_char(char ch) {
-  return is_lower(ch) || is_upper(ch) || is_digit(ch) || ch == '_';
-}
-
-bool starts_subword(std::string_view segment, size_t i) {
-  if (i == 0 || !is_upper(segment[i])) {
+bool starts_subword(const CType &ctype, std::string_view segment, size_t i) {
+  if (i == 0 || !ctype.is(CType::upper, segment[i])) {
     return false;
   }
   const char prev = segment[i - 1];
   // A capital starts a word after a lowercase letter or digit (getValue),
   // or at the end of an acronym followed by a lowercase letter (HTTPServer).
-  return is_lower(prev) || is_digit(prev) ||
-         (is_upper(prev) && i + 1 < segment.size() && is_lower(segment[i + 1]));
+  return ctype.is(CType::lower | CType::digit, prev) ||
+         (ctype.is(CType::upper, prev) && i + 1 < segment.size() &&
+          ctype.is(CType::lower, segment[i + 1]));
 }
 
 bool append_part(std::string_view part, uint64_t offset,
@@ -66,13 +54,17 @@ bool append_part(std::string_view part, uint64_t offset,
 
 bool split_segment(std::string_view segment, uint64_t offset,
                    std::vector<Token> *output) {
-  if (!std::all_of(segment.begin(), segment.end(), is_identifier_char)) {
+  // Keep identifier boundaries independent of the application's locale.
+  static const auto &ctype = std::use_facet<CType>(std::locale::classic());
+  if (!std::all_of(segment.begin(), segment.end(), [](char ch) {
+        return ch == '_' || ctype.is(CType::alnum, ch);
+      })) {
     return append_part(segment, offset, output);
   }
 
   size_t start = 0;
   for (size_t i = 0; i < segment.size(); ++i) {
-    if (segment[i] == '_' || starts_subword(segment, i)) {
+    if (segment[i] == '_' || starts_subword(ctype, segment, i)) {
       if (!append_part(segment.substr(start, i - start), offset + start,
                        output)) {
         return false;
