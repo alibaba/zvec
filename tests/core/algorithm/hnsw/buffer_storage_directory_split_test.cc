@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <limits>
 #include <mutex>
@@ -167,6 +168,7 @@ struct PausedFooterWrite {
   bool resume{false};
 };
 thread_local PausedFooterWrite *paused_footer_write = nullptr;
+thread_local std::function<void()> *before_next_write = nullptr;
 
 struct RefreshOnFooterWrite {
   off_t offset;
@@ -216,6 +218,11 @@ thread_local PausedDataWrite *paused_data_write = nullptr;
 // Write a real prefix of the footer. Each fault is armed for one write.
 ssize_t InjectPwrite(decltype(&::pwrite) write_at, int fd, const void *buffer,
                      size_t count, off_t offset) {
+  if (before_next_write) {
+    auto &callback = *before_next_write;
+    before_next_write = nullptr;
+    callback();
+  }
   if (refresh_on_footer_write && refresh_on_footer_write->offset == offset) {
     auto &request = *refresh_on_footer_write;
     refresh_on_footer_write = nullptr;
@@ -671,6 +678,35 @@ TEST_F(BufferStorageDirectorySplitTest, InPlaceAppendFailureRemovesMapping) {
   ASSERT_NO_FATAL_FAILURE(verify_retry(name));
 }
 
+TEST_F(BufferStorageDirectorySplitTest, MMapOpenCannotTrimLiveBufferAppend) {
+  auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, mmap);
+  ASSERT_EQ(0, mmap->init({}));
+  zvec::ailego::File file;
+  ASSERT_TRUE(file.open(path_.c_str(), true));
+  const size_t original_size = file.size();
+
+  bool reached_publication = false;
+  std::function<void()> open_during_append = [&] {
+    reached_publication = true;
+    EXPECT_EQ(original_size + page_size_, file.size());
+    const int status = mmap->open(path_, false);
+    EXPECT_EQ(IndexError_Busy, status);
+    if (status == 0) mmap->close();
+    EXPECT_EQ(original_size + page_size_, file.size());
+  };
+  before_next_write = &open_during_append;
+  const int status = writer_->append("new_segment", page_size_);
+  before_next_write = nullptr;
+  ASSERT_EQ(0, status);
+  ASSERT_TRUE(reached_publication);
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, mmap->open(path_, false));
+  EXPECT_TRUE(mmap->has("new_segment"));
+  EXPECT_EQ(original_size + page_size_, file.size());
+  EXPECT_EQ(0, mmap->close());
+}
+
 TEST_F(BufferStorageDirectorySplitTest, MMapAppendAfterFailedInPlaceAppend) {
   ASSERT_NO_FATAL_FAILURE(append_old_segment());
   ASSERT_EQ(0, writer_->flush());
@@ -1056,6 +1092,95 @@ void CreateFormatPageLayoutIndex(const std::string &path,
   out.seekp(footer.total_size - 1);
   out.put('\0');
   ASSERT_TRUE(out);
+}
+
+TEST_F(BufferStorageDirectorySplitTest, WriterCanContinueAfterMMapTrimsSlack) {
+  constexpr size_t format_page = 4096;
+  if (page_size_ <= format_page) {
+    GTEST_SKIP() << "requires a host page larger than the file layout";
+  }
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_NO_FATAL_FAILURE(CreateFormatPageLayoutIndex(path_, format_page));
+  ASSERT_EQ(0, writer_->open(path_, IndexStorage::OpenOptions{false, false}));
+  ASSERT_EQ(0, writer_->append("first", page_size_));
+  auto first = writer_->get("first");
+  ASSERT_NE(nullptr, first);
+  const size_t last_page_offset = page_size_ - format_page;
+  const zvec::ailego::block_id_t page_id =
+      (first->data_offset() + last_page_offset) / page_size_;
+  auto pool = writer_->vec_buffer_pool();
+  auto evict_tail = [&] {
+    for (int i = 0; i < 64 && pool->is_page_resident(page_id); ++i) {
+      zvec::ailego::BlockEvictionQueue::get_instance().batch_recycle(64);
+    }
+    ASSERT_FALSE(pool->is_page_resident(page_id));
+  };
+  ASSERT_EQ(kOldData.size(),
+            first->write(last_page_offset, kOldData.data(), kOldData.size()));
+  ASSERT_EQ(0, writer_->flush());
+  ASSERT_NO_FATAL_FAILURE(evict_tail());
+  const size_t committed_end = first->data_offset() + first->capacity();
+  ASSERT_GT(writer_->vec_buffer_pool()->file_size(), committed_end);
+
+  auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, mmap);
+  ASSERT_EQ(0, mmap->init({}));
+  ASSERT_EQ(0, mmap->open(path_, false));
+  ASSERT_EQ(0, mmap->close());
+  zvec::ailego::File file;
+  ASSERT_TRUE(file.open(path_.c_str(), false));
+  ASSERT_EQ(committed_end, file.size());
+
+  std::array<char, kOldData.size()> actual{};
+  ASSERT_EQ(actual.size(),
+            first->fetch(last_page_offset, actual.data(), actual.size()));
+  EXPECT_EQ(kOldData, actual);
+  ASSERT_NO_FATAL_FAILURE(evict_tail());
+
+  const size_t page_offset = page_id * page_size_;
+  char *page = nullptr;
+#if defined(__APPLE__) && TARGET_OS_OSX
+  // The native batch must accept the short tail without falling back to pread.
+  failed_read_hit = false;
+  failed_read_offset = static_cast<off_t>(page_offset);
+#endif
+  const bool acquired = pool->acquire_pages(&page_id, 1, &page);
+#if defined(__APPLE__) && TARGET_OS_OSX
+  failed_read_offset = -1;
+  EXPECT_FALSE(failed_read_hit);
+#endif
+  ASSERT_TRUE(acquired);
+  ASSERT_NE(nullptr, page);
+  const size_t offset_in_page =
+      first->data_offset() + last_page_offset - page_offset;
+  EXPECT_EQ(
+      0, std::memcmp(page + offset_in_page, kOldData.data(), kOldData.size()));
+  pool->release_pages(&page_id, 1);
+  ASSERT_NO_FATAL_FAILURE(evict_tail());
+
+  ASSERT_TRUE(file.truncate(committed_end - 1));
+  EXPECT_EQ(0u, first->fetch(last_page_offset, actual.data(), actual.size()));
+  EXPECT_FALSE(pool->is_page_resident(page_id));
+  ASSERT_TRUE(file.truncate(committed_end));
+
+  ASSERT_EQ(kNewData.size(),
+            first->write(last_page_offset, kNewData.data(), kNewData.size()));
+  // The cache still remembers the larger EOF until storage synchronizes it.
+  // Even a data-only writeback must stay inside the committed extent.
+  ASSERT_EQ(0, writer_->vec_buffer_pool()->flush_all());
+  EXPECT_EQ(committed_end, file.size());
+  ASSERT_EQ(0, writer_->flush());
+  EXPECT_EQ(committed_end, writer_->vec_buffer_pool()->file_size());
+  ASSERT_EQ(0, writer_->append("second", page_size_));
+  ASSERT_EQ(0, writer_->close());
+  ASSERT_EQ(0, mmap->open(path_, false));
+  EXPECT_TRUE(mmap->has("second"));
+  auto reopened = mmap->get("first");
+  ASSERT_NE(nullptr, reopened);
+  EXPECT_EQ(actual.size(),
+            reopened->fetch(last_page_offset, actual.data(), actual.size()));
+  EXPECT_EQ(kNewData, actual);
+  EXPECT_EQ(0, mmap->close());
 }
 
 TEST_F(BufferStorageDirectorySplitTest, SplitOnLegacyFormatPageKeepsDirectory) {

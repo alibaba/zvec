@@ -17,6 +17,7 @@
 #include <sys/mman.h>
 #endif
 #include <ailego/utility/memory_helper.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include "utility/legacy_read_buffer.h"
 
 // #define DEBUG_PRINT
@@ -26,13 +27,23 @@ namespace core {
 namespace {
 
 int WriteNeighborFragments(Chunk *chunk,
-                           const IndexStorage::SegmentData (&writes)[2]) {
-  if (chunk->write_batch(writes, 2)) return 0;
-  const int error = chunk->write_error();
-  if (error != IndexError_NoMemory) return error;
+                           const IndexStorage::SegmentData (&writes)[2],
+                           HnswStorageMode storage_mode) {
+  bool crosses_page = false;
+  if (storage_mode == HnswStorageMode::kBufferPool && writes[0].length) {
+    const size_t offset_in_page =
+        (chunk->data_offset() + writes[1].offset) % ailego::kVectorPageSize;
+    const size_t span = writes[0].offset - writes[1].offset + writes[0].length;
+    crosses_page = span > ailego::kVectorPageSize - offset_in_page;
+  }
+  if (!crosses_page) {
+    if (chunk->write_batch(writes, 2)) return 0;
+    const int error = chunk->write_error();
+    if (error != IndexError_NoMemory) return error;
+  }
 
-  // BufferStorage admits all batch pages before modifying any of them.
-  // Scalar writes can recycle pages between fragments and keep the count last.
+  // Multi-page admission can wait on a page already pinned by the same batch.
+  // Scalar writes recycle pages between fragments and keep the count last.
   for (const auto &fragment : writes) {
     if (fragment.length && chunk->write(fragment.offset, fragment.data,
                                         fragment.length) != fragment.length) {
@@ -274,7 +285,7 @@ int HnswStreamerEntity::update_neighbors(
   writes[0] = {loc.second + sizeof(NeighborsHeader), i * sizeof(node_id_t),
                hd->neighbors};
   writes[1] = {loc.second, sizeof(hd->neighbor_cnt), &hd->neighbor_cnt};
-  return WriteNeighborFragments(loc.first, writes);
+  return WriteNeighborFragments(loc.first, writes, storage_mode());
 }
 
 const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
@@ -513,7 +524,7 @@ int HnswStreamerEntity::add_neighbor(level_t level, node_id_t id, uint32_t size,
   IndexStorage::SegmentData writes[2];
   writes[0] = {offset, sizeof(neighbor_id), &neighbor_id};
   writes[1] = {loc.second, sizeof(neighbors), &neighbors};
-  return WriteNeighborFragments(loc.first, writes);
+  return WriteNeighborFragments(loc.first, writes, storage_mode());
 }
 
 int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {

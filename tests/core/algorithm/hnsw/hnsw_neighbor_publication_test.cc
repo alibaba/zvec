@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <gtest/gtest.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include "hnsw_params.h"
 #include "hnsw_streamer.h"
 #include "hnsw_streamer_entity.h"
@@ -52,8 +53,13 @@ class ObservedNeighborSegment : public LayoutTestSegment {
                       len - head);
   }
 
+  size_t data_offset() const override {
+    return file_offset;
+  }
+
   std::function<void()> observe;
   std::function<int()> batch_failure;
+  size_t file_offset{0};
 
  private:
   int batch_error_{0};
@@ -141,6 +147,34 @@ TEST(HnswNeighborPublication, AdmissionFailureFallsBackBeforePublishingCount) {
   entity.add_neighbor(1, 0, 1, 2);
   EXPECT_EQ((std::vector<uint32_t>{0, 1, 1, 2}), observed_counts);
   storage->segment->observe = nullptr;
+  EXPECT_EQ(0, entity.close());
+}
+
+TEST(HnswNeighborPublication, BufferPoolCrossPageWriteSkipsBatchAdmission) {
+  auto storage = std::make_shared<ObservedNeighborStorage>();
+  IndexStreamer::Stats stats;
+  HnswBufferPoolStreamerEntity entity(stats);
+  entity.set_vector_size(sizeof(float));
+  entity.set_l0_neighbor_cnt(16);
+  entity.set_upper_neighbor_cnt(16);
+  entity.set_scaling_factor(16);
+  entity.set_ef_construction(100);
+  ASSERT_EQ(0, entity.init(10000));
+  ASSERT_EQ(0, entity.open(storage, 32 * 1024 * 1024, false));
+  float vector = 1.0f;
+  ASSERT_EQ(0, entity.add_vector_with_id(1, 0, &vector));
+  ASSERT_EQ(0, entity.add_vector_with_id(1, 1, &vector));
+  ASSERT_NE(nullptr, storage->segment);
+  storage->segment->file_offset = ailego::kVectorPageSize - sizeof(uint32_t);
+  storage->segment->batch_failure = [] {
+    ADD_FAILURE() << "A cross-page write tried to pin both pages";
+    return IndexError_NoMemory;
+  };
+
+  ASSERT_EQ(0, entity.update_neighbors(1, 0, {{1, 0.0f}}));
+  auto neighbors = entity.get_neighbors(1, 0);
+  ASSERT_EQ(1U, neighbors.size());
+  EXPECT_EQ(1U, neighbors[0]);
   EXPECT_EQ(0, entity.close());
 }
 

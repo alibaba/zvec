@@ -13,19 +13,14 @@
 // limitations under the License.
 
 #include <algorithm>
-#include <cerrno>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/io/mmap_file.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_mapping.h>
-#include "ailego/io/file_lock.h"
 #include "ailego/utility/memory_helper.h"
-
-#if defined(_WIN32) || defined(_WIN64)
-#include <Windows.h>
-#endif
+#include "index_file_write_lock.h"
 
 #ifdef __linux__
 #include <sys/statfs.h>
@@ -37,57 +32,6 @@
 
 namespace zvec {
 namespace core {
-
-namespace {
-
-class MappingWriteLock {
- public:
-  explicit MappingWriteLock(const ailego::File &file)
-      : handle_(file.native_handle()) {}
-
-  ~MappingWriteLock() {
-    if (!locked_) return;
-#if defined(_WIN32) || defined(_WIN64)
-    UnlockFileEx(handle_, 0, 1, 0, &range_);
-#else
-    ailego::FileLock::Unlock(handle_);
-#endif
-  }
-
-  int try_lock() {
-#if defined(_WIN32) || defined(_WIN64)
-    // Windows enforces byte-range locks on ordinary I/O. Lock a byte beyond
-    // the index data so other handles can still read the file.
-    range_.OffsetHigh = 0x40000000;
-    locked_ =
-        LockFileEx(handle_, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY,
-                   0, 1, 0, &range_) != 0;
-    if (!locked_ && GetLastError() == ERROR_LOCK_VIOLATION) {
-      return IndexError_Busy;
-    }
-#else
-    do {
-      locked_ = ailego::FileLock::TryLock(handle_);
-    } while (!locked_ && errno == EINTR);
-    if (!locked_ && (errno == EWOULDBLOCK || errno == EAGAIN)) {
-      return IndexError_Busy;
-    }
-#endif
-    return locked_ ? IndexError_Success : IndexError_IO;
-  }
-
-  MappingWriteLock(const MappingWriteLock &) = delete;
-  MappingWriteLock &operator=(const MappingWriteLock &) = delete;
-
- private:
-  const ailego::File::NativeHandle handle_;
-#if defined(_WIN32) || defined(_WIN64)
-  OVERLAPPED range_{};
-#endif
-  bool locked_{false};
-};
-
-}  // namespace
 
 static inline size_t CalcPageAlignedSize(size_t size, bool huge_size) {
   size_t page_size = ailego::MemoryHelper::PageSize();
@@ -161,7 +105,7 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) try {
     if (!opened) close();
   });
   // Read the directory and recover its tail under the same lock as append.
-  MappingWriteLock lock(file_);
+  IndexFileWriteLock lock(file_.native_handle());
   if (!read_only) {
     const int status = lock.try_lock();
     if (status != 0) return status;
@@ -188,8 +132,13 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) try {
       // Release the views before shrinking, while retaining the same handle.
       reset_mappings();
       pending_truncate_size_ = committed_size;
-      error_code = discard_unpublished_tail();
-      if (error_code == 0) error_code = init_index_mapping(mapping_size);
+      bool mapped_tail = false;
+      error_code = discard_unpublished_tail(&mapped_tail);
+      if (error_code == 0) {
+        error_code = init_index_mapping(mapping_size);
+        // Future appends must allocate past a tail still covered by a reader.
+        if (error_code == 0 && mapped_tail) index_size_ = file_size;
+      }
     }
   }
   if (error_code == 0) {
@@ -439,7 +388,7 @@ int IndexMapping::check_backing_file() const {
   return IndexError_Busy;
 }
 
-int IndexMapping::discard_unpublished_tail() {
+int IndexMapping::discard_unpublished_tail(bool *mapped_tail) {
   if (pending_truncate_size_ == 0) return 0;
   const size_t file_size = file_.size();
   if (header_ && file_size > pending_truncate_size_) {
@@ -466,6 +415,16 @@ int IndexMapping::discard_unpublished_tail() {
   if (file_size < pending_truncate_size_ ||
       (file_size > pending_truncate_size_ &&
        !file_.truncate(pending_truncate_size_))) {
+#if defined(_WIN32) || defined(_WIN64)
+    if (mapped_tail && file_size > pending_truncate_size_ &&
+        ::GetLastError() == ERROR_USER_MAPPED_FILE) {
+      *mapped_tail = true;
+      pending_truncate_size_ = 0;
+      return 0;
+    }
+#else
+    (void)mapped_tail;
+#endif
     LOG_ERROR("Failed to discard unlinked index metadata, %s",
               ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_TruncateFile;
@@ -490,17 +449,21 @@ void IndexMapping::refresh(uint64_t check_point) {
   header_dirty_ = true;
 }
 
-int IndexMapping::append(const std::string &id, size_t size) try {
+int IndexMapping::append(const std::string &id, size_t size) {
+  return append_impl(id, size);
+}
+
+int IndexMapping::append_impl(const std::string &id, size_t size,
+                              bool holds_file_lock) try {
   if (id.find('\0') != std::string::npos) return IndexError_InvalidArgument;
   size = CalcPageAlignedSize(size, huge_page_);
   if (size == 0) {
     return IndexError_InvalidArgument;
   }
-
   if (!footer_) return IndexError_Uninitialized;
-  MappingWriteLock lock(file_);
+  IndexFileWriteLock lock(file_.native_handle());
   const bool writable = !copy_on_write_ || full_mode_;
-  if (writable) {
+  if (writable && !holds_file_lock) {
     const int status = lock.try_lock();
     if (status != 0) return status;
     const int backing_status = check_backing_file();
@@ -701,7 +664,7 @@ void IndexMapping::unmap_segment(SegmentInfo &info) {
 
 int IndexMapping::flush() {
   if (!header_) return IndexError_Uninitialized;
-  MappingWriteLock lock(file_);
+  IndexFileWriteLock lock(file_.native_handle());
   const bool writable = !copy_on_write_ || full_mode_;
   if (writable) {
     const int status = lock.try_lock();

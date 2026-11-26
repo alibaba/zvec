@@ -38,6 +38,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_mapping.h>
 #include <zvec/core/framework/index_version.h>
+#include "core/framework/index_file_write_lock.h"
 #include "reusable_read_scratch.h"
 #include "utility_params.h"
 
@@ -68,12 +69,16 @@ inline bool AlignBufferSize(size_t size, size_t *aligned_size,
   return true;
 }
 
-ailego::File::Identity FileIdentity(int fd) {
+ailego::File::NativeHandle BackingFileHandle(int fd) {
 #if defined(_MSC_VER)
-  return ailego::File::Identify(reinterpret_cast<HANDLE>(_get_osfhandle(fd)));
+  return reinterpret_cast<HANDLE>(_get_osfhandle(fd));
 #else
-  return ailego::File::Identify(fd);
+  return fd;
 #endif
+}
+
+ailego::File::Identity FileIdentity(int fd) {
+  return ailego::File::Identify(BackingFileHandle(fd));
 }
 
 // C++17-compatible atomic access to serialized uint64_t fields.
@@ -1511,13 +1516,23 @@ class BufferStorage : public IndexStorage {
       }
     }
 
+    const auto &io_path = staged_file_ ? staged_file_->path() : path;
+    ailego::File locked_file;
+    if (writable && !locked_file.open(io_path.c_str(), false, false)) {
+      return IndexError_OpenFile;
+    }
+    IndexFileWriteLock file_lock(locked_file.native_handle());
+    if (writable) {
+      const int status = file_lock.try_lock();
+      if (status != 0) return status;
+    }
     try {
-      const auto &io_path = staged_file_ ? staged_file_->path() : path;
       auto candidate_pool = std::make_shared<ailego::VecBufferPool>(
           io_path, writable, staged_file_ != nullptr);
-      if (created_file->valid &&
-          !(FileIdentity(candidate_pool->file_descriptor()) == *created_file)) {
-        LOG_ERROR("Index file was replaced during creation %s", path.c_str());
+      const auto identity = FileIdentity(candidate_pool->file_descriptor());
+      if ((created_file->valid && !(identity == *created_file)) ||
+          (writable && !(identity == locked_file.identity()))) {
+        LOG_ERROR("Index file was replaced during open %s", path.c_str());
         return IndexError_OpenFile;
       }
       auto candidate_handle =
@@ -1555,6 +1570,7 @@ class BufferStorage : public IndexStorage {
     // Parsing bounds every non-tail chain by the start of the following
     // chain. Only bytes past the tail's allocation can be discarded.
     const uint64_t used_end = meta_chains_.back().allocated_file_end();
+    if (writable) buffer_pool_->set_committed_end(used_end);
     if (writable && used_end < buffer_pool_->file_size() &&
         !buffer_pool_->truncate_unused_tail(used_end)) {
       this->close_index(/*force=*/true, /*flush_pending=*/false);
@@ -1964,7 +1980,7 @@ class BufferStorage : public IndexStorage {
 
   //! PRECONDITION: caller holds AllShardsExclusiveLatch. Used by explicit
   //! flush, append and close.
-  int flush_index_locked() try {
+  int flush_index_locked(bool holds_file_lock = false) try {
     // No-op on never-opened / already-closed storage: close_index()
     // unconditionally calls us during teardown.
     if (!buffer_pool_ || !buffer_pool_handle_) {
@@ -2002,6 +2018,16 @@ class BufferStorage : public IndexStorage {
         pending_checkpoint_ = checkpoint;
       }
     });
+    const int fd = buffer_pool_->file_descriptor();
+    IndexFileWriteLock file_lock(BackingFileHandle(fd));
+    if (!holds_file_lock) {
+      const int status = file_lock.try_lock();
+      if (status != 0) return status;
+      if (!buffer_pool_->sync_backing_file_tail(
+              meta_chains_.back().allocated_file_end())) {
+        return IndexError_Busy;
+      }
+    }
     // Flush dirty data blocks first.
     if (buffer_pool_handle_->flush_all() != 0) {
       LOG_ERROR("flush_all data blocks failed: file[%s]", file_name_.c_str());
@@ -2196,6 +2222,15 @@ class BufferStorage : public IndexStorage {
       return IndexError_Runtime;
     }
 
+    const int fd = buffer_pool_->file_descriptor();
+    IndexFileWriteLock file_lock(BackingFileHandle(fd));
+    const int file_status = file_lock.try_lock();
+    if (file_status != 0) return file_status;
+    if (!buffer_pool_->sync_backing_file_tail(
+            meta_chains_.back().allocated_file_end())) {
+      return IndexError_Busy;
+    }
+
     // Page-aligned padded size; matches IndexMapping::CalcPageAlignedSize().
     const size_t page_size = ailego::kVectorPageSize;
     if (size > std::numeric_limits<size_t>::max() - (page_size - 1)) {
@@ -2293,7 +2328,7 @@ class BufferStorage : public IndexStorage {
 
       // A reader can follow the new link as soon as it is written. Persist
       // the existing chains and their checkpoint before exposing that link.
-      const int status = flush_index_locked();
+      const int status = flush_index_locked(/*holds_file_lock=*/true);
       if (status != 0) return status;
       original_file_size = buffer_pool_->file_size();
 
@@ -2324,7 +2359,7 @@ class BufferStorage : public IndexStorage {
     } else if (metadata_writeback_incomplete_) {
       // An in-place append only writes the tail. Finish interrupted metadata
       // writeback before publishing it, including any affected older chain.
-      const int status = flush_index_locked();
+      const int status = flush_index_locked(/*holds_file_lock=*/true);
       if (status != 0) return status;
       original_file_size = buffer_pool_->file_size();
     }
@@ -2477,6 +2512,7 @@ class BufferStorage : public IndexStorage {
     // A committed append makes any earlier rollback's tail record
     // obsolete: truncating now would cut the freshly committed chain.
     pending_tail_truncation_.reset();
+    buffer_pool_->set_committed_end(new_file_size);
     committed = true;
     return 0;
   } catch (const std::bad_alloc &) {

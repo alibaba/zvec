@@ -195,12 +195,16 @@ class IndexMapping {
   IndexMapping &operator=(const IndexMapping &) = delete;
 
  private:
+  friend class HnswBuildDumper;
+
   int create_impl(const std::string &path, size_t seg_meta_capacity,
                   bool exclusive);
   void reset_mappings();
   static void unmap_segment(SegmentInfo &segment_info);
   int check_backing_file() const;
-  int discard_unpublished_tail();
+  int discard_unpublished_tail(bool *mapped_tail = nullptr);
+  int append_impl(const std::string &id, size_t size,
+                  bool holds_file_lock = false);
   int flush_locked(bool expanding = false);
   void swap(IndexMapping &rhs) noexcept;
   struct MetaMapping {

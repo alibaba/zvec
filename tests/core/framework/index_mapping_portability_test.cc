@@ -21,6 +21,7 @@
 #include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/io/mmap_file.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_mapping.h>
 #if defined(_WIN32)
@@ -227,6 +228,34 @@ TEST(IndexMappingPortability, TailRecoveryPreservesReservedSegmentPadding) {
   EXPECT_EQ(kWriterPage - sizeof(kOriginal), first->meta()->padding_size);
   EXPECT_EQ(kValue, *static_cast<const uint64_t *>(retry->data()));
 }
+
+#if defined(_WIN32)
+TEST(IndexMappingPortability, MappedReaderDefersTailRecovery) {
+  constexpr size_t kWriterPage = 4096;
+  const std::string path = "index_mapping_mapped_reader.tmp";
+  ASSERT_NO_FATAL_FAILURE(WriteForeignIndex(path, kWriterPage));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  ailego::File file;
+  ASSERT_TRUE(file.open(path, false));
+  ASSERT_TRUE(file.truncate(3 * kWriterPage));
+
+  ailego::MMapFile reader;
+  ASSERT_TRUE(reader.open(file, true, false));
+  IndexMapping writable;
+  ASSERT_EQ(0, writable.open(path, false, false));
+  auto *segment = writable.map("first", false, false);
+  ASSERT_NE(nullptr, segment);
+  EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(segment->data()));
+  EXPECT_EQ(3 * kWriterPage, file.size());
+  writable.close();
+
+  reader.close();
+  ASSERT_EQ(0, writable.open(path, false, false));
+  EXPECT_EQ(2 * kWriterPage, file.size());
+  EXPECT_TRUE(writable.has("first"));
+}
+#endif
 
 #if defined(__APPLE__)
 TEST(IndexMappingPortability, WritableOpenCannotRecoverAnActiveAppend) {
