@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstddef>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
@@ -34,6 +36,10 @@
 namespace {
 thread_local bool fail_next_file_mapping = false;
 thread_local off_t fail_truncate_to = 0;
+thread_local off_t observe_truncate_to = 0;
+thread_local std::function<void()> after_truncate;
+thread_local size_t short_directory_write = 0;
+thread_local off_t fail_write_at = 0;
 }  // namespace
 
 // The File implementation is linked into this test. Fail one native file
@@ -58,7 +64,30 @@ extern "C" int ftruncate(int fd, off_t len) {
   }
   static const auto truncate =
       reinterpret_cast<decltype(&ftruncate)>(dlsym(RTLD_NEXT, "ftruncate"));
-  return truncate(fd, len);
+  const int ret = truncate(fd, len);
+  if (ret == 0 && observe_truncate_to && len == observe_truncate_to) {
+    observe_truncate_to = 0;
+    after_truncate();
+  }
+  return ret;
+}
+
+extern "C" ssize_t pwrite(int fd, const void *data, size_t size, off_t offset) {
+  static const auto write =
+      reinterpret_cast<decltype(&pwrite)>(dlsym(RTLD_NEXT, "pwrite"));
+  if (short_directory_write && offset == 0 && size > short_directory_write) {
+    const size_t prefix = short_directory_write;
+    short_directory_write = 0;
+    const ssize_t written = write(fd, data, prefix, offset);
+    if (written > 0) fail_write_at = written;
+    return written;
+  }
+  if (fail_write_at && offset == fail_write_at) {
+    fail_write_at = 0;
+    errno = EIO;
+    return -1;
+  }
+  return write(fd, data, size, offset);
 }
 #endif
 
@@ -200,6 +229,174 @@ TEST(IndexMappingPortability, TailRecoveryPreservesReservedSegmentPadding) {
 }
 
 #if defined(__APPLE__)
+TEST(IndexMappingPortability, WritableOpenCannotRecoverAnActiveAppend) {
+  const size_t page = ailego::MemoryHelper::PageSize();
+  constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  const std::string path = "index_mapping_active_append.tmp";
+  ASSERT_NO_FATAL_FAILURE(WriteForeignIndex(path, page, kFirstIdOffset));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  IndexMapping writer;
+  IndexMapping other;
+  ASSERT_EQ(0, writer.open(path, false, false));
+
+  // While append is paused after extending but before updating its footer,
+  // a second file handle attempts writable recovery of the same path.
+  int other_status = 0;
+  observe_truncate_to = page * 3;
+  after_truncate = [&] {
+    other_status = other.open(path, false, false);
+    other.close();
+    ailego::File file;
+    ASSERT_TRUE(file.open(path, true));
+    EXPECT_EQ(page * 3, file.size());
+  };
+  const int append_status = writer.append("second", page);
+  after_truncate = {};
+  EXPECT_EQ(0, observe_truncate_to);
+  observe_truncate_to = 0;
+  ASSERT_EQ(0, append_status);
+  ASSERT_EQ(IndexError_Busy, other_status);
+
+  constexpr uint64_t kValue = 42;
+  auto *second = writer.map("second", false, false);
+  ASSERT_NE(nullptr, second);
+  std::memcpy(second->data(), &kValue, sizeof(kValue));
+  ASSERT_EQ(0, writer.flush());
+  ASSERT_EQ(0, other.open(path, false, false));
+  second = other.map("second", false, false);
+  ASSERT_NE(nullptr, second);
+  EXPECT_EQ(kValue, *static_cast<const uint64_t *>(second->data()));
+}
+
+TEST(IndexMappingPortability, CowDirectoryShortWritePreservesCommittedIndex) {
+  constexpr size_t kWriterPage = 4096;
+  const std::string path = "index_mapping_cow_short_write.tmp";
+  ASSERT_NO_FATAL_FAILURE(WriteForeignIndex(path, kWriterPage));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  IndexMapping writer;
+  IndexMapping reader;
+  ASSERT_EQ(0, writer.open(path, true, true));
+
+  // Persist the replacement CRC but stop before the link to the next header.
+  short_directory_write =
+      kWriterPage - sizeof(IndexFormat::MetaFooter) +
+      offsetof(IndexFormat::MetaFooter, next_meta_header_offset);
+  const int status = writer.append("second", kWriterPage);
+  EXPECT_EQ(0, short_directory_write);
+  EXPECT_EQ(0, fail_write_at);
+  short_directory_write = 0;
+  fail_write_at = 0;
+  EXPECT_EQ(IndexError_WriteData, status);
+  EXPECT_EQ(2 * kWriterPage, writer.index_size());
+  EXPECT_FALSE(writer.has("second"));
+  EXPECT_EQ(0u, writer.footer().next_meta_header_offset);
+
+  // Open from disk while the writer is still live, then retry on that writer.
+  ASSERT_EQ(0, reader.open(path, true, false));
+  EXPECT_FALSE(reader.has("second"));
+  auto *first = reader.map("first", false, false);
+  ASSERT_NE(nullptr, first);
+  EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(first->data()));
+  reader.close();
+  ASSERT_EQ(0, writer.append("second", kWriterPage));
+  auto *second = writer.map("second", false, false);
+  ASSERT_NE(nullptr, second);
+  constexpr uint64_t kValue = 42;
+  std::memcpy(second->data(), &kValue, sizeof(kValue));
+  second->set_dirty();
+  ASSERT_EQ(0, writer.flush());
+  writer.close();
+
+  ASSERT_EQ(0, reader.open(path, true, false));
+  first = reader.map("first", false, false);
+  second = reader.map("second", false, false);
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, second);
+  EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(first->data()));
+  EXPECT_EQ(kValue, *static_cast<const uint64_t *>(second->data()));
+}
+
+TEST(IndexMappingPortability, CowDirectoryShortWriteKeepsPendingDataForRetry) {
+  constexpr size_t kWriterPage = 4096;
+  constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  const std::string path = "index_mapping_cow_pending_write.tmp";
+  ASSERT_NO_FATAL_FAILURE(WriteForeignIndex(path, kWriterPage, kFirstIdOffset));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  IndexMapping writer;
+  ASSERT_EQ(0, writer.open(path, true, true));
+  ASSERT_EQ(0, writer.append("pending", kWriterPage));
+  const size_t size_before_split = writer.index_size();
+  auto *pending = writer.map("pending", false, false);
+  ASSERT_NE(nullptr, pending);
+  constexpr uint64_t kValue = 42;
+  std::memcpy(pending->data(), &kValue, sizeof(kValue));
+  pending->set_dirty();
+
+  short_directory_write =
+      kWriterPage - sizeof(IndexFormat::MetaFooter) +
+      offsetof(IndexFormat::MetaFooter, next_meta_header_offset);
+  const int status = writer.append("split", kWriterPage);
+  EXPECT_EQ(0, short_directory_write);
+  EXPECT_EQ(0, fail_write_at);
+  short_directory_write = 0;
+  fail_write_at = 0;
+  ASSERT_EQ(IndexError_WriteData, status);
+  EXPECT_EQ(size_before_split, writer.index_size());
+  EXPECT_TRUE(pending->dirty());
+  EXPECT_FALSE(writer.has("split"));
+
+  IndexMapping reader;
+  ASSERT_EQ(0, reader.open(path, true, false));
+  EXPECT_FALSE(reader.has("pending"));
+  reader.close();
+  ASSERT_EQ(0, writer.append("split", kWriterPage));
+  ASSERT_EQ(0, writer.flush());
+  writer.close();
+
+  ASSERT_EQ(0, reader.open(path, true, false));
+  pending = reader.map("pending", false, false);
+  ASSERT_NE(nullptr, pending);
+  EXPECT_EQ(kValue, *static_cast<const uint64_t *>(pending->data()));
+  EXPECT_TRUE(reader.has("split"));
+}
+
+TEST(IndexMappingPortability, TailRecoveryCannotTruncateReusedSpace) {
+  constexpr size_t kWriterPage = 4096;
+  constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  const std::string path = "index_mapping_reused_tail.tmp";
+  ASSERT_NO_FATAL_FAILURE(WriteForeignIndex(path, kWriterPage, kFirstIdOffset));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  IndexMapping writer;
+  ASSERT_EQ(0, writer.open(path, true, true));
+  fail_next_file_mapping = true;
+  fail_truncate_to = kWriterPage * 2;
+  const int status =
+      writer.append("segment_id_that_requires_a_metadata_split", kWriterPage);
+  EXPECT_FALSE(fail_next_file_mapping);
+  EXPECT_EQ(0, fail_truncate_to);
+  fail_next_file_mapping = false;
+  fail_truncate_to = 0;
+  ASSERT_EQ(IndexError_TruncateFile, status);
+  ailego::File file;
+  ASSERT_TRUE(file.open(path, true));
+  const size_t abandoned_size = file.size();
+
+  IndexMapping other;
+  ASSERT_EQ(0, other.open(path, false, false));
+  ASSERT_EQ(0, other.append("second", kWriterPage));
+  ASSERT_EQ(abandoned_size, file.size());
+  EXPECT_EQ(IndexError_Busy, writer.flush());
+  EXPECT_EQ(abandoned_size, file.size());
+  writer.close();
+  other.close();
+  ASSERT_EQ(0, other.open(path, true, false));
+  EXPECT_TRUE(other.has("second"));
+}
+
 enum class TailRecovery { kImmediate, kReopen, kSameMapping };
 
 static void CheckMetadataMapRecovery(TailRecovery recovery) {

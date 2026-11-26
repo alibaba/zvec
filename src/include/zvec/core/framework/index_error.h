@@ -139,6 +139,7 @@ INDEX_ERROR_CODE_DECLARE(Exist);           // Already exist
 INDEX_ERROR_CODE_DECLARE(Mismatch);        // Mismatch
 INDEX_ERROR_CODE_DECLARE(Duplicate);       // Duplicate
 INDEX_ERROR_CODE_DECLARE(Uninitialized);   // Uninitialized
+INDEX_ERROR_CODE_DECLARE(Busy);            // Resource busy
 
 INDEX_ERROR_CODE_DECLARE(InvalidArgument);  // Invalid argument
 INDEX_ERROR_CODE_DECLARE(InvalidFormat);    // Invalid format

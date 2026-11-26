@@ -41,6 +41,7 @@ INDEX_ERROR_CODE_DEFINE(Exist, 23, "Already exist");
 INDEX_ERROR_CODE_DEFINE(Mismatch, 24, "Mismatch");
 INDEX_ERROR_CODE_DEFINE(Duplicate, 25, "Duplicate");
 INDEX_ERROR_CODE_DEFINE(Uninitialized, 26, "Uninitialized");
+INDEX_ERROR_CODE_DEFINE(Busy, 27, "Resource busy");
 
 INDEX_ERROR_CODE_DEFINE(InvalidArgument, 31, "Invalid argument");
 INDEX_ERROR_CODE_DEFINE(InvalidFormat, 32, "Invalid format");

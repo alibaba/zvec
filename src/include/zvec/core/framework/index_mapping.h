@@ -197,7 +197,9 @@ class IndexMapping {
   int create_impl(const std::string &path, size_t seg_meta_capacity,
                   bool exclusive);
   void reset_mappings();
+  int check_backing_file() const;
   int discard_unpublished_tail();
+  int flush_locked(bool expanding = false);
   void swap(IndexMapping &rhs) noexcept;
   struct MetaMapping {
     IndexFormat::MetaHeader *header;
@@ -226,6 +228,7 @@ class IndexMapping {
   IndexFormat::MetaFooter *footer_{nullptr};
   ailego::LazyMap<SegmentMap> segments_{};
   size_t index_size_{0u};
+  size_t backing_file_size_{0u};
   size_t pending_truncate_size_{0u};
   ailego::File file_{};
   std::string path_;
