@@ -177,9 +177,12 @@ int IndexMapping::init_meta_section() {
       CalcPageAlignedSize(seg_meta_capacity_ + sizeof(IndexFormat::MetaHeader) +
                               sizeof(IndexFormat::MetaFooter),
                           false);
+  const size_t extent =
+      ailego::File::MemoryMapFootprint(current_header_start_offset_, len);
+  if (!extent) return IndexError_InvalidLength;
 
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t charge = pool.capacity() ? len : 0;
+  const size_t charge = pool.capacity() ? extent : 0;
   using Pending = ailego::MemoryLimitPool::PendingAllocation;
   Pending mapping_memory(pool, Pending::Kind::kWorkspace);
   if (!mapping_memory.reserve(charge)) return IndexError_NoMemory;
@@ -590,8 +593,13 @@ int IndexMapping::flush() {
 }
 
 int IndexMapping::init_index_mapping(size_t len) {
+  const size_t extent = huge_page_ ? len
+                                   : ailego::File::MemoryMapFootprint(
+                                         current_header_start_offset_, len);
+  if (!extent) return IndexError_InvalidLength;
+
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t charge = pool.capacity() ? len : 0;
+  const size_t charge = pool.capacity() ? extent : 0;
   using Pending = ailego::MemoryLimitPool::PendingAllocation;
   Pending mapping_memory(pool, Pending::Kind::kWorkspace);
   if (!mapping_memory.reserve(charge)) return IndexError_NoMemory;
