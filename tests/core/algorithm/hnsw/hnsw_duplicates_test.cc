@@ -60,7 +60,7 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
     test_util::RemoveTestPath(path_);
   }
 
-  void Open(bool create = true, bool contiguous = false) {
+  void open(bool create = true, bool contiguous = false) {
     params_.set(PARAM_HNSW_STREAMER_USE_CONTIGUOUS_MEMORY, contiguous);
     storage_ = IndexFactory::CreateStorage(contiguous ? "MMapFileReadStorage"
                                                       : GetParam());
@@ -80,26 +80,26 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
     ASSERT_NE(nullptr, context_);
   }
 
-  void Add(uint64_t key, const Vector &vector) {
+  void add(uint64_t key, const Vector &vector) {
     ASSERT_EQ(0,
               streamer_->add_impl(key, vector.data(), query_meta_, context_));
   }
 
-  void Reopen(bool contiguous = false) {
+  void reopen(bool contiguous = false) {
     context_.reset();
     ASSERT_EQ(0, streamer_->close());
     streamer_.reset();
     ASSERT_EQ(0, storage_->close());
     storage_.reset();
-    Open(false, contiguous);
+    open(false, contiguous);
   }
 
-  const HnswStreamerEntity &Entity() const {
+  const HnswStreamerEntity &get_entity() const {
     return static_cast<const HnswStreamerEntity &>(
         static_cast<const HnswContext &>(*context_).get_entity());
   }
 
-  void SearchAndCompareScores(const Vector &query, uint32_t k) {
+  void search_and_compare_scores(const Vector &query, uint32_t k) {
     context_->set_topk(k);
     ASSERT_EQ(0, streamer_->search_impl(query.data(), query_meta_, context_));
     const auto actual = context_->result();
@@ -114,7 +114,7 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
     }
   }
 
-  void BuildConcurrently(bool identical) {
+  void build_concurrently(bool identical) {
     if (std::string(GetParam()) != "MMapFileStorage") return;
     storage_ = IndexFactory::CreateStorage(GetParam());
     ASSERT_EQ(0, storage_->init(ailego::Params{}));
@@ -216,8 +216,8 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
     ASSERT_EQ(0, entity.close());
   }
 
-  void CheckCandidateGate(float distance, bool identical, level_t level,
-                          bool expect_duplicate) {
+  void check_candidate_gate(float distance, bool identical, level_t level,
+                            bool expect_duplicate) {
     storage_ = IndexFactory::CreateStorage(GetParam());
     ASSERT_EQ(0, storage_->init(ailego::Params{}));
     ASSERT_EQ(0, storage_->open(path_, true));
@@ -290,19 +290,19 @@ class HnswDuplicatesTest : public testing::TestWithParam<const char *> {
 };
 
 TEST_P(HnswDuplicatesTest, IdenticalVectorsRemainIndividuallySearchable) {
-  ASSERT_NO_FATAL_FAILURE(Open());
+  ASSERT_NO_FATAL_FAILURE(open());
   const auto vector = MakeVector(1.0f);
-  for (uint32_t id = 0; id < 256; ++id) Add(1000 + id, vector);
+  for (uint32_t id = 0; id < 256; ++id) add(1000 + id, vector);
 
   // The representative has no navigation neighbors; every leaf has exactly
   // one back edge. The reverse posting list is not bounded by M=5.
-  EXPECT_EQ(0U, Entity().get_neighbors(0, 0).size());
+  EXPECT_EQ(0U, get_entity().get_neighbors(0, 0).size());
   for (uint32_t id = 1; id < 256; ++id) {
-    const auto neighbors = Entity().get_neighbors(0, id);
+    const auto neighbors = get_entity().get_neighbors(0, id);
     ASSERT_EQ(1U, neighbors.size());
     EXPECT_EQ(0U, neighbors[0]);
   }
-  SearchAndCompareScores(vector, 40);
+  search_and_compare_scores(vector, 40);
   context_->set_debug_mode(true);
   ASSERT_EQ(0, streamer_->search_impl(vector.data(), query_meta_, context_));
   EXPECT_LE(static_cast<HnswContext &>(*context_).get_scan_num(), 2U);
@@ -325,32 +325,32 @@ TEST_P(HnswDuplicatesTest, IdenticalVectorsRemainIndividuallySearchable) {
 }
 
 TEST_P(HnswDuplicatesTest, DenseDuplicateGroupDoesNotReplaceNavigationEdges) {
-  ASSERT_NO_FATAL_FAILURE(Open());
-  Add(0, MakeVector(0));
-  for (uint32_t id = 1; id < 512; ++id) Add(id, MakeVector(0));
+  ASSERT_NO_FATAL_FAILURE(open());
+  add(0, MakeVector(0));
+  for (uint32_t id = 1; id < 512; ++id) add(id, MakeVector(0));
   for (uint32_t group = 1; group <= 24; ++group) {
-    Add(512 + group, MakeVector(group * 10.0f));
+    add(512 + group, MakeVector(group * 10.0f));
   }
   // Every edge in the representative graph targets another representative.
   for (node_id_t id : {0U, 512U, 520U, 535U}) {
-    const auto neighbors = Entity().get_neighbors(0, id);
+    const auto neighbors = get_entity().get_neighbors(0, id);
     EXPECT_LE(neighbors.size(), 10U);
     for (uint32_t n = 0; n < neighbors.size(); ++n) {
       EXPECT_TRUE(neighbors[n] == 0 || neighbors[n] >= 512);
     }
   }
-  SearchAndCompareScores(MakeVector(240), 3);
-  SearchAndCompareScores(MakeVector(0), 32);
+  search_and_compare_scores(MakeVector(240), 3);
+  search_and_compare_scores(MakeVector(0), 32);
   ASSERT_EQ(0, streamer_->flush(42));
-  ASSERT_NO_FATAL_FAILURE(Reopen());
-  Add(2000, MakeVector(0));
-  SearchAndCompareScores(MakeVector(240), 3);
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  add(2000, MakeVector(0));
+  search_and_compare_scores(MakeVector(240), 3);
   context_->set_filter([](uint64_t key) { return key != 2000; });
-  SearchAndCompareScores(MakeVector(0), 1);
+  search_and_compare_scores(MakeVector(0), 1);
 }
 
 TEST_P(HnswDuplicatesTest, ExplicitIdsAndGapsSurviveReopen) {
-  ASSERT_NO_FATAL_FAILURE(Open());
+  ASSERT_NO_FATAL_FAILURE(open());
   const auto vector = MakeVector(2);
   ASSERT_EQ(
       0, streamer_->add_with_id_impl(3, vector.data(), query_meta_, context_));
@@ -363,36 +363,36 @@ TEST_P(HnswDuplicatesTest, ExplicitIdsAndGapsSurviveReopen) {
       0, streamer_->add_with_id_impl(15, other.data(), query_meta_, context_));
   {
     SCOPED_TRACE("initial explicit IDs");
-    SearchAndCompareScores(vector, 3);
+    search_and_compare_scores(vector, 3);
   }
-  ASSERT_NO_FATAL_FAILURE(Reopen());
+  ASSERT_NO_FATAL_FAILURE(reopen());
   ASSERT_EQ(
       0, streamer_->add_with_id_impl(5, vector.data(), query_meta_, context_));
   {
     SCOPED_TRACE("filled gap after reopen");
-    SearchAndCompareScores(vector, 4);
+    search_and_compare_scores(vector, 4);
   }
   context_->set_filter([](uint64_t key) { return key != 5; });
-  SearchAndCompareScores(vector, 1);
+  search_and_compare_scores(vector, 1);
 }
 
 TEST_P(HnswDuplicatesTest, NearDuplicatesAreNotMerged) {
-  ASSERT_NO_FATAL_FAILURE(Open());
+  ASSERT_NO_FATAL_FAILURE(open());
   for (uint32_t id = 0; id < 32; ++id) {
-    Add(id, MakeVector(1.0f + id * 0.00001f));
+    add(id, MakeVector(1.0f + id * 0.00001f));
   }
-  const auto &entity = Entity();
+  const auto &entity = get_entity();
   for (node_id_t id = 0; id < 32; ++id) {
     HnswStreamerEntity::DuplicateLinks links;
     ASSERT_EQ(0, entity.get_duplicate_links(id, 32, &links));
     EXPECT_EQ(id, links.representative);
     EXPECT_EQ(kInvalidNodeId, links.next);
   }
-  SearchAndCompareScores(MakeVector(1.0001f), 5);
+  search_and_compare_scores(MakeVector(1.0001f), 5);
 }
 
 TEST_P(HnswDuplicatesTest, ConcurrentIdenticalInsertsRemainSearchable) {
-  ASSERT_NO_FATAL_FAILURE(Open());
+  ASSERT_NO_FATAL_FAILURE(open());
   constexpr uint32_t workers = 4;
   constexpr uint32_t per_worker = 64;
   std::vector<IndexStreamer::Context::Pointer> contexts;
@@ -415,39 +415,39 @@ TEST_P(HnswDuplicatesTest, ConcurrentIdenticalInsertsRemainSearchable) {
   uint32_t representatives = 0;
   for (node_id_t id = 0; id < workers * per_worker; ++id) {
     HnswStreamerEntity::DuplicateLinks links;
-    ASSERT_EQ(0,
-              Entity().get_duplicate_links(id, workers * per_worker, &links));
+    ASSERT_EQ(
+        0, get_entity().get_duplicate_links(id, workers * per_worker, &links));
     if (links.representative == id) ++representatives;
   }
   EXPECT_GE(representatives, 1U);
   EXPECT_LE(representatives, workers);
-  SearchAndCompareScores(MakeVector(1), workers * per_worker);
+  search_and_compare_scores(MakeVector(1), workers * per_worker);
 }
 
 TEST_P(HnswDuplicatesTest, PositiveDistanceCandidateIsComparedExactly) {
   if (std::string(GetParam()) != "MMapFileStorage") return;
-  CheckCandidateGate(0.5e-6f, true, 0, true);
+  check_candidate_gate(0.5e-6f, true, 0, true);
 }
 
 TEST_P(HnswDuplicatesTest, HeapSearchAlsoChecksDuplicateCandidates) {
   if (std::string(GetParam()) != "MMapFileStorage") return;
-  CheckCandidateGate(0.5e-6f, true, 1, true);
+  check_candidate_gate(0.5e-6f, true, 1, true);
 }
 
 TEST_P(HnswDuplicatesTest, ZeroDistanceDoesNotMergeDifferentBytes) {
   if (std::string(GetParam()) != "MMapFileStorage") return;
-  CheckCandidateGate(0.0f, false, 1, false);
+  check_candidate_gate(0.0f, false, 1, false);
 }
 
 TEST_P(HnswDuplicatesTest, ThresholdMissKeepsOrdinaryRepresentative) {
   if (std::string(GetParam()) != "MMapFileStorage") return;
-  CheckCandidateGate(1e-6f, true, 1, false);
+  check_candidate_gate(1e-6f, true, 1, false);
 }
 
 TEST_P(HnswDuplicatesTest, ReopenRejectsWrongLayout) {
-  ASSERT_NO_FATAL_FAILURE(Open());
-  Add(1, MakeVector(1));
-  Add(2, MakeVector(1));
+  ASSERT_NO_FATAL_FAILURE(open());
+  add(1, MakeVector(1));
+  add(2, MakeVector(1));
   context_.reset();
   ASSERT_EQ(0, streamer_->close());
   streamer_.reset();
@@ -468,7 +468,7 @@ TEST_P(HnswDuplicatesTest, ReopenRejectsWrongLayout) {
 }
 
 TEST_P(HnswDuplicatesTest, ConcurrentGroupsReduceNavigationDuplicates) {
-  ASSERT_NO_FATAL_FAILURE(Open());
+  ASSERT_NO_FATAL_FAILURE(open());
   constexpr uint32_t workers = 4;
   constexpr uint32_t groups = 16;
   std::vector<IndexStreamer::Context::Pointer> contexts;
@@ -491,20 +491,20 @@ TEST_P(HnswDuplicatesTest, ConcurrentGroupsReduceNavigationDuplicates) {
   uint32_t representatives = 0;
   for (node_id_t id = 0; id < workers * 64; ++id) {
     HnswStreamerEntity::DuplicateLinks links;
-    ASSERT_EQ(0, Entity().get_duplicate_links(id, workers * 64, &links));
+    ASSERT_EQ(0, get_entity().get_duplicate_links(id, workers * 64, &links));
     if (links.representative == id) ++representatives;
   }
   EXPECT_GE(representatives, groups);
   EXPECT_LE(representatives, groups * workers);
-  SearchAndCompareScores(MakeVector(10), 25);
+  search_and_compare_scores(MakeVector(10), 25);
 }
 
 TEST_P(HnswDuplicatesTest, DistinctRepresentativesBuildConcurrently) {
-  BuildConcurrently(false);
+  build_concurrently(false);
 }
 
 TEST_P(HnswDuplicatesTest, ConcurrentMissesCanPublishEqualRepresentatives) {
-  BuildConcurrently(true);
+  build_concurrently(true);
 }
 
 TEST_P(HnswDuplicatesTest, Fp32QuantizerSharesOnlyIdenticalStoredRecords) {
@@ -532,7 +532,7 @@ TEST_P(HnswDuplicatesTest, Fp32QuantizerSharesOnlyIdenticalStoredRecords) {
       ASSERT_EQ(0, streamer_->add_impl(i, code.data(), code_meta, context_));
     }
     HnswStreamerEntity::DuplicateLinks links;
-    ASSERT_EQ(0, Entity().get_duplicate_links(1, 64, &links));
+    ASSERT_EQ(0, get_entity().get_duplicate_links(1, 64, &links));
     EXPECT_EQ(0U, links.representative);
     context_->set_topk(20);
     ASSERT_EQ(0, streamer_->search_impl(code.data(), code_meta, context_));
@@ -552,8 +552,8 @@ TEST_P(HnswDuplicatesTest, Fp32QuantizerSharesOnlyIdenticalStoredRecords) {
 }
 
 TEST_P(HnswDuplicatesTest, GroupByUsesAllRecordIdentities) {
-  ASSERT_NO_FATAL_FAILURE(Open());
-  for (uint32_t id = 0; id < 64; ++id) Add(id, MakeVector(1));
+  ASSERT_NO_FATAL_FAILURE(open());
+  for (uint32_t id = 0; id < 64; ++id) add(id, MakeVector(1));
   context_->set_group_by([](uint64_t key) { return std::to_string(key % 4); });
   context_->set_group_params(4, 3);
   context_->set_topk(12);
@@ -578,20 +578,20 @@ TEST_P(HnswDuplicatesTest, UnsupportedDistanceSpacesAreRejected) {
 
 TEST_P(HnswDuplicatesTest, DefaultLayoutDoesNotHaveDuplicateLinks) {
   params_.set(PARAM_HNSW_STREAMER_DEDUPLICATE_VECTORS, false);
-  ASSERT_NO_FATAL_FAILURE(Open());
-  Add(1, MakeVector(1));
-  Add(2, MakeVector(1));
-  EXPECT_FALSE(Entity().deduplicate_vectors());
-  EXPECT_NE(0U, Entity().get_neighbors(0, 0).size());
-  SearchAndCompareScores(MakeVector(1), 2);
+  ASSERT_NO_FATAL_FAILURE(open());
+  add(1, MakeVector(1));
+  add(2, MakeVector(1));
+  EXPECT_FALSE(get_entity().deduplicate_vectors());
+  EXPECT_NE(0U, get_entity().get_neighbors(0, 0).size());
+  search_and_compare_scores(MakeVector(1), 2);
 }
 
 TEST_P(HnswDuplicatesTest, ContiguousReadOnlyExpansion) {
   if (std::string(GetParam()) != "MMapFileStorage") return;
-  ASSERT_NO_FATAL_FAILURE(Open());
-  for (uint32_t id = 0; id < 64; ++id) Add(id, MakeVector(id / 16));
-  ASSERT_NO_FATAL_FAILURE(Reopen(true));
-  SearchAndCompareScores(MakeVector(2), 20);
+  ASSERT_NO_FATAL_FAILURE(open());
+  for (uint32_t id = 0; id < 64; ++id) add(id, MakeVector(id / 16));
+  ASSERT_NO_FATAL_FAILURE(reopen(true));
+  search_and_compare_scores(MakeVector(2), 20);
 }
 
 INSTANTIATE_TEST_SUITE_P(StorageModes, HnswDuplicatesTest,
