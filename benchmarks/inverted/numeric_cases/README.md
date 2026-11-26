@@ -22,11 +22,7 @@ and set `bin_dir` to that directory.
 
 When the run finishes, open the printed `report.md` path to see dataset statistics,
 index build time and size, memory use, and query results.
-See the [example report](example-report.md) for a run with 10 million documents per workload.
+See the [example report](example-report.md) for the PR #938 baseline comparison,
+covering all 72 workloads at 100K documents and eight selected workloads at 10M
+documents, with complete per-case query results.
 For scripted runs, add `--help` to the Python command to see the available options.
-
-## Measured comparisons
-
-The [PR #938 range-prefix comparison](results/pr938-20261126/report.md) includes
-80 workloads, complete paired query results, build and memory costs, and measured
-slowdown cases for baseline `8d978b06e` versus PR revision `bdd20e0c8`.
