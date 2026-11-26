@@ -90,7 +90,7 @@ def test_quantizer_parameter_representation(param_type, quantize_type, expected_
 class TestInvertIndexParam:
     def test_default(self):
         param = InvertIndexParam()
-        assert param.enable_range_optimization is False
+        assert param.enable_range_optimization is True
         assert param.enable_extended_wildcard is False
         assert param.type == IndexType.INVERT
 
@@ -212,7 +212,7 @@ class TestIVFIndexParam:
     def test_default(self):
         param = IVFIndexParam()
         assert param.metric_type == MetricType.IP
-        assert param.n_list == 10
+        assert param.n_list == 1024
         assert param.quantize_type == QuantizeType.UNDEFINED
         assert param.type == IndexType.IVF
 

@@ -30,9 +30,12 @@
 
 #include <dlfcn.h>
 #include <atomic>
+#include <cerrno>
 #include <cstring>
+#include <limits>
 #include <mutex>
 #include <ailego/io/libaio_def.h>  // ABI-stable struct definitions (replaces <libaio.h>)
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 
 // Function-pointer typedefs for the four libaio syscalls used by DiskAnn.
 typedef int (*aio_setup_fn)(int maxevents, io_context_t *ctxp);
@@ -76,6 +79,66 @@ class LibAioLoader {
     return available_.load(std::memory_order_acquire);
   }
 
+  struct RingMemory {
+    size_t bytes{0};
+    zvec::ailego::ProcessRssBudget::MaterializationStamp projection{};
+  };
+
+  int setup_budgeted(int maxevents, io_context_t &ctx, RingMemory &memory) {
+    if (ctx || !io_setup || !io_destroy || maxevents <= 0) return -EINVAL;
+    auto &pool = zvec::ailego::MemoryLimitPool::get_instance();
+    const size_t page = pool.page_buffer_size();
+    // io_setup returns a completion-ring address. Reserve its header page
+    // before the syscall and admit the rest before any submission can use it.
+    if (pool.under_process_rss_pressure() ||
+        !pool.try_reserve_process_backing(page)) {
+      return -ENOMEM;
+    }
+
+    io_context_t ring = nullptr;
+    const int ret = io_setup(maxevents, &ring);
+    if (ret != 0) {
+      pool.finish_process_backing(page, false);
+      return ret;
+    }
+
+    const size_t size = completion_mapping_size(ring, page);
+    const size_t extra = size > page ? size - page : 0;
+    if (size == 0 || !pool.try_reserve_process_backing(extra)) {
+      if (destroy_ring(ring) == 0) {
+        pool.finish_process_backing(page, false);
+      } else {
+        const bool accounted =
+            !extra || pool.account_pending_process_backing(extra);
+        memory.bytes = page + (accounted ? extra : 0);
+        memory.projection = pool.finish_process_backing(memory.bytes, true);
+        // Leave the rejected ring with its owner for teardown. A terminal
+        // error prevents a caller from allocating another ring on every retry.
+        ctx = ring;
+        return -EIO;
+      }
+      return size == 0 ? -EINVAL : -ENOMEM;
+    }
+
+    memory = {size, pool.finish_process_backing(size, true)};
+    ctx = ring;
+    return 0;
+  }
+
+  int destroy_budgeted(io_context_t &ctx, RingMemory &memory) {
+    if (!ctx) return 0;
+    const int ret = destroy_ring(ctx);
+    if (ret == 0) {
+      if (memory.bytes) {
+        zvec::ailego::MemoryLimitPool::get_instance()
+            .release_unmapped_process_backing(memory.bytes, memory.projection);
+      }
+      ctx = nullptr;
+      memory = {};
+    }
+    return ret;
+  }
+
   // Function pointers — nullptr until load() succeeds.
   aio_setup_fn io_setup;
   aio_destroy_fn io_destroy;
@@ -86,6 +149,38 @@ class LibAioLoader {
   LibAioLoader &operator=(const LibAioLoader &) = delete;
 
  private:
+  int destroy_ring(io_context_t ctx) const {
+    int ret;
+    do {
+      ret = io_destroy(ctx);
+    } while (ret == -EINTR);
+    return ret;
+  }
+
+  static size_t completion_mapping_size(io_context_t ctx, size_t page) {
+    // This header is the Linux aio_ring ABI used by libaio's io_getevents
+    // fast path. Its event count reflects kernel and CPU-specific rounding.
+    constexpr uint32_t kRingMagic = 0xa10a10a1;
+    struct RingHeader {
+      uint32_t id, event_count, head, tail;
+      uint32_t magic, compat_features, incompat_features, header_bytes;
+    };
+    RingHeader header;
+    if (!ctx || page < sizeof(header)) return 0;
+    std::memcpy(&header, ctx, sizeof(header));
+    const size_t events = header.event_count;
+    const size_t header_bytes = header.header_bytes;
+    if (header.magic != kRingMagic || header.incompat_features != 0 ||
+        header_bytes < sizeof(header) || header_bytes > page || events == 0 ||
+        events >
+            (std::numeric_limits<size_t>::max() - header_bytes - (page - 1)) /
+                sizeof(io_event)) {
+      return 0;
+    }
+    const size_t bytes = header_bytes + events * sizeof(io_event);
+    return ((bytes + page - 1) / page) * page;
+  }
+
   LibAioLoader()
       : io_setup(nullptr),
         io_destroy(nullptr),

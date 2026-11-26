@@ -12,9 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cerrno>
+#include <utility>
 #include <gtest/gtest.h>
 #include <zvec/ailego/io/file.h>
 #include <zvec/ailego/io/mmap_file.h>
+
+#if defined(_WIN32)
+#include <windows.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#else
+#include <sys/mman.h>
+#endif
 
 using namespace zvec::ailego;
 
@@ -76,6 +86,38 @@ TEST(MMapFile, Open) {
     EXPECT_EQ(0, memcmp(file2.region(), raw_data.data(), raw_data.size()));
     file.flush();
     file2.lock();
+
+    ASSERT_TRUE(file.open(file_path, true));
+    void *old_view = file.region();
+    void *new_view = file2.region();
+    file = std::move(file2);
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION info{};
+    ASSERT_EQ(sizeof(info), ::VirtualQuery(old_view, &info, sizeof(info)));
+    EXPECT_EQ(MEM_FREE, info.State);
+#elif defined(__APPLE__)
+    const auto original = reinterpret_cast<vm_address_t>(old_view);
+    vm_address_t address = original;
+    vm_size_t size = 0;
+    vm_region_basic_info_data_64_t info{};
+    mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
+    mach_port_t object = MACH_PORT_NULL;
+    const auto result = ::vm_region_64(
+        ::mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+        reinterpret_cast<vm_region_info_t>(&info), &count, &object);
+    if (object != MACH_PORT_NULL)
+      ::mach_port_deallocate(::mach_task_self(), object);
+    EXPECT_TRUE(result == KERN_INVALID_ADDRESS ||
+                (result == KERN_SUCCESS && address > original));
+#else
+    unsigned char resident = 0;
+    const int result = ::mincore(old_view, 1, &resident);
+    const int error = errno;
+    EXPECT_EQ(-1, result);
+    EXPECT_EQ(ENOMEM, error);
+#endif
+    EXPECT_FALSE(file2.is_valid());
+    EXPECT_EQ(new_view, file.region());
   }
 
   File::Delete(file_path2);

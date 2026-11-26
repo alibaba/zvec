@@ -13,8 +13,8 @@
 // limitations under the License.
 #include <cstdint>
 #include <cstring>
-#include <ailego/algorithm/kmeans.h>
 #include <ailego/container/reservoir.h>
+#include <turbo/algorithm/kmeans.h>
 #include <zvec/core/framework/index_cluster.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
@@ -593,7 +593,7 @@ int OptKmeansAlgorithm::cleanup() {
 
 /*! Numerical K-Means cluster algorithm
  */
-template <typename T, typename Context = ailego::NumericalKmeansContext<T>>
+template <typename T, typename Context = turbo::NumericalKmeansContext<T>>
 class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
  public:
   //! Type of value
@@ -615,13 +615,13 @@ class NumericalKmeansAlgorithm : public OptKmeansAlgorithm {
 
   void update_centroids(
       IndexCluster::CentroidList &cents,
-      const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm);
+      const turbo::NumericalKmeans<T, IndexThreads, Context> &algorithm);
 };
 
 template <typename T, typename Context>
 void NumericalKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NumericalKmeans<T, IndexThreads, Context> &algorithm) {
+    const turbo::NumericalKmeans<T, IndexThreads, Context> &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
     IndexCluster::Centroid *centroid = &(cents.at(i));
@@ -664,8 +664,8 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NumericalKmeans<T, IndexThreads, Context> algorithm(
-      centroid_count, meta_.dimension());
+  turbo::NumericalKmeans<T, IndexThreads, Context> algorithm(centroid_count,
+                                                             meta_.dimension());
 
   // Mount directly into the algorithm's matrix.
   int ret = load_features(algorithm, holder);
@@ -682,8 +682,8 @@ int NumericalKmeansAlgorithm<T, Context>::cluster_impl(
                         meta_.dimension());
     }
   } else {
-    ailego::Kmc2CentroidsGenerator<
-        ailego::NumericalKmeans<ValueType, IndexThreads, Context>, IndexThreads>
+    turbo::Kmc2CentroidsGenerator<
+        turbo::NumericalKmeans<ValueType, IndexThreads, Context>, IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
     g.set_assumption_free(assumption_free_);
@@ -745,13 +745,13 @@ class NibbleKmeansAlgorithm : public OptKmeansAlgorithm {
 
   //! update centroids
   void update_centroids(IndexCluster::CentroidList &cents,
-                        const ailego::NibbleKmeans<T, IndexThreads> &algorithm);
+                        const turbo::NibbleKmeans<T, IndexThreads> &algorithm);
 };
 
 template <typename T>
 void NibbleKmeansAlgorithm<T>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NibbleKmeans<T, IndexThreads> &algorithm) {
+    const turbo::NibbleKmeans<T, IndexThreads> &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
     IndexCluster::Centroid *centroid = &(cents.at(i));
@@ -793,8 +793,8 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NibbleKmeans<T, IndexThreads> algorithm(centroid_count,
-                                                  meta_.dimension());
+  turbo::NibbleKmeans<T, IndexThreads> algorithm(centroid_count,
+                                                 meta_.dimension());
 
   int ret = load_features(algorithm, holder);
   if (ret != 0) {
@@ -812,8 +812,8 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
           size_t(meta_.dimension()));
     }
   } else {
-    ailego::Kmc2CentroidsGenerator<
-        ailego::NibbleKmeans<ValueType, IndexThreads>, IndexThreads>
+    turbo::Kmc2CentroidsGenerator<turbo::NibbleKmeans<ValueType, IndexThreads>,
+                                  IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
     g.set_assumption_free(assumption_free_);
@@ -856,7 +856,7 @@ int NibbleKmeansAlgorithm<T>::cluster_impl(IndexThreads::Pointer threads,
 /*! Numerical K-Means cluster algorithm
  */
 template <typename T,
-          typename Context = ailego::NumericalInnerProductKmeansContext<T>>
+          typename Context = turbo::NumericalInnerProductKmeansContext<T>>
 class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
  public:
   //! Type of value
@@ -878,14 +878,14 @@ class NumericalInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
 
   void update_centroids(
       IndexCluster::CentroidList &cents,
-      const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
+      const turbo::NumericalInnerProductKmeans<T, IndexThreads, Context>
           &algorithm);
 };
 
 template <typename T, typename Context>
 void NumericalInnerProductKmeansAlgorithm<T, Context>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NumericalInnerProductKmeans<T, IndexThreads, Context>
+    const turbo::NumericalInnerProductKmeans<T, IndexThreads, Context>
         &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
@@ -929,7 +929,7 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NumericalInnerProductKmeans<T, IndexThreads, Context> algorithm(
+  turbo::NumericalInnerProductKmeans<T, IndexThreads, Context> algorithm(
       centroid_count, meta_.dimension(), true);
 
   int ret = load_features(algorithm, holder);
@@ -946,8 +946,8 @@ int NumericalInnerProductKmeansAlgorithm<T, Context>::cluster_impl(
                         meta_.dimension());
     }
   } else {
-    ailego::Kmc2CentroidsGenerator<
-        ailego::NumericalInnerProductKmeans<ValueType, IndexThreads, Context>,
+    turbo::Kmc2CentroidsGenerator<
+        turbo::NumericalInnerProductKmeans<ValueType, IndexThreads, Context>,
         IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
@@ -1011,13 +1011,13 @@ class NibbleInnerProductKmeansAlgorithm : public OptKmeansAlgorithm {
   //! update centroids
   void update_centroids(
       IndexCluster::CentroidList &cents,
-      const ailego::NibbleInnerProductKmeans<T, IndexThreads> &algorithm);
+      const turbo::NibbleInnerProductKmeans<T, IndexThreads> &algorithm);
 };
 
 template <typename T>
 void NibbleInnerProductKmeansAlgorithm<T>::update_centroids(
     IndexCluster::CentroidList &cents,
-    const ailego::NibbleInnerProductKmeans<T, IndexThreads> &algorithm) {
+    const turbo::NibbleInnerProductKmeans<T, IndexThreads> &algorithm) {
   this->init_centroids(algorithm.centroids().count(), &cents);
   for (size_t i = 0; i < cents.size(); ++i) {
     IndexCluster::Centroid *centroid = &(cents.at(i));
@@ -1059,8 +1059,8 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
     LOG_ERROR("The count of cluster is unknown.");
     return IndexError_NoReady;
   }
-  ailego::NibbleInnerProductKmeans<T, IndexThreads> algorithm(
-      centroid_count, meta_.dimension());
+  turbo::NibbleInnerProductKmeans<T, IndexThreads> algorithm(centroid_count,
+                                                             meta_.dimension());
 
   int ret = load_features(algorithm, holder);
   if (ret != 0) {
@@ -1078,8 +1078,8 @@ int NibbleInnerProductKmeansAlgorithm<T>::cluster_impl(
           size_t(meta_.dimension()));
     }
   } else {
-    ailego::Kmc2CentroidsGenerator<
-        ailego::NibbleInnerProductKmeans<ValueType, IndexThreads>, IndexThreads>
+    turbo::Kmc2CentroidsGenerator<
+        turbo::NibbleInnerProductKmeans<ValueType, IndexThreads>, IndexThreads>
         g;
     g.set_chain_length(markov_chain_length_);
     g.set_assumption_free(assumption_free_);

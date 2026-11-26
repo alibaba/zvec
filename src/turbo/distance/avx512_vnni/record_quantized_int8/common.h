@@ -30,7 +30,7 @@
 
 namespace zvec::turbo::avx512_vnni::internal {
 
-static inline int32_t HorizontalAdd_INT32_V256(__m256i v) {
+static inline int32_t horizontal_add_int32_v256(__m256i v) {
   __m256i x1 = _mm256_hadd_epi32(v, v);
   __m256i x2 = _mm256_hadd_epi32(x1, x1);
   __m128i x3 = _mm256_extractf128_si256(x2, 1);
@@ -158,7 +158,7 @@ static ailego_force_inline void ip_int8_avx512_vnni(const void *a,
     }
   }
   result = static_cast<float>(
-      HorizontalAdd_INT32_V256(_mm256_add_epi32(ymm_sum_0, ymm_sum_1)));
+      horizontal_add_int32_v256(_mm256_add_epi32(ymm_sum_0, ymm_sum_1)));
 
   switch (last - lhs) {
     case 15:
@@ -266,20 +266,36 @@ ailego_force_inline void ip_int8_batch_avx512_vnni_impl(
       accs[i] = _mm512_dpbusd_epi32(accs[i], q, data_regs[i]);
     }
   }
-  std::array<int, batch_size> temp_results{};
-  for (size_t i = 0; i < batch_size; ++i) {
-    temp_results[i] = _mm512_reduce_add_epi32(accs[i]);
-  }
-  for (; dim < dimensionality; ++dim) {
-    int q = static_cast<int>(reinterpret_cast<const uint8_t *>(query)[dim]);
+  if (dim < dimensionality) {
+    // One byte does not justify masked loads and another VNNI operation.
+    if (dimensionality - dim == 1) {
+      const int q = static_cast<const uint8_t *>(query)[dim];
+      for (size_t i = 0; i < batch_size; ++i) {
+        // Preserve the SIMD accumulator's wrapping 32-bit addition.
+        uint32_t sum = static_cast<uint32_t>(_mm512_reduce_add_epi32(accs[i]));
+        sum += static_cast<uint32_t>(
+            q * static_cast<const int8_t *>(vectors[i])[dim]);
+        distances[i] = static_cast<float>(static_cast<int32_t>(sum));
+      }
+      return;
+    }
+    // Zero inactive lanes so short vectors and non-multiple-of-64 tails
+    // use VNNI without reading the record metadata or beyond the buffer.
+    const __mmask64 mask = (uint64_t{1} << (dimensionality - dim)) - 1;
+    const __m512i q = _mm512_maskz_loadu_epi8(
+        mask, reinterpret_cast<const uint8_t *>(query) + dim);
     for (size_t i = 0; i < batch_size; ++i) {
-      temp_results[i] +=
-          q *
-          static_cast<int>(reinterpret_cast<const int8_t *>(vectors[i])[dim]);
+      if (prefetch_ptrs[i]) {
+        _mm_prefetch(reinterpret_cast<const char *>(prefetch_ptrs[i]) + dim,
+                     _MM_HINT_T0);
+      }
+      const __m512i data = _mm512_maskz_loadu_epi8(
+          mask, reinterpret_cast<const int8_t *>(vectors[i]) + dim);
+      accs[i] = _mm512_dpbusd_epi32(accs[i], q, data);
     }
   }
   for (size_t i = 0; i < batch_size; ++i) {
-    distances[i] = static_cast<float>(temp_results[i]);
+    distances[i] = static_cast<float>(_mm512_reduce_add_epi32(accs[i]));
   }
 }
 

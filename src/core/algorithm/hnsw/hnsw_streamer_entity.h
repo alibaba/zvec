@@ -98,6 +98,12 @@ class HnswStreamerEntity : public HnswEntity {
   //! Dump index by dumper
   int dump(const IndexDumper::Pointer &dumper) override;
 
+  // Write the ordinary mutable chunk format using bounded scratch space.
+  int dump_with_vectors(const IndexDumper::Pointer &dumper,
+                        const VectorSource &source, size_t vector_size);
+  size_t packed_chunk_count() const;
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) const;
+
   void update_ep_and_level(node_id_t ep, level_t level) override;
 
   //! Get the storage mode of this entity
@@ -166,6 +172,10 @@ class HnswStreamerEntity : public HnswEntity {
   //! Set params: chunk size
   inline void set_chunk_size(size_t val) {
     chunk_size_ = val;
+  }
+
+  void set_packed_vector_size(size_t size) {
+    packed_vector_size_ = size;
   }
 
   //! Set params
@@ -477,12 +487,30 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
   int init_chunk_params(size_t max_index_size) {
+    // Upper-neighbor offsets and their persistent hash layout must be the
+    // same as in the final ordinary index, despite the compact build nodes.
+    size_t layout_node_size = node_size();
+    size_t layout_chunk_size = chunk_size_;
+    if (packed_vector_size_ != 0) {
+      layout_node_size =
+          AlignSize(packed_vector_size_ + sizeof(key_t) + neighbor_size_);
+      packed_nodes_per_chunk_ = 1;
+      const size_t count = std::max<size_t>(1, chunk_size_ / layout_node_size);
+      while (packed_nodes_per_chunk_ < count) packed_nodes_per_chunk_ *= 2;
+      packed_chunk_size_ =
+          broker_->align_size(packed_nodes_per_chunk_ * layout_node_size);
+      layout_chunk_size = packed_chunk_size_;
+      packed_max_index_size_ = max_index_size == 0
+                                   ? packed_chunk_size_ * kDefaultMaxChunkCnt
+                                   : max_index_size;
+    }
     node_cnt_per_chunk_ = std::max<uint32_t>(1, chunk_size_ / node_size());
     //! align node cnt per chunk to pow of 2
     node_index_mask_bits_ = std::ceil(std::log2(node_cnt_per_chunk_));
     node_cnt_per_chunk_ = 1UL << node_index_mask_bits_;
     chunk_size_ = broker_->align_size(node_cnt_per_chunk_ * node_size());
     node_index_mask_ = node_cnt_per_chunk_ - 1;
+    if (packed_vector_size_ == 0) layout_chunk_size = chunk_size_;
 
     if (max_index_size == 0UL) {
       max_index_size_ = chunk_size_ * kDefaultMaxChunkCnt;
@@ -495,11 +523,11 @@ class HnswStreamerEntity : public HnswEntity {
     //! upper neighbor chunk space; if the upper neighbor chunk size is too
     //! small, the will need large upper neighbor chunks index space. So to
     //! get a balanced ratio be sqrt of the node/neighbor size ratio
-    float ratio =
-        std::sqrt(node_size() * scaling_factor() * 1.0f / upper_neighbor_size_);
+    float ratio = std::sqrt(layout_node_size * scaling_factor() * 1.0f /
+                            upper_neighbor_size_);
     upper_neighbor_chunk_size_ = broker_->align_size(
         std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                 static_cast<size_t>(chunk_size_ / ratio)));
+                 static_cast<size_t>(layout_chunk_size / ratio)));
     upper_neighbor_mask_bits_ =
         std::ceil(std::log2(upper_neighbor_chunk_size_ / upper_neighbor_size_));
     upper_neighbor_mask_ = (1 << upper_neighbor_mask_bits_) - 1;
@@ -555,6 +583,10 @@ class HnswStreamerEntity : public HnswEntity {
   }
 
  protected:
+  size_t packed_vector_size_{0};
+  size_t packed_nodes_per_chunk_{0};
+  size_t packed_chunk_size_{0};
+  size_t packed_max_index_size_{0};
   //! Expose sync_chunks for subclass use
   inline void sync_node_chunks(size_t idx) const {
     sync_chunks(ChunkBroker::CHUNK_TYPE_NODE, idx, &node_chunks_);
@@ -850,7 +882,6 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
     // Synchronize with add_upper_neighbor(), including slot allocation and
     // publication. The typed mmap path bypasses get_upper_neighbor_chunk_loc.
     std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
-    // Upper level: use index to locate chunk and offset
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),
                         "Get upper neighbor header failed");

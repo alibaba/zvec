@@ -435,6 +435,11 @@ int IVFIndex::_prepare_for_search(
   const auto &ivf_search_param =
       std::dynamic_pointer_cast<IVFQueryParam>(search_param);
 
+  if (!ivf_search_param) {
+    LOG_ERROR("Invalid search param type, expected IVFQueryParam");
+    return core::IndexError_InvalidArgument;
+  }
+
   if (search_param->group_by_param && search_param->group_by_param->group_by) {
     LOG_ERROR("group_by search is not supported for IVF index");
     return core::IndexError_Unsupported;
@@ -444,12 +449,16 @@ int IVFIndex::_prepare_for_search(
   context->set_topk(ivf_search_param->topk);
   context->set_fetch_vector(ivf_search_param->fetch_vector);
   if (ivf_search_param->filter && ivf_search_param->filter->is_valid()) {
-    context->set_filter(std::move(*ivf_search_param->filter));
+    context->set_filter(*ivf_search_param->filter);
   } else {
     context->reset_filter();
   }
   if (ivf_search_param->radius > 0.0f) {
-    context->set_threshold(ivf_search_param->radius);
+    float threshold = ivf_search_param->radius;
+    if (metric_ && metric_->support_normalize()) {
+      metric_->denormalize(&threshold);
+    }
+    context->set_threshold(threshold);
   }
 
   ailego::Params params;

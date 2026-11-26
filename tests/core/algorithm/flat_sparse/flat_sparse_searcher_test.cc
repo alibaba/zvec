@@ -16,9 +16,9 @@
 #include <iostream>
 #include <random>
 #include <vector>
-#include <ailego/math/norm2_matrix.h>
 #include <ailego/utility/math_helper.h>
 #include <gtest/gtest.h>
+#include <turbo/norm/norm2_matrix.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/logger/logger.h>
 #include "tests/test_util.h"
@@ -71,7 +71,8 @@ void FlatSparseSearcherTest::generate_sparse_data(
     }
 
     float norm;
-    Norm2Matrix<float, 1>::Compute(sparse_vec.data(), sparse_dim_count, &norm);
+    zvec::turbo::Norm2Matrix<float, 1>::Compute(sparse_vec.data(),
+                                                sparse_dim_count, &norm);
     for (size_t j = 0; j < sparse_dim_count; ++j) {
       sparse_vec[j] = sparse_vec[j] / norm;
     }

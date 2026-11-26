@@ -20,8 +20,8 @@
 #include <limits>
 #include <random>
 #include <vector>
-#include <ailego/algorithm/kmeans.h>
-#include <ailego/math/normalizer.h>
+#include <turbo/algorithm/kmeans.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 #include "quantizer/common/pq_training_samples.h"
@@ -183,7 +183,8 @@ void PqInt8Quantizer::setup_chunk_offsets() {
 
 template <typename T>
 void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
-                                  size_t sub_idx, uint32_t max_iters) {
+                                  size_t sub_idx, uint32_t max_iters,
+                                  const void *const *rows) {
   const size_t k = kNumCentroids;
   const size_t d = chunk_dim(sub_idx);
   const size_t offset = chunk_offsets_[sub_idx];
@@ -191,23 +192,23 @@ void PqInt8Quantizer::train_chunk(const T *data, size_t num, size_t stride,
 
   // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
   // error, so centroids are the true (magnitude-preserving) means.
-  ailego::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
+  turbo::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
-    const T *sub_vec =
-        reinterpret_cast<const T *>(reinterpret_cast<const uint8_t *>(data) +
-                                    i * stride) +
-        offset;
-    algorithm.append(sub_vec, d);
+    const T *row =
+        rows ? static_cast<const T *>(rows[i])
+             : reinterpret_cast<const T *>(
+                   reinterpret_cast<const uint8_t *>(data) + i * stride);
+    algorithm.append(row + offset, d);
   }
 
   // Single-threaded pool -- parallelism is at the chunk level.
   auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
   // KMC2 centroid initialization.
-  ailego::Kmc2CentroidsGenerator<
-      ailego::NumericalKmeans<T, SingleQueueIndexThreads>,
+  turbo::Kmc2CentroidsGenerator<
+      turbo::NumericalKmeans<T, SingleQueueIndexThreads>,
       SingleQueueIndexThreads>
       gen;
   gen.set_chain_length(markov_chain_length_);
@@ -253,6 +254,33 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
   size_t num = std::min(input_count, static_cast<size_t>(kMaxTrainVectors));
   if (num > std::numeric_limits<size_t>::max() / vec_bytes) {
     return kErrUnsupported;
+  }
+
+  auto finish_training = [this]() {
+    // ADC-only consumers do not need the quadratic centroid-pair table.
+    build_centroid_ptrs_cache();
+    if (precompute_sdc_) compute_dist_table();
+    compute_sub_centroid_norms();
+    return 0;
+  };
+
+  // Ordinary L2/IP training only reads the samples. KMeans copies each
+  // chunk's sub-vectors into its own small matrix; a full-width sample copy
+  // is unnecessary when the source can guarantee stable addresses.
+  if (!opq_.enabled() && !use_zero_mean_ && meta_.metric_name() != "Cosine") {
+    std::vector<const void *> rows;
+    std::shared_ptr<const void> lifetime;
+    int ret = BorrowPqTrainingSamples(holder, kMaxTrainVectors, vec_bytes,
+                                      &rows, &lifetime);
+    if (ret == 0) {
+      holder.reset();
+      train_all_chunks(nullptr, num, 0, kMaxKmeansIters, rows.data());
+      // All workers have joined; the learned centroids own their data.
+      std::vector<const void *>().swap(rows);
+      lifetime.reset();
+      return finish_training();
+    }
+    if (ret != IndexError_NotImplemented) return ret;
   }
 
   std::vector<uint8_t> all_data;
@@ -310,20 +338,12 @@ int PqInt8Quantizer::train(IndexHolder::Pointer holder) {
 
   train_all_chunks(all_data.data(), num, data_stride, kMaxKmeansIters);
 
-  // Pre-build centroid pointer cache (needed by compute_dist_table).
-  build_centroid_ptrs_cache();
-
-  // ADC-only consumers need the codebook, but not the quadratic SDC table.
-  if (precompute_sdc_) compute_dist_table();
-
-  // Pre-compute sub-centroid norms for the precomputed residual table.
-  compute_sub_centroid_norms();
-
-  return 0;
+  return finish_training();
 }
 
 void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
-                                       size_t stride, uint32_t max_iters) {
+                                       size_t stride, uint32_t max_iters,
+                                       const void *const *rows) {
   // Create thread pool.
   auto threads =
       std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
@@ -337,11 +357,11 @@ void PqInt8Quantizer::train_all_chunks(const void *data, size_t num,
     using T = std::remove_const_t<std::remove_pointer_t<decltype(typed_data)>>;
     for (size_t i = 0; i < pool_count; ++i) {
       task_group->submit(
-          ailego::Closure::New([this, typed_data, num, stride, i, pool_count,
-                                max_iters, &finished]() {
+          ailego::Closure::New([this, typed_data, num, stride, rows, i,
+                                pool_count, max_iters, &finished]() {
             for (uint32_t m = static_cast<uint32_t>(i); m < num_chunk_;
                  m += static_cast<uint32_t>(pool_count)) {
-              train_chunk<T>(typed_data, num, stride, m, max_iters);
+              train_chunk<T>(typed_data, num, stride, m, max_iters, rows);
               finished++;
             }
           }));
@@ -1253,7 +1273,7 @@ template <typename T>
 void PqInt8Quantizer::normalize(T *data, size_t num) const {
   for (size_t i = 0; i < num; ++i) {
     float norm = 0.0f;
-    ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
+    turbo::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
   }
 }
 
@@ -1280,7 +1300,7 @@ void PqInt8Quantizer::compute_and_subtract_center(T *data, size_t num) {
 template <typename T>
 void PqInt8Quantizer::normalize(T *vec, float *norm_out) const {
   float norm = 0.0f;
-  ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
+  turbo::Normalizer<T>::L2(vec, original_dim_, &norm);
   if (norm_out) {
     *norm_out = norm;
   }

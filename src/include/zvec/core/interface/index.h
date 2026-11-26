@@ -407,6 +407,12 @@ class ZVEC_CORE_API HNSWIndex : public Index {
  public:
   HNSWIndex() = default;
 
+  int open(const std::string &file_path,
+           StorageOptions storage_options) override;
+  int merge(const std::vector<Index::Pointer> &indexes,
+            const IndexFilter &filter,
+            const MergeOptions &options = {}) override;
+
   //! Retrieve the storage mode of the underlying HNSW streamer entity.
   //! Returns a string among {"mmap", "buffer_pool", "contiguous", "external"}.
   //! Intended for introspection and debug/testing usage. Returns empty
@@ -438,6 +444,8 @@ class ZVEC_CORE_API HNSWIndex : public Index {
 
   HNSWIndexParam param_{};
   bool use_legacy_pipeline_{false};
+  std::string file_path_;
+  StorageOptions storage_options_{};
 };
 
 class ZVEC_CORE_API VamanaIndex : public Index {

@@ -970,6 +970,20 @@ class ConcurrentQueue {
   typedef typename Traits::index_t index_t;
   typedef typename Traits::size_t size_t;
 
+  // A bounded FIFO-prefix scan of each existing producer. The queue must not
+  // be moved or destroyed while a scan is active; producers themselves remain
+  // allocated until queue destruction, including when their threads exit.
+  struct producer_scan_token_t {
+    bool finished() const {
+      return producer == nullptr;
+    }
+
+   private:
+    friend class ConcurrentQueue;
+    void *producer{nullptr};
+    size_t remaining{0};
+  };
+
   static const size_t BLOCK_SIZE = static_cast<size_t>(Traits::BLOCK_SIZE);
   static const size_t EXPLICIT_BLOCK_EMPTY_COUNTER_THRESHOLD =
       static_cast<size_t>(Traits::EXPLICIT_BLOCK_EMPTY_COUNTER_THRESHOLD);
@@ -1569,6 +1583,33 @@ class ConcurrentQueue {
         ->dequeue_bulk(itemFirst, max);
   }
 
+
+  void begin_producer_scan(producer_scan_token_t &scan) const {
+    auto producer = producerListTail.load(std::memory_order_acquire);
+    scan.producer = producer;
+    scan.remaining = producer == nullptr ? 0 : producer->size_approx();
+  }
+
+  // Inspect at most one producer per call, without allocating. Each producer
+  // contributes its available FIFO prefix when first visited; requeued items
+  // cannot consume another producer's scan allowance. A zero result may only
+  // mean that an empty producer was skipped; check finished() for completion.
+  template <typename It>
+  size_t try_dequeue_bulk_from_producer_scan(producer_scan_token_t &scan,
+                                             It itemFirst, size_t max) {
+    auto producer = static_cast<ProducerBase *>(scan.producer);
+    if (producer == nullptr || max == 0) return 0;
+    const size_t requested = scan.remaining < max ? scan.remaining : max;
+    const size_t count =
+        requested == 0 ? 0 : producer->dequeue_bulk(itemFirst, requested);
+    scan.remaining -= count;
+    if (count == 0 || scan.remaining == 0) {
+      producer = producer->next_prod();
+      scan.producer = producer;
+      scan.remaining = producer == nullptr ? 0 : producer->size_approx();
+    }
+    return count;
+  }
 
   // Returns an estimate of the total number of elements currently in the queue.
   // This estimate is only accurate if the queue has completely stabilized
@@ -2837,7 +2878,7 @@ class ConcurrentQueue {
 
       // Create the new block
       pr_blockIndexSize <<= 1;
-      auto newRawPtr = static_cast<char *>((Traits::malloc)(
+      auto newRawPtr = static_cast<char *>(allocate_lifetime(
           sizeof(BlockIndexHeader) + std::alignment_of<BlockIndexEntry>::value -
           1 + sizeof(BlockIndexEntry) * pr_blockIndexSize));
       if (newRawPtr == nullptr) {
@@ -3481,8 +3522,16 @@ class ConcurrentQueue {
           blockIndex.load(std::memory_order_relaxed);  // We're the only writer
                                                        // thread, relaxed is OK
       if (localBlockIndex == nullptr) {
-        return false;  // this can happen if new_block_index failed in the
-                       // constructor
+        // A failed constructor allocation leaves a registered producer which
+        // can also be recycled by another thread. Retry its initial index
+        // once memory becomes available instead of poisoning it permanently.
+        MOODYCAMEL_CONSTEXPR_IF(allocMode == CannotAlloc) {
+          return false;
+        }
+        else if (!new_block_index()) {
+          return false;
+        }
+        localBlockIndex = blockIndex.load(std::memory_order_relaxed);
       }
       size_t newTail =
           (localBlockIndex->tail.load(std::memory_order_relaxed) + 1) &
@@ -3559,7 +3608,7 @@ class ConcurrentQueue {
       auto prev = blockIndex.load(std::memory_order_relaxed);
       size_t prevCapacity = prev == nullptr ? 0 : prev->capacity;
       auto entryCount = prev == nullptr ? nextBlockIndexCapacity : prevCapacity;
-      auto raw = static_cast<char *>((Traits::malloc)(
+      auto raw = static_cast<char *>(allocate_lifetime(
           sizeof(BlockIndexHeader) + std::alignment_of<BlockIndexEntry>::value -
           1 + sizeof(BlockIndexEntry) * entryCount +
           std::alignment_of<BlockIndexEntry *>::value - 1 +
@@ -3857,9 +3906,10 @@ class ConcurrentQueue {
       }
     }
 
-    return add_producer(
-        isExplicit ? static_cast<ProducerBase *>(create<ExplicitProducer>(this))
-                   : create<ImplicitProducer>(this));
+    return add_producer(isExplicit
+                            ? static_cast<ProducerBase *>(
+                                  create_producer<ExplicitProducer>(this))
+                            : create_producer<ImplicitProducer>(this));
   }
 
   ProducerBase *add_producer(ProducerBase *producer) {
@@ -4114,9 +4164,9 @@ class ConcurrentQueue {
             newCapacity <<= 1;
           }
           auto raw = static_cast<char *>(
-              (Traits::malloc)(sizeof(ImplicitProducerHash) +
-                               std::alignment_of<ImplicitProducerKVP>::value -
-                               1 + sizeof(ImplicitProducerKVP) * newCapacity));
+              allocate_lifetime(sizeof(ImplicitProducerHash) +
+                                std::alignment_of<ImplicitProducerKVP>::value -
+                                1 + sizeof(ImplicitProducerKVP) * newCapacity));
           if (raw == nullptr) {
             // Allocation failed
             implicitProducerHashCount.fetch_sub(1, std::memory_order_relaxed);
@@ -4247,14 +4297,33 @@ class ConcurrentQueue {
   // Utility functions
   //////////////////////////////////
 
-  template <typename TAlign>
+  // Producers, their indexes and hash tables remain owned until destruction.
+  // Other traits can continue using the same allocator for both lifetimes.
+  template <typename QTraits = Traits>
+  static auto allocate_lifetime(size_t size, int)
+      -> decltype(QTraits::malloc_lifetime(size)) {
+    return QTraits::malloc_lifetime(size);
+  }
+
+  static void *allocate_lifetime(size_t size, long) {
+    return (Traits::malloc)(size);
+  }
+
+  static void *allocate_lifetime(size_t size) {
+    return allocate_lifetime(size, 0);
+  }
+
+  template <typename TAlign, bool Lifetime = false>
   static inline void *aligned_malloc(size_t size) {
+    const auto allocate = [](size_t bytes) {
+      return Lifetime ? allocate_lifetime(bytes) : (Traits::malloc)(bytes);
+    };
     MOODYCAMEL_CONSTEXPR_IF(std::alignment_of<TAlign>::value <=
                             std::alignment_of<details::max_align_t>::value)
-    return (Traits::malloc)(size);
+    return allocate(size);
     else {
       size_t alignment = std::alignment_of<TAlign>::value;
-      void *raw = (Traits::malloc)(size + alignment - 1 + sizeof(void *));
+      void *raw = allocate(size + alignment - 1 + sizeof(void *));
       if (!raw) return nullptr;
       char *ptr = details::align_for<TAlign>(reinterpret_cast<char *>(raw) +
                                              sizeof(void *));
@@ -4297,8 +4366,8 @@ class ConcurrentQueue {
   }
 
   template <typename U, typename A1>
-  static inline U *create(A1 &&a1) {
-    void *p = aligned_malloc<U>(sizeof(U));
+  static inline U *create_producer(A1 &&a1) {
+    void *p = aligned_malloc<U, true>(sizeof(U));
     return p != nullptr ? new (p) U(std::forward<A1>(a1)) : nullptr;
   }
 

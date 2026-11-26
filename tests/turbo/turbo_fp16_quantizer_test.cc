@@ -22,9 +22,9 @@
 #include <random>
 #include <string>
 #include <vector>
-#include <ailego/math/normalizer.h>
 #include <gtest/gtest.h>
 #include <turbo/distance/neon_fp16/fp16/cosine.h>
+#include <turbo/norm/normalizer.h>
 #include <turbo/quantizer/fp16_quantizer/fp16_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/container/params.h>
@@ -331,7 +331,8 @@ TEST(Fp16Quantizer, StoragePrecisionConvertsBeforeCosineNormalization) {
   FloatHelper::ToFP32(native_input.data(), kDimension,
                       expected_normalized.data());
   float expected_norm = 0.0f;
-  Normalizer<float>::L2(expected_normalized.data(), kDimension, &expected_norm);
+  zvec::turbo::Normalizer<float>::L2(expected_normalized.data(), kDimension,
+                                     &expected_norm);
   std::array<Float16, kDimension> expected{};
   FloatHelper::ToFP16(expected_normalized.data(), kDimension,
                       reinterpret_cast<uint16_t *>(expected.data()));
@@ -999,6 +1000,47 @@ TEST(Fp16Quantizer, EncodedDatapointBatchUsesBatchKernel) {
         quantizer.calc_distance_dp_dp_batch(nullptr, 0, nullptr, nullptr);
         quantizer.calc_distance_dp_dp_batch(nullptr, -1, nullptr, nullptr);
         EXPECT_EQ(0u, quantizer.pair_calls);
+      }
+    }
+  }
+}
+
+TEST(Fp16Quantizer, ManyDistancePreservesAccumulationPolicy) {
+  constexpr size_t kDim = 17;
+  std::array<std::array<ailego::Float16, kDim>, 4> storage;
+  const float values[] = {300.0f, 100.0f, 0.0f, 50.0f};
+  for (size_t i = 0; i < storage.size(); ++i) {
+    storage[i].fill(ailego::Float16(values[i]));
+  }
+  const void *rows[] = {storage[0].data(), storage[1].data()};
+  const void *queries[] = {storage[2].data(), storage[3].data()};
+  for (bool fp32_accumulation : {false, true}) {
+    SCOPED_TRACE(fp32_accumulation);
+    IndexMeta meta;
+    meta.set_meta(IndexMeta::DT_FP32, kDim);
+    meta.set_metric("SquaredEuclidean", 0, Params());
+    Params params;
+    params.set("fp32_accumulation", fp32_accumulation);
+    auto quantizer = IndexFactory::CreateQuantizer("Fp16Quantizer");
+    ASSERT_NE(nullptr, quantizer);
+    ASSERT_EQ(0, quantizer->init(meta, params));
+    auto many = quantizer->many_distance();
+    ASSERT_TRUE(many);
+    float actual[4], expected[4];
+    many(rows, queries, 2, 2, kDim, actual, nullptr);
+    for (size_t q = 0; q < 2; ++q) {
+      auto distance = quantizer->distance(
+          queries[q], IndexQueryMeta(IndexMeta::DT_FP16, kDim));
+      ASSERT_TRUE(distance.batch_valid());
+      distance.batch(rows, 2, expected + q * 2);
+      for (size_t i = 0; i < 2; ++i) {
+        EXPECT_EQ(expected[q * 2 + i], actual[q * 2 + i]);
+        if (fp32_accumulation) {
+          // Values exceed FP16 range; selecting the native FP16 family here
+          // must not silently turn the requested FP32 accumulation into inf.
+          const float delta = values[i] - values[q + 2];
+          EXPECT_FLOAT_EQ(kDim * delta * delta, actual[q * 2 + i]);
+        }
       }
     }
   }

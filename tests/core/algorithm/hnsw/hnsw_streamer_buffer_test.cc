@@ -13,6 +13,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -66,7 +67,7 @@ TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
 }
 
 TEST_F(HnswStreamerTest, LegacyReadsReleaseStorageBeforeThreadExit) {
-  auto &memory_pool = MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   memory_pool.init(64UL * 1024 * 1024);
   const auto initial_pages = memory_pool.stats().page_used;
   auto storage = IndexFactory::CreateStorage("BufferStorage");
@@ -138,7 +139,8 @@ TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
     mutable std::vector<uint64_t> requested_keys;
   };
 
-  MemoryLimitPool::get_instance().init(64UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024UL *
+                                                         1024UL);
   auto storage = IndexFactory::CreateStorage("BufferStorage");
   ASSERT_NE(nullptr, storage);
   ASSERT_EQ(0, storage->init(Params()));
@@ -221,7 +223,8 @@ TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
 }
 
 TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   constexpr uint32_t kDocCount = 128;
   const std::string path = dir_ + "SearchDispatch";
   Params params;
@@ -316,7 +319,8 @@ TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -515,7 +519,8 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -639,7 +644,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
 }
 
 TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
-  MemoryLimitPool::get_instance().init(512UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(512UL * 1024UL *
+                                                         1024UL);
   auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_NE(nullptr, streamer);
 
@@ -713,7 +719,8 @@ TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);

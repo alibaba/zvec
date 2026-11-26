@@ -21,6 +21,7 @@
 #include "utility/stable_vector_holder.h"
 #include "diskann_builder.h"
 #include "diskann_builder_entity.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec::core {
 namespace {
@@ -159,7 +160,7 @@ TEST_F(DiskAnnMmapViewTest, MergeUsesExistingIteratorAndRetainsAllSources) {
 }
 
 TEST_F(DiskAnnMmapViewTest, MixedStorageFallsBackWithoutChangingLifetime) {
-  ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   auto a = source("mmap", "MMapFileStorage");
   auto b = source("buffer", "BufferStorage");
   auto holder = std::make_shared<MergedProviderIndexHolder>(
@@ -198,7 +199,7 @@ TEST_F(DiskAnnMmapViewTest, CancellationDoesNotChangeLifetime) {
 }
 
 TEST_F(DiskAnnMmapViewTest, BuilderCopiesMixedStorageForGraphAndDumps) {
-  ailego::MemoryLimitPool::get_instance().init(64 * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64 * 1024UL * 1024UL);
   auto a = source("a", "MMapFileStorage");
   auto b = source("b", "BufferStorage", 100);
   auto holder = std::make_shared<MergedProviderIndexHolder>(
@@ -237,12 +238,19 @@ class FailedStableHolder : public MultiPassIndexHolder<IndexMeta::DT_FP32>,
 
 TEST_F(DiskAnnMmapViewTest, BuilderPropagatesStableReadError) {
   auto holder = std::make_shared<FailedStableHolder>();
+  // Train on a readable holder so the stable-data failure reaches graph build.
+  // PQ training itself now retains stable source data and propagates errors.
+  auto training =
+      std::make_shared<MultiPassIndexHolder<IndexMeta::DT_FP32>>(16);
+  for (size_t i = 0; i < 64; ++i) {
+    training->emplace(i, ailego::NumericalVector<float>(16, float(i)));
+  }
   auto builder = IndexFactory::CreateBuilder("DiskAnnBuilder");
   ailego::Params params;
   params.set("zvec.diskann.builder.threads", 1U);
   params.set("zvec.diskann.builder.pq_chunk_num", 4U);
   ASSERT_EQ(0, builder->init(meta, params));
-  ASSERT_EQ(0, builder->train(holder));
+  ASSERT_EQ(0, builder->train(training));
   EXPECT_EQ(IndexError_ReadData, builder->build(holder));
   EXPECT_EQ(0U, builder->stats().built_count());
 }

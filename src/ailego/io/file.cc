@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <limits>
+#include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/io/file.h>
 #if !defined(_WIN64) && !defined(_WIN32)
@@ -32,7 +33,63 @@
 namespace zvec {
 namespace ailego {
 
+namespace {
+
+size_t ReserveMappedPages(size_t bytes, size_t page_offset = 0) {
+  if (bytes == 0) return 0;
+  auto &pool = MemoryLimitPool::get_instance();
+  const size_t page = pool.page_buffer_size();
+  if (bytes > (std::numeric_limits<size_t>::max)() - page_offset - (page - 1))
+    return 0;
+  const size_t rounded = ((page_offset + bytes + page - 1) / page) * page;
+  return pool.try_reserve_materialization(rounded) ? rounded : 0;
+}
+
+size_t ReserveMappedPages(const void *addr, size_t bytes) {
+  return ReserveMappedPages(bytes, reinterpret_cast<uintptr_t>(addr) %
+                                       MemoryLimitPool::page_buffer_size());
+}
+
+void FinishMappedPages(size_t bytes, bool materialized) {
+  if (!bytes) return;
+#if defined(_WIN64) || defined(_WIN32)
+  const auto error = ::GetLastError();
+#else
+  const int error = errno;
+#endif
+  MemoryLimitPool::get_instance().finish_materialization(bytes, materialized);
+#if defined(_WIN64) || defined(_WIN32)
+  ::SetLastError(error);
+#else
+  errno = error;
+#endif
+}
+
+}  // namespace
+
 #if !defined(_WIN64) && !defined(_WIN32)
+
+File::Identity File::Identify(NativeHandle handle) {
+  struct stat st {};
+  if (::fstat(handle, &st) != 0) return {};
+  return {static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino),
+          true};
+}
+
+File::Identity File::IdentifyPath(const std::string &path) {
+  struct stat st {};
+  if (::lstat(path.c_str(), &st) != 0) return {};
+  return {static_cast<uint64_t>(st.st_dev), static_cast<uint64_t>(st.st_ino),
+          true};
+}
+
+bool File::DeleteIfSame(const std::string &path, const Identity &identity) {
+  if (!identity.valid) return false;
+  const auto current = IdentifyPath(path);
+  if (!current.valid) return errno == ENOENT;
+  if (!(current == identity)) return true;
+  return ::unlink(path.c_str()) == 0 || errno == ENOENT;
+}
 
 static inline int OpenSafely(const char *path, int flags) {
   // Set close-on-exec atomically with open: a later fcntl can race with a
@@ -166,6 +223,15 @@ bool File::create(const char *path, size_t len, bool direct) {
     return false;
   }
 
+  read_only_ = false;
+  native_handle_ = fd;
+  return true;
+}
+
+bool File::create_exclusive(const char *path) {
+  ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
+  int fd = OpenSafely(path, O_RDWR | O_CREAT | O_EXCL);
+  ailego_false_if_lt_zero(fd);
   read_only_ = false;
   native_handle_ = fd;
   return true;
@@ -331,7 +397,11 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   int flags = (opts & File::MMAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
 
 #if defined(MAP_POPULATE)
-  if (opts & File::MMAP_POPULATE) {
+  // Populating the mapping is optional. Keep lazy access available when
+  // process pressure leaves no room to fault in the whole extent.
+  const size_t populate =
+      (opts & File::MMAP_POPULATE) ? ReserveMappedPages(len + excess) : 0;
+  if (populate) {
     flags |= MAP_POPULATE;
   }
 #endif
@@ -343,13 +413,14 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
 #endif
 
   void *base = mmap(nullptr, len + excess, prot, flags, handle, off - excess);
+#if defined(MAP_POPULATE)
+  FinishMappedPages(populate, base != MAP_FAILED);
+#endif
   ailego_null_if_false(base != MAP_FAILED);
   void *addr = static_cast<char *>(base) + excess;
 
-  if (opts & File::MMAP_LOCKED) {
-    mlock(addr, len);
-  }
-  if (opts & File::MMAP_WARMUP) {
+  const bool locked = (opts & File::MMAP_LOCKED) && MemoryLock(addr, len);
+  if (!locked && (opts & File::MMAP_WARMUP)) {
     File::MemoryWarmup(addr, len);
   }
   return addr;
@@ -366,7 +437,9 @@ void *File::MemoryMap(size_t len, int opts) {
   int flags = (opts & File::MMAP_SHARED) ? MAP_SHARED | MAP_ANONYMOUS
                                          : MAP_PRIVATE | MAP_ANONYMOUS;
 #if defined(MAP_POPULATE)
-  if (opts & File::MMAP_POPULATE) {
+  const size_t populate =
+      (opts & File::MMAP_POPULATE) ? ReserveMappedPages(len) : 0;
+  if (populate) {
     flags |= MAP_POPULATE;
   }
 #endif
@@ -376,6 +449,9 @@ void *File::MemoryMap(size_t len, int opts) {
   }
 #endif
   void *addr = mmap(nullptr, len, prot, flags, -1, 0);
+#if defined(MAP_POPULATE)
+  FinishMappedPages(populate, addr != MAP_FAILED);
+#endif
   ailego_null_if_false(addr != MAP_FAILED);
   return addr;
 #else
@@ -425,9 +501,14 @@ void *File::MemoryRemap(void *oldptr, size_t oldsize, void *newptr,
 }
 
 void File::MemoryUnmap(void *addr, size_t len) {
-  ailego_return_if_false(addr);
+  TryMemoryUnmap(addr, len);
+}
+
+bool File::TryMemoryUnmap(void *addr, size_t len) {
+  if (!addr || len == 0) return false;
   const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
-  munmap(static_cast<char *>(addr) - excess, len + excess);
+  if (len > std::numeric_limits<size_t>::max() - excess) return false;
+  return ::munmap(static_cast<char *>(addr) - excess, len + excess) == 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t len) {
@@ -435,11 +516,6 @@ bool File::MemoryFlush(void *addr, size_t len) {
   const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
   return (msync(static_cast<char *>(addr) - excess, len + excess, MS_ASYNC) ==
           0);
-}
-
-bool File::MemoryLock(void *addr, size_t len) {
-  ailego_false_if_false(addr && len);
-  return (mlock(addr, len) == 0);
 }
 
 bool File::MemoryUnlock(void *addr, size_t len) {
@@ -499,6 +575,65 @@ bool File::create(const char *path, size_t len, bool direct) {
   read_only_ = false;
   native_handle_ = file_handle;
   return true;
+}
+
+bool File::create_exclusive(const char *path) {
+  ailego_false_if_false(native_handle_ == File::InvalidHandle && path);
+  const std::wstring wpath = FileHelper::Utf8ToWide(path);
+  ailego_false_if_false(Utf8PathOk(path, wpath));
+  HANDLE file_handle =
+      ::CreateFileW(wpath.c_str(), GENERIC_WRITE | GENERIC_READ,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+  ailego_false_if_false(file_handle != INVALID_HANDLE_VALUE);
+  read_only_ = false;
+  native_handle_ = file_handle;
+  return true;
+}
+
+File::Identity File::Identify(NativeHandle handle) {
+  BY_HANDLE_FILE_INFORMATION info{};
+  if (!::GetFileInformationByHandle(handle, &info)) return {};
+  const uint64_t index =
+      (static_cast<uint64_t>(info.nFileIndexHigh) << 32) | info.nFileIndexLow;
+  return {info.dwVolumeSerialNumber, index, true};
+}
+
+File::Identity File::IdentifyPath(const std::string &path) {
+  const auto wpath = FileHelper::Utf8ToWide(path);
+  if (!Utf8PathOk(path.c_str(), wpath)) return {};
+  const HANDLE handle = ::CreateFileW(
+      wpath.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return {};
+  const auto identity = Identify(handle);
+  ::CloseHandle(handle);
+  return identity;
+}
+
+bool File::DeleteIfSame(const std::string &path, const Identity &identity) {
+  if (!identity.valid) return false;
+  const auto wpath = FileHelper::Utf8ToWide(path);
+  if (!Utf8PathOk(path.c_str(), wpath)) return false;
+  const HANDLE handle = ::CreateFileW(
+      wpath.c_str(), DELETE | FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) {
+    const auto error = ::GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+  }
+  const auto current = Identify(handle);
+  bool ok = current.valid;
+  if (current == identity) {
+    FILE_DISPOSITION_INFO disposition{TRUE};
+    ok = ::SetFileInformationByHandle(handle, FileDispositionInfo, &disposition,
+                                      sizeof(disposition));
+  }
+  ::CloseHandle(handle);
+  return ok;
 }
 
 //! Open a local file
@@ -745,10 +880,8 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
 
   ailego_null_if_false(base);
   void *addr = (char *)base + excess;
-  if (opts & File::MMAP_LOCKED) {
-    VirtualLock(addr, len);
-  }
-  if (opts & File::MMAP_WARMUP) {
+  const bool locked = (opts & File::MMAP_LOCKED) && MemoryLock(addr, len);
+  if (!locked && (opts & File::MMAP_WARMUP)) {
     File::MemoryWarmup(addr, len);
   }
   return addr;
@@ -758,10 +891,8 @@ void *File::MemoryMap(size_t len, int opts) {
   void *addr =
       VirtualAlloc(nullptr, len, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
   ailego_null_if_false(addr);
-  if (opts & File::MMAP_LOCKED) {
-    VirtualLock(addr, len);
-  }
-  if (opts & File::MMAP_WARMUP) {
+  const bool locked = (opts & File::MMAP_LOCKED) && MemoryLock(addr, len);
+  if (!locked && (opts & File::MMAP_WARMUP)) {
     File::MemoryWarmup(addr, len);
   }
   return addr;
@@ -771,16 +902,15 @@ void *File::MemoryRemap(void *, size_t, void *, size_t) {
   return nullptr;
 }
 
-void File::MemoryUnmap(void *addr, size_t /*len*/) {
-  ailego_return_if_false(addr);
-  MEMORY_BASIC_INFORMATION mbi;
-  if (VirtualQuery(addr, &mbi, sizeof(mbi))) {
-    if (mbi.Type == MEM_MAPPED) {
-      UnmapViewOfFile(mbi.AllocationBase);
-    } else {
-      VirtualFree(mbi.AllocationBase, 0, MEM_RELEASE);
-    }
-  }
+void File::MemoryUnmap(void *addr, size_t len) {
+  TryMemoryUnmap(addr, len);
+}
+
+bool File::TryMemoryUnmap(void *addr, size_t /*len*/) {
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!addr || !::VirtualQuery(addr, &mbi, sizeof(mbi))) return false;
+  if (mbi.Type == MEM_MAPPED) return ::UnmapViewOfFile(mbi.AllocationBase) != 0;
+  return ::VirtualFree(mbi.AllocationBase, 0, MEM_RELEASE) != 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t /*len*/) {
@@ -788,36 +918,40 @@ bool File::MemoryFlush(void *addr, size_t /*len*/) {
   return (!!FlushViewOfFile(addr, 0));
 }
 
-bool File::MemoryLock(void *addr, size_t len) {
-  ailego_false_if_false(addr && len);
-  return (!!VirtualLock(addr, len));
-}
-
 bool File::MemoryUnlock(void *addr, size_t len) {
   ailego_false_if_false(addr && len);
   return (!!VirtualUnlock(addr, len));
 }
 
-static inline int getpagesize() {
-  SYSTEM_INFO info;
-  GetSystemInfo(&info);
-  return info.dwPageSize;
-}
 #endif
 
+bool File::MemoryLock(void *addr, size_t len) {
+  const size_t reserved = addr ? ReserveMappedPages(addr, len) : 0;
+  if (!reserved) return false;
+#if defined(_WIN64) || defined(_WIN32)
+  const bool locked = ::VirtualLock(addr, len) != 0;
+#else
+  const bool locked = ::mlock(addr, len) == 0;
+#endif
+  // A failed lock need not leave the working set unchanged.
+  FinishMappedPages(reserved, true);
+  return locked;
+}
+
 void File::MemoryWarmup(void *addr, size_t len) {
-  static int page_size = getpagesize();
+  const size_t reserved = addr ? ReserveMappedPages(addr, len) : 0;
+  if (!reserved) return;
 
-  if (addr && len) {
-    uint8_t *p = reinterpret_cast<uint8_t *>(addr);
-    uint8_t *end = p + len;
-    volatile uint8_t tmp = 0;
-
-    while (p < end) {
-      tmp ^= *p;
-      p += page_size;
-    }
+  const size_t page = MemoryLimitPool::page_buffer_size();
+  const auto *bytes = static_cast<const uint8_t *>(addr);
+  size_t step = page - reinterpret_cast<uintptr_t>(addr) % page;
+  volatile uint8_t touched = 0;
+  for (size_t offset = 0;; step = page) {
+    touched ^= bytes[offset];
+    if (len - offset <= step) break;
+    offset += step;
   }
+  FinishMappedPages(reserved, true);
 }
 
 }  // namespace ailego

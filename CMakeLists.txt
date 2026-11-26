@@ -1,4 +1,10 @@
 cmake_minimum_required(VERSION 3.26)
+# Keep legacy third-party projects compatible with CMake 4, which requires
+# a policy version of at least 3.5. Preserve higher values set by callers.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM OR CMAKE_POLICY_VERSION_MINIMUM VERSION_LESS 3.5)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 cmake_policy(SET CMP0077 NEW)
 # Some thirdparty subdirectories declare cmake_minimum_required < 3.25, which would
 # leave CMP0141 unset for them and make them ignore CMAKE_MSVC_DEBUG_INFORMATION_FORMAT.
@@ -134,7 +140,7 @@ option(BUILD_ZVEC_CORE_SHARED "Build all-in-one zvec-core shared library libzvec
 
 option(BUILD_PYTHON_BINDINGS "Build Python bindings using pybind11" OFF)
 option(BUILD_C_BINDINGS "Build C bindings" ON)
-option(BUILD_TOOLS "Build tools" ON)
+option(BUILD_BENCHMARKS "Build benchmarks" OFF)
 option(BUILD_CPP_EXAMPLES "Build C++ examples" OFF)
 
 message(STATUS "BUILD_ZVEC_SHARED:${BUILD_ZVEC_SHARED}")
@@ -142,7 +148,7 @@ message(STATUS "BUILD_ZVEC_AILEGO_SHARED:${BUILD_ZVEC_AILEGO_SHARED}")
 message(STATUS "BUILD_ZVEC_CORE_SHARED:${BUILD_ZVEC_CORE_SHARED}")
 message(STATUS "BUILD_PYTHON_BINDINGS:${BUILD_PYTHON_BINDINGS}")
 message(STATUS "BUILD_C_BINDINGS:${BUILD_C_BINDINGS}")
-message(STATUS "BUILD_TOOLS:${BUILD_TOOLS}")
+message(STATUS "BUILD_BENCHMARKS:${BUILD_BENCHMARKS}")
 message(STATUS "BUILD_CPP_EXAMPLES:${BUILD_CPP_EXAMPLES}")
 
 # RaBitQ support:
@@ -212,18 +218,36 @@ message(STATUS "RABITQ_SUPPORTED: ${RABITQ_SUPPORTED}")
 # DiskAnn support:
 #   - Linux x86_64 and ARM64 with io_uring, libaio, or pread
 #   - 64-bit Android and iOS with the portable synchronous pread backend
-#   - macOS ARM64 (Apple Silicon) with synchronous pread
-#   - Windows x86_64 with overlapped I/O
-if((CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|aarch64|arm64)$" AND NOT ANDROID AND NOT IOS)
-    OR (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|aarch64)$" AND NOT IOS)
-    OR ((ANDROID OR IOS) AND CMAKE_SIZEOF_VOID_P EQUAL 8)
-    OR (WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8 AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$"))
+#   - macOS x86_64 and ARM64 with synchronous pread
+#   - Windows x86_64 and ARM64 with overlapped I/O
+# Validate every selected Apple architecture, including universal macOS builds.
+set(DISKANN_TARGET_PROCESSORS "${CMAKE_SYSTEM_PROCESSOR}")
+if(APPLE AND CMAKE_OSX_ARCHITECTURES)
+  set(DISKANN_TARGET_PROCESSORS "${CMAKE_OSX_ARCHITECTURES}")
+endif()
+string(TOLOWER "${DISKANN_TARGET_PROCESSORS}" DISKANN_TARGET_PROCESSORS)
+set(DISKANN_PROCESSORS_SUPPORTED OFF)
+if(DISKANN_TARGET_PROCESSORS)
+  set(DISKANN_PROCESSORS_SUPPORTED ON)
+  foreach(DISKANN_TARGET_PROCESSOR IN LISTS DISKANN_TARGET_PROCESSORS)
+    if(NOT DISKANN_TARGET_PROCESSOR MATCHES "^(x86_64|amd64|aarch64|arm64)$")
+      set(DISKANN_PROCESSORS_SUPPORTED OFF)
+      break()
+    endif()
+  endforeach()
+endif()
+if(CMAKE_SIZEOF_VOID_P EQUAL 8 AND
+   (((CMAKE_SYSTEM_NAME STREQUAL "Linux" OR
+      CMAKE_SYSTEM_NAME STREQUAL "Darwin" OR WIN32) AND
+     DISKANN_PROCESSORS_SUPPORTED AND
+     NOT ANDROID AND NOT IOS)
+    OR ANDROID OR IOS))
   set(DISKANN_SUPPORTED ON)
   add_definitions(-DDISKANN_SUPPORTED=1)
 else()
   set(DISKANN_SUPPORTED OFF)
   add_definitions(-DDISKANN_SUPPORTED=0)
-  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${CMAKE_SYSTEM_PROCESSOR}")
+  message(STATUS "DiskAnn support disabled for ${CMAKE_SYSTEM_NAME}/${DISKANN_TARGET_PROCESSORS}")
 endif()
 message(STATUS "DISKANN_SUPPORTED: ${DISKANN_SUPPORTED}")
 
@@ -244,8 +268,8 @@ cc_directories(tests)
 
 add_custom_target(clang_tidy_deps DEPENDS ARROW.BUILD glog gflags Lz4.BUILD)
 
-if(BUILD_TOOLS)
-    cc_directories(tools)
+if(BUILD_BENCHMARKS)
+    cc_directories(benchmarks)
 endif()
 
 set(CPACK_PACKAGE_VERSION ${ZVEC_VERSION_NUMBER})

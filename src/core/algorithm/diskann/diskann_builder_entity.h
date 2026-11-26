@@ -13,9 +13,11 @@
 // limitations under the License.
 #pragma once
 
+#include <atomic>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_holder.h>
 #include "diskann_entity.h"
+#include "diskann_neighbor_buffer.h"
 
 namespace zvec {
 namespace core {
@@ -72,6 +74,14 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   // and dump read the retained source holder instead.
   void release_vectors();
 
+  // Call only after final pruning has joined all graph workers. Packs the
+  // existing chunks in place and makes the adjacency read-only.
+  int compact_neighbors();
+
+  size_t neighbor_memory_size() const {
+    return neighbor_pool_.memory_size();
+  }
+
   std::string &pq_quantizer_meta_buffer() {
     return pq_quantizer_meta_buffer_;
   }
@@ -81,13 +91,14 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   }
 
  private:
+  void observe_degree(uint32_t degree);
+
   uint32_t max_degree_{0};
   uint32_t list_size_{0};
   double memory_limit_{0};
   uint32_t num_threads_{0};
   uint32_t max_build_degree_{0};
-  uint32_t max_observed_degree_{0};
-  uint32_t neighbor_size_{0};
+  std::atomic<uint32_t> max_observed_degree_{0};
 
   std::string mem_index_file_{""};
   std::string index_path_prefix_{""};
@@ -95,7 +106,9 @@ class DiskAnnBuilderEntity : public DiskAnnEntity {
   std::shared_ptr<const void> vector_lifetime_{};
   std::vector<const void *> vector_ptrs_{};
   std::string keys_buffer_{};
-  std::string neighbors_buffer_{};
+  DiskAnnNeighborPool neighbor_pool_{};
+  bool neighbors_compacted_{false};
+  uint32_t reserved_docs_{0};
   std::vector<diskann_id_t> entrypoints_{};
 
   IndexMeta meta_;

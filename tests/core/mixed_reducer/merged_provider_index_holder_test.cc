@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "mixed_reducer/mixed_streamer_reducer.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -1120,9 +1121,11 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsReleaseBlocksBeforeNextRead) {
 TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   struct RestorePoolBudget {
     ~RestorePoolBudget() {
-      EXPECT_EQ(0, ailego::MemoryLimitPool::get_instance().init(capacity));
+      EXPECT_EQ(
+          0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(capacity));
     }
-    const size_t capacity{ailego::MemoryLimitPool::get_instance().capacity()};
+    const size_t capacity{
+        ::zvec::ailego::PoolPayloadBudget::get_instance().capacity()};
   } restore_budget;
   struct BackingFile {
     ~BackingFile() {
@@ -1131,9 +1134,11 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
     const std::string path{"merged_provider_ordinal_read_test.bin"};
   } backing;
   constexpr size_t kPageCount = 2;
+  // Fit both data pages and the slab header so the pin assertions do not
+  // depend on eviction between reads.
   ASSERT_EQ(
-      0, ailego::MemoryLimitPool::get_instance().init(
-             kPageCount * ailego::kVectorPageSize +
+      0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+             (kPageCount + 1) * ailego::kVectorPageSize +
              ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
   {
     ailego::File file;
@@ -1159,6 +1164,7 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   uint64_t key = 99;
   const void *data = nullptr;
   for (size_t ordinal : {0u, 1u, 1u, 0u}) {
+    SCOPED_TRACE(ordinal);
     ASSERT_EQ(0, reader->read(ordinal, &key, &data));
     EXPECT_EQ(ordinal, key);
     ASSERT_NE(nullptr, data);

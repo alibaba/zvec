@@ -134,7 +134,7 @@ int DiskAnnSearcherEntity::load_pq_segment() {
               DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
               sizeof(DiskAnnPqMeta), read_size);
 
-    return IndexError_ReadData;
+    return pq_meta_segment_->read_error();
   }
 
   memcpy(reinterpret_cast<uint8_t *>(&pq_meta_), data.data(),
@@ -176,7 +176,7 @@ int DiskAnnSearcherEntity::load_pq_segment() {
                 DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(), code_bytes,
                 (size_t)read_size);
 
-      return IndexError_ReadData;
+      return pq_data_segment_->read_error();
     }
     pq_codes_ = std::move(pq_codes);
   } catch (const std::bad_alloc &) {
@@ -202,7 +202,7 @@ int DiskAnnSearcherEntity::read_pq_quantizer_meta_buffer(
     LOG_ERROR("Read segment %s failed, expect: %zu, actual: %zu",
               DiskAnnEntity::kDiskAnnPqMetaSegmentId.c_str(),
               (size_t)(pq_meta_.quantizer_meta_buffer_size), (size_t)read_size);
-    return IndexError_ReadData;
+    return pq_meta_segment_->read_error();
   }
 
   meta_buffer->assign(reinterpret_cast<const char *>(data.data()), read_size);
@@ -220,7 +220,7 @@ int DiskAnnSearcherEntity::load_header_segment() {
   if (meta_segment_->read(0, data, sizeof(DiskAnnMetaHeader)) !=
       sizeof(DiskAnnMetaHeader)) {
     LOG_ERROR("Read segment %s failed", kDiskAnnMetaSegmentId.c_str());
-    return IndexError_ReadData;
+    return meta_segment_->read_error();
   }
   memcpy(reinterpret_cast<uint8_t *>(&meta_header_), data.data(),
          sizeof(DiskAnnMetaHeader));
@@ -253,7 +253,7 @@ int DiskAnnSearcherEntity::load_key_segment() {
   IndexStorage::MemoryBlock data;
   if (key_segment_->read(0, data, key_data_len) != key_data_len) {
     LOG_ERROR("Read segment %s failed", kDiskAnnKeySegmentId.c_str());
-    return IndexError_ReadData;
+    return key_segment_->read_error();
   }
 
   try {
@@ -281,7 +281,7 @@ int DiskAnnSearcherEntity::load_entrypoint_segment() {
   if (entrypoint_segment_->read(0, data, sizeof(uint32_t)) !=
       sizeof(uint32_t)) {
     LOG_ERROR("Read segment %s failed", kDiskAnnEntryPointSegmentId.c_str());
-    return IndexError_ReadData;
+    return entrypoint_segment_->read_error();
   }
 
   uint32_t entrypoint_cnt = 0;
@@ -293,7 +293,7 @@ int DiskAnnSearcherEntity::load_entrypoint_segment() {
     if (entrypoint_segment_->read(sizeof(uint32_t), data,
                                   entrypoint_data_len) != entrypoint_data_len) {
       LOG_ERROR("Read segment %s failed", kDiskAnnEntryPointSegmentId.c_str());
-      return IndexError_ReadData;
+      return entrypoint_segment_->read_error();
     }
 
     entrypoints_.resize(entrypoint_cnt);
@@ -318,7 +318,7 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
   if (key_mapping_segment_->read(0, data, key_mapping_data_len) !=
       key_mapping_data_len) {
     LOG_ERROR("Read segment %s failed", kDiskAnnKeyMappingSegmentId.c_str());
-    return IndexError_ReadData;
+    return key_mapping_segment_->read_error();
   }
 
   try {
