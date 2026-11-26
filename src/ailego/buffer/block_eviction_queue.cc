@@ -1540,7 +1540,11 @@ size_t BlockEvictionQueue::cleanup_dead_entries(size_t max_attempts) {
 bool BlockEvictionQueue::add_single_block(const BlockType &block,
                                           int queue_index) {
   if (queue_index < 0 || queue_index >= static_cast<int>(kQueueCount)) {
-    LOG_ERROR("invalid eviction priority: %d", queue_index);
+    try {
+      LOG_ERROR("invalid eviction priority: %d", queue_index);
+    } catch (...) {
+      // A diagnostic must not interrupt the caller's queue recovery.
+    }
     return false;
   }
   BlockType queued = block;
@@ -1552,7 +1556,8 @@ bool BlockEvictionQueue::add_single_block(const BlockType &block,
   if (!ok) {
     approximate_queue_sizes_[queue_index].fetch_sub(1,
                                                     std::memory_order_relaxed);
-    LOG_DEBUG("Eviction queue enqueue rejected under allocation pressure.");
+    // Queue admission failed under memory pressure. Return that failure
+    // without allocating again to log it.
     return false;
   }
   return true;

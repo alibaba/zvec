@@ -83,6 +83,15 @@ static void log_diskann_io_backend(ailego::IOBackendType type) {
 typedef struct io_event io_event_t;
 typedef struct iocb iocb_t;
 
+// A cleanup diagnostic must not interrupt retirement or escape a destructor.
+static void log_aio_cleanup_failure(int level, const char *message,
+                                    int status) noexcept {
+  try {
+    ailego::LoggerBroker::Log(level, __FILE__, __LINE__, "%s: %d", message,
+                              status);
+  } catch (...) {
+  }
+}
 #endif
 
 void log_diskann_io_backend() {
@@ -305,7 +314,8 @@ int destroy_io_ctx(IOContext &ctx) {
       // The kernel may still own these destinations. Preserve their mapping
       // and its charge even if the context's final owner must go away.
       (void)ctx->aio_staging.release();
-      LOG_ERROR("io_destroy failed for DiskANN: %d", ret);
+      log_aio_cleanup_failure(ailego::Logger::LEVEL_ERROR,
+                              "io_destroy failed for DiskANN", ret);
       status = IndexError_Runtime;
     }
   }
@@ -382,21 +392,28 @@ static void finish_libaio_reads(IoBackend &ctx) {
   if (!ctx.aio_quarantined) ctx.aio_staging.reset();
 }
 
-static bool reset_aio_context(IoBackend &ctx) {
-  auto &loader = LibAioLoader::Instance();
-  int ret = loader.destroy_budgeted(ctx.aio_ctx, ctx.aio_memory);
+static int retire_aio_context(IoBackend &ctx) {
+  const int ret =
+      LibAioLoader::Instance().destroy_budgeted(ctx.aio_ctx, ctx.aio_memory);
   ctx.aio_quarantined = ret != 0;
   finish_libaio_reads(ctx);
   if (ret != 0) {
-    LOG_ERROR("io_destroy failed while draining AIO; returned: %d, %s", ret,
-              ::strerror(-ret));
-    return false;
+    log_aio_cleanup_failure(ailego::Logger::LEVEL_ERROR,
+                            "io_destroy failed while draining DiskANN AIO",
+                            ret);
   }
+  return ret;
+}
 
-  ret = loader.setup_budgeted(MAX_EVENTS, ctx.aio_ctx, ctx.aio_memory);
+static bool reset_aio_context(IoBackend &ctx) {
+  if (retire_aio_context(ctx) != 0) return false;
+  const int ret = LibAioLoader::Instance().setup_budgeted(
+      MAX_EVENTS, ctx.aio_ctx, ctx.aio_memory);
   if (ret != 0) {
     ctx.aio_quarantined = ctx.aio_ctx != nullptr;
-    LOG_WARN("Cannot recreate DiskANN AIO context (%d); using pread", ret);
+    log_aio_cleanup_failure(ailego::Logger::LEVEL_WARN,
+                            "Cannot recreate DiskANN AIO context; using pread",
+                            ret);
   }
   return true;
 }
@@ -420,8 +437,7 @@ static bool prepare_libaio_staging(IoBackend &ctx, const AlignedRead *reads,
     bytes += slot;
   }
   if (!ctx.aio_staging) ctx.aio_staging = std::make_unique<Buffer>();
-  if (ctx.aio_staging->size() < bytes) ctx.aio_staging->resize_or_throw(bytes);
-  return true;
+  return ctx.aio_staging->size() >= bytes || ctx.aio_staging->try_resize(bytes);
 } catch (const std::bad_alloc &) {
   return false;
 }
@@ -438,13 +454,17 @@ int execute_io_libaio(IoBackend &ctx, int fd,
   if (ctx.aio_active) return IndexError_InvalidArgument;
   if (!ctx.aio_ctx || ctx.aio_quarantined)
     return execute_io_pread(fd, read_reqs);
-  const auto finish =
-      ailego::ScopeGuard::Make([&] { finish_libaio_reads(ctx); });
   const size_t batch_size = std::min<size_t>(read_reqs.size(), MAX_EVENTS);
   ailego::BudgetedVector<iocb_t *> cbs;
   ailego::BudgetedVector<io_event_t> evts;
   ailego::BudgetedVector<struct iocb> cb;
   ailego::BudgetedVector<uint8_t> seen;
+  const auto finish = ailego::ScopeGuard::Make([&] {
+    if (ctx.aio_active)
+      retire_aio_context(ctx);
+    else
+      finish_libaio_reads(ctx);
+  });
   try {
     cbs.resize(batch_size);
     evts.resize(batch_size);
@@ -557,6 +577,7 @@ int execute_io_libaio(IoBackend &ctx, int fd,
       seen[request_index] = true;
     }
 
+    ctx.aio_active = false;
     if (!submission_ok || !all_ok) {
       finish_libaio_reads(ctx);
       return execute_io_pread(fd, read_reqs);
@@ -1255,8 +1276,8 @@ struct BufferReadBatch {
   void finish(size_t index) {
     auto &page = pages[index];
     if (page.claimed) {
-      pool->complete_read_page(page.id, page.claimed, page.destination);
-      page.claimed = nullptr;
+      pool->complete_read_page(page.id, std::exchange(page.claimed, nullptr),
+                               page.destination);
     }
     page.done = true;
     for (const auto &piece : pieces) {
@@ -1545,10 +1566,24 @@ int BufferPoolAlignedFileReader::submit(PendingBatch &batch,
     return synchronous();
   }
   if (!plan->reads.empty()) {
-    if (!ctx) {
-      const int ret = setup_io_ctx(ctx);
-      if (ret) return ret;
+    if (!ctx && setup_io_ctx(ctx) != 0) {
+      plan.reset();
+      return synchronous();
     }
+    // Another query may have started loading a bypassed page while this
+    // plan was being prepared. Drop our claims before joining its load.
+    size_t rechecked = 0;
+    for (const size_t index : plan->order) {
+      const auto &page = plan->pages[index];
+      if (page.claimed) continue;
+      ++rechecked;
+      if (pool_->should_join_cache_path(page.id)) {
+        pool_->record_bypass_recheck(rechecked, 0);
+        plan.reset();
+        return synchronous();
+      }
+    }
+    pool_->record_bypass_recheck(rechecked, 0);
     const int ret = bypass_reader_.submit(plan->native, plan->reads, ctx);
     if (ret) return ret;
   } else {
@@ -1601,12 +1636,13 @@ int BufferPoolAlignedFileReader::get_completed(
     }
     for (const uint32_t index : plan->completed) {
       const size_t begin = index ? plan->ends[index - 1] : 0;
+      size_t bypass_bytes = 0;
       for (size_t i = begin; i < plan->ends[index]; ++i) {
-        auto &page = plan->pages[plan->order[i]];
-        if (!page.claimed)
-          plan->pool->record_bypass_read(ailego::kVectorPageSize);
+        const auto &page = plan->pages[plan->order[i]];
+        if (!page.claimed) bypass_bytes += ailego::kVectorPageSize;
         plan->finish(plan->order[i]);
       }
+      if (bypass_bytes) plan->pool->record_bypass_read(bypass_bytes);
     }
     if (minimum <= 0 || count == 0) break;
   }
@@ -1710,6 +1746,10 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   }
   ctx->aio_active = true;
   ctx->aio_batch = &batch;
+  const auto abort_submission = ailego::ScopeGuard::Make([&] {
+    if (ctx->aio_active && !batch.has_async_requests())
+      retire_aio_context(*ctx);
+  });
 
   int ret = LibAioLoader::Instance().io_submit(ctx->aio_ctx, (int64_t)n_ops,
                                                batch.cb_ptrs.data());
@@ -1782,17 +1822,6 @@ int LinuxAlignedFileReader::submit(PendingBatch &batch,
   return read_synchronously();
 }
 
-// Drain or quarantine any remaining requests before returning the error.
-static void quiesce_batch(PendingBatch &batch, IOContext &ctx) {
-  // The io_uring path quiesces its own requests before returning a failure.
-  if (batch.n_reaped < batch.n_submitted && !batch.used_pread) {
-    reset_aio_context(*ctx);
-    batch.n_reaped = batch.n_submitted;
-  } else {
-    finish_libaio_reads(*ctx);
-  }
-}
-
 int LinuxAlignedFileReader::get_completed(
     PendingBatch &batch, IOContext &ctx, int min_completed,
     std::vector<uint32_t> &completed_indices) {
@@ -1861,12 +1890,43 @@ int LinuxAlignedFileReader::get_completed(
   int min_req = std::min((int)n_remaining, min_completed);
   if (min_req < 1) min_req = 1;
 
+  bool keep_pending = false;
+  const auto abort_completion = ailego::ScopeGuard::Make([&] {
+    if (!keep_pending && ctx->aio_active) {
+      retire_aio_context(*ctx);
+      batch.n_reaped = batch.n_submitted;
+      completed_indices.clear();
+    }
+  });
+
   try {
     completed_indices.reserve(n_remaining);
   } catch (const std::bad_alloc &) {
-    quiesce_batch(batch, ctx);
     return IndexError_NoMemory;
   }
+
+  const auto read_undelivered = [&]() -> int {
+    batch.n_reaped = batch.n_submitted;
+    if (!reset_aio_context(*ctx)) {
+      completed_indices.clear();
+      return IndexError_Runtime;
+    }
+    for (uint32_t i = 0; i < batch.n_submitted; ++i) {
+      if (!batch.destinations[i]) continue;
+      const auto &read = batch.cbs[i].u.c;
+      const int status = execute_one_pread(
+          file_desc,
+          AlignedRead(read.offset, read.nbytes, batch.destinations[i]));
+      if (status != 0) {
+        completed_indices.clear();
+        return status;
+      }
+      batch.destinations[i] = nullptr;
+      completed_indices.push_back(i);
+    }
+    return static_cast<int>(completed_indices.size());
+  };
+
   int ret;
   do {
     // Retry interrupted waits while the kernel still owns the staging.
@@ -1876,8 +1936,7 @@ int LinuxAlignedFileReader::get_completed(
   } while (ret == -EINTR);
   if (ret < 0 || static_cast<uint32_t>(ret) > n_remaining) {
     LOG_ERROR("get_completed: unexpected io_getevents result: %d", ret);
-    quiesce_batch(batch, ctx);
-    return IndexError_Runtime;
+    return read_undelivered();
   }
 
   for (int i = 0; i < ret; i++) {
@@ -1885,9 +1944,7 @@ int LinuxAlignedFileReader::get_completed(
     if (event_index >= batch.n_submitted || !batch.destinations[event_index] ||
         batch.events[i].obj != &batch.cbs[event_index]) {
       LOG_ERROR("get_completed: completion did not identify a new request");
-      reset_aio_context(*ctx);
-      batch.n_reaped = batch.n_submitted;
-      return IndexError_Runtime;
+      return read_undelivered();
     }
     const auto idx = static_cast<uint32_t>(event_index);
     int64_t res = (int64_t)batch.events[i].res;
@@ -1906,8 +1963,6 @@ int LinuxAlignedFileReader::get_completed(
                              batch.destinations[idx]);
       if (execute_one_pread(this->file_desc, retry_read) != 0) {
         LOG_ERROR("get_completed: pread retry for read %u failed", idx);
-        batch.n_reaped += (uint32_t)ret;
-        quiesce_batch(batch, ctx);
         return IndexError_Runtime;
       }
     } else {
@@ -1918,8 +1973,9 @@ int LinuxAlignedFileReader::get_completed(
     completed_indices.push_back(idx);
   }
 
-  batch.n_reaped += (uint32_t)ret;
+  batch.n_reaped += static_cast<uint32_t>(ret);
   if (batch.n_reaped == batch.n_submitted) finish_libaio_reads(*ctx);
+  keep_pending = true;
   return ret;
 }
 #else

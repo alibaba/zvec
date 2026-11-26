@@ -34,6 +34,7 @@
 #include <random>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
@@ -43,6 +44,7 @@
 #include <zvec/ailego/buffer/memory_reservation.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
 #include "pool_payload_budget.h"
 
 #if defined(_MSC_VER)
@@ -1076,6 +1078,97 @@ TEST_F(BufferPoolTest, ConcurrentWritablePressureUsesBackgroundWriteback) {
     EXPECT_EQ(static_cast<char>(page_id + 1), page.back());
   }
   std::fclose(input);
+}
+
+TEST_F(BufferPoolTest, ExternalReadReleasesClaimWhenReclaimThrows) {
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/2);
+  VecBufferPool pool(new_file(2), /*writable=*/false);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_TRUE(pool.cache_enabled());
+  QueueResidentSampleTestPeer::stop_background();
+
+  auto &memory = PoolPayloadBudget::get_instance();
+  std::array<char *, 4> held{};
+  const auto release = ScopeGuard::Make([&] {
+    for (char *buffer : held) {
+      if (buffer) memory.release_buffer(buffer, kVectorPageSize);
+    }
+  });
+  for (char *&buffer : held)
+    ASSERT_TRUE(memory.try_acquire_buffer(kVectorPageSize, buffer));
+
+  class FailingReclaimer final : public EvictableBlockOwner {
+   public:
+    bool is_dead_block(eviction_key_t, version_t) override {
+      return false;
+    }
+    bool evict_block(eviction_key_t) override {
+      throw std::bad_alloc();
+    }
+  } reclaimer;
+  auto &queue = BlockEvictionQueue::get_instance();
+  queue.set_valid(&reclaimer);
+  const auto remove_owner =
+      ScopeGuard::Make([&] { queue.set_invalid(&reclaimer); });
+  BlockEvictionQueue::BlockType item;
+  item.owner = &reclaimer;
+  ASSERT_TRUE(queue.add_single_block(item, 0));
+  char *claimed = nullptr;
+  EXPECT_THROW(pool.claim_read_page(0, claimed), std::bad_alloc);
+  EXPECT_EQ(nullptr, claimed);
+  EXPECT_FALSE(pool.should_join_cache_path(0));
+
+  memory.release_buffer(std::exchange(held.back(), nullptr), kVectorPageSize);
+  ASSERT_EQ(VecBufferPool::ReadPageClaim::kClaimed,
+            pool.claim_read_page(0, claimed));
+  pool.cancel_read_page(0, claimed);
+}
+
+TEST_F(BufferPoolTest, ExternalReadReleasesInstallPinOnQueueLogFailure) {
+  init_vec_pool(/*capacity_pages=*/4, /*file_pages=*/2);
+  VecBufferPool pool(new_file(2), /*writable=*/false);
+  ASSERT_EQ(0, pool.init());
+  ASSERT_TRUE(pool.cache_enabled());
+
+  class FailingLogger final : public Logger {
+   public:
+    int init(const Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    void log(int, const char *, int, const char *format, va_list) override {
+      if (std::strstr(format, "invalid eviction priority"))
+        throw std::bad_alloc();
+    }
+  };
+
+  // Reject enqueue exactly as on queue allocation failure, then inject an
+  // allocation error in the diagnostic after the page has been published.
+  const std::vector<char> data(kVectorPageSize, 0x37);
+  auto &memory = PoolPayloadBudget::get_instance();
+  const auto used = memory.stats().page_used;
+  char *claimed = nullptr;
+  ASSERT_EQ(VecBufferPool::ReadPageClaim::kClaimed,
+            pool.claim_read_page(0, claimed));
+  pool.page_table_.set_evict_priority(0, std::numeric_limits<uint8_t>::max());
+  auto prior = LoggerBroker::Register(std::make_shared<FailingLogger>());
+  const auto restore =
+      ScopeGuard::Make([&] { LoggerBroker::Register(std::move(prior)); });
+  EXPECT_NO_THROW(pool.complete_read_page(0, claimed, data.data()));
+  // The normal queue-failure recovery evicts an unpinned clean page.
+  EXPECT_FALSE(pool.should_join_cache_path(0));
+  EXPECT_EQ(used, memory.stats().page_used);
+  pool.page_table_.set_evict_priority(0, 0);
+  ASSERT_EQ(VecBufferPool::ReadPageClaim::kClaimed,
+            pool.claim_read_page(0, claimed));
+  pool.complete_read_page(0, claimed, data.data());
+  char *resident = pool.try_acquire_buffer(0);
+  ASSERT_EQ(claimed, resident);
+  EXPECT_EQ(0, std::memcmp(resident, data.data(), data.size()));
+  const block_id_t page = 0;
+  pool.release_pages(&page, 1);
 }
 
 TEST_F(BufferPoolTest, RecoversDirtyPageAfterQueueRegistrationFailure) {

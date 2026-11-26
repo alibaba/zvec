@@ -21,6 +21,7 @@
 #include <cstring>
 #include <iterator>
 #include <thread>
+#include <utility>
 #include <ailego/pattern/defer.h>
 #include <ailego/pattern/scope_guard.h>
 #include <ailego/utility/memory_helper.h>
@@ -713,12 +714,12 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
   assert(buffer != nullptr);
   Entry &entry = entry_at(block_id);
   if (entry.ref_count.load(std::memory_order_acquire) != kLoadingRefCount) {
+    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     LOG_ERROR(
         "publish_claimed_block: block_id=%zu is not owned by a loader, "
         "state=%d",
         static_cast<size_t>(block_id),
         entry.ref_count.load(std::memory_order_relaxed));
-    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     return nullptr;
   }
 
@@ -2190,15 +2191,17 @@ VecBufferPool::ReadPageClaim VecBufferPool::claim_read_page(block_id_t id,
   const auto claim = page_table_.try_claim_block_load(id);
   if (claim != VectorPageTable::LoadClaimResult::kClaimed)
     return ReadPageClaim::kJoin;
+  bool claimed = false;
+  const auto rollback = ScopeGuard::Make([&] {
+    if (!claimed) cancel_read_page(id, std::exchange(buffer, nullptr));
+  });
   auto &memory = MemoryLimitPool::get_instance();
   if (!memory.try_acquire_buffer(kVectorPageSize, buffer)) {
     BlockEvictionQueue::get_instance().batch_recycle(1);
     (void)memory.try_acquire_buffer(kVectorPageSize, buffer);
   }
-  if (!buffer) {
-    (void)page_table_.cancel_block_load(id);
-    return ReadPageClaim::kBypass;
-  }
+  if (!buffer) return ReadPageClaim::kBypass;
+  claimed = true;
   miss_count_.fetch_add(1, std::memory_order_relaxed);
   return ReadPageClaim::kClaimed;
 }
@@ -2214,10 +2217,7 @@ void VecBufferPool::complete_read_page(block_id_t id, char *buffer,
   std::memcpy(buffer, data, kVectorPageSize);
   char *page =
       page_table_.publish_claimed_block(id, buffer, id * kVectorPageSize);
-  if (page)
-    page_table_.release_block(id);
-  else
-    cancel_read_page(id, buffer);
+  if (page) page_table_.release_block(id);
 }
 
 bool VecBufferPool::acquire_pages_impl(const block_id_t *page_ids, size_t count,

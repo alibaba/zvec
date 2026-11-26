@@ -129,6 +129,41 @@ TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
   ASSERT_EQ(0, index->close());
 }
 
+TEST_P(DiskAnnReadBudgetTest, GraphEvaluatesFilterOncePerExpandedNode) {
+  const auto path = (directory_ / "filtered.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(4095));
+  ASSERT_TRUE(
+      ailego::MemoryLimitPool::get_instance().configure_process_rss_limit(
+          kHighRss));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 8;
+  query->list_size = 48;
+  query->filter = std::make_shared<IndexFilter>();
+  std::vector<unsigned> visits(kDocs);
+  query->filter->set([&](uint64_t id) {
+    EXPECT_LT(id, kDocs);
+    if (id >= kDocs) return true;
+    ++visits[id];
+    return (id % 2) == 0;
+  });
+
+  SearchResult result;
+  ASSERT_EQ(
+      0, index->search(VectorData{DenseVector{rows.data()}}, query, &result));
+  ASSERT_FALSE(result.doc_list_.empty());
+  for (const auto &doc : result.doc_list_) {
+    EXPECT_EQ(1u, doc.key() % 2);
+  }
+  EXPECT_EQ(1u, *std::max_element(visits.begin(), visits.end()));
+  ASSERT_EQ(0, index->close());
+}
+
 TEST_P(DiskAnnReadBudgetTest, SameThreadSwitchRssRefusalAndRetry) {
   const auto param = parameters(false);
   const auto first_path = (directory_ / "first.index").string();

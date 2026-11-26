@@ -14,6 +14,7 @@
 
 #include "diskann_indexer.h"
 #include <algorithm>
+#include <array>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -1326,6 +1327,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
   DiskAnnReadVector<diskann_id_t> frontier;
   frontier.reserve(2 * effective_beam_width);
+  std::array<bool, MAX_IO_DEPTH> frontier_filtered;
 
   DiskAnnReadVector<std::pair<diskann_id_t, uint8_t *>> frontier_neighbors;
   frontier_neighbors.reserve(2 * effective_beam_width);
@@ -1334,7 +1336,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   std::vector<AlignedRead> frontier_read_reqs;
   request_memory.reserve(frontier_read_reqs, 2 * effective_beam_width);
 
-  DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *>>
+  DiskAnnReadVector<std::tuple<diskann_id_t, uint32_t, diskann_id_t *, bool>>
       cached_neighbors;
   cached_neighbors.reserve(2 * effective_beam_width);
 
@@ -1370,10 +1372,11 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
       auto iter = neighbor_cache_.find(neighbor.id);
       if (iter != neighbor_cache_.end()) {
-        cached_neighbors.push_back(std::make_tuple(
-            neighbor.id, iter->second.first, iter->second.second));
+        cached_neighbors.emplace_back(neighbor.id, iter->second.first,
+                                      iter->second.second, filtered);
         stats.cache_hits++;
       } else {
+        frontier_filtered[frontier.size()] = filtered;
         frontier.push_back(neighbor.id);
       }
     }
@@ -1433,11 +1436,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
       float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords_copy);
 
-      bool filtered;
-      const int filter_status =
-          is_filtered(ctx, std::get<0>(cached_neighbor), &filtered);
-      if (filter_status != 0) return filter_status;
-      if (!filtered) {
+      if (!std::get<3>(cached_neighbor)) {
         emplace_candidate(ctx, topk_heap, std::get<0>(cached_neighbor),
                           cur_expanded_dist, node_fp_coords_copy);
       }
@@ -1484,11 +1483,7 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
           float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords);
 
-          bool filtered;
-          const int filter_status =
-              is_filtered(ctx, frontier_neighbor.first, &filtered);
-          if (filter_status != 0) return filter_status;
-          if (!filtered) {
+          if (!frontier_filtered[idx]) {
             emplace_candidate(ctx, topk_heap, frontier_neighbor.first,
                               cur_expanded_dist, node_fp_coords);
           }

@@ -17,6 +17,7 @@
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/index.h>
+#include "algorithm/diskann/diskann_read_memory.h"
 #include "algorithm/flat/flat_streamer.h"
 
 namespace zvec::core_interface {
@@ -59,6 +60,34 @@ int Index::search_internal_ids(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
+  if (diskann_contexts_ && output_scores) {
+    const auto &refiner = search_param->refiner_param;
+    const auto *reference = refiner ? refiner->reference_index.get() : nullptr;
+    if (reformer_ || (reference && reference->reformer_)) {
+      // Reformers can allocate while normalizing scores after the search.
+      // Keep these results private until both stages have succeeded.
+      core::DiskAnnReadVector<int64_t> ids(search_param->topk);
+      core::DiskAnnReadVector<float> scores(search_param->topk);
+      const int ret = _search_internal_ids(vector_data, search_param,
+                                           ids.data(), scores.data());
+      if (ret == 0) {
+        std::copy(ids.begin(), ids.end(), output_ids);
+        std::copy(scores.begin(), scores.end(), output_scores);
+      }
+      return ret;
+    }
+  }
+  return _search_internal_ids(vector_data, search_param, output_ids,
+                              output_scores);
+} catch (const std::bad_alloc &) {
+  if (!diskann_contexts_) throw;
+  return core::IndexError_NoMemory;
+}
+
+int Index::_search_internal_ids(
+    const VectorData &vector_data,
+    const BaseIndexQueryParam::Pointer &search_param, int64_t *output_ids,
+    float *output_scores) {
   const size_t topk = search_param->topk;
   if (search_param->refiner_param && !search_param->bf_pks &&
       !search_param->is_linear) {
@@ -115,7 +144,7 @@ int Index::search_internal_ids(const VectorData &vector_data,
       }
       if (output_scores) {
         ret = _normalize_buffer_scores(vector_data, output_ids, output_scores,
-                                       count);
+                                       count, diskann_contexts_ != nullptr);
       }
     }
     if (ret == 0) {
@@ -129,9 +158,6 @@ int Index::search_internal_ids(const VectorData &vector_data,
   context->reset();
   acquired.keep_on_success(ret);
   return ret;
-} catch (const std::bad_alloc &) {
-  if (!diskann_contexts_) throw;
-  return core::IndexError_NoMemory;
 }
 
 int Index::_search_refine_internal_ids(
@@ -225,7 +251,8 @@ int Index::_search_refine_internal_ids(
           }
         } else if (ret == 0 && output_scores) {
           ret = reference->_normalize_buffer_scores(
-              vector_data, output_ids, output_scores, search_param->topk);
+              vector_data, output_ids, output_scores, search_param->topk,
+              diskann_contexts_ != nullptr);
         }
       }
       reference_context->reset();
@@ -238,7 +265,8 @@ int Index::_search_refine_internal_ids(
 
 int Index::_normalize_buffer_scores(const VectorData &vector_data,
                                     const int64_t *output_ids,
-                                    float *output_scores, size_t count) {
+                                    float *output_scores, size_t count,
+                                    bool process_rss) {
   if (!output_scores || count == 0) return 0;
   if (metric_ && metric_->support_normalize()) {
     for (size_t i = 0; i < count; ++i) {
@@ -254,8 +282,12 @@ int Index::_normalize_buffer_scores(const VectorData &vector_data,
   if (!std::holds_alternative<DenseVector>(vector_data.vector)) {
     return core::IndexError_Runtime;
   }
+  core::DiskAnnReadReservation normalization_memory;
   core::IndexDocumentList documents;
-  documents.reserve(count);
+  if (process_rss)
+    normalization_memory.reserve(documents, count);
+  else
+    documents.reserve(count);
   for (size_t i = 0; i < count; ++i) {
     documents.emplace_back(static_cast<uint64_t>(output_ids[i]),
                            output_scores[i]);

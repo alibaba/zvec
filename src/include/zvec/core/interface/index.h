@@ -205,7 +205,7 @@ class ZVEC_CORE_API Index {
                             std::vector<uint64_t> *candidate_keys = nullptr);
   int _normalize_buffer_scores(const VectorData &query,
                                const int64_t *output_ids, float *output_scores,
-                               size_t count);
+                               size_t count, bool process_rss);
   int _search_refine_internal_ids(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       int64_t *output_ids, float *output_scores);
@@ -283,6 +283,9 @@ class ZVEC_CORE_API Index {
   };
 
  private:
+  int _search_internal_ids(const VectorData &query,
+                           const BaseIndexQueryParam::Pointer &search_param,
+                           int64_t *output_ids, float *output_scores);
   struct DiskAnnContextRegistry;
   struct ThreadDiskAnnContexts;
   static ThreadDiskAnnContexts &thread_diskann_contexts();
