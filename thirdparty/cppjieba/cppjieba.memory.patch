@@ -147,18 +147,27 @@ index e3e1a7e4..ad718ab5 100644
    double freq_sum_;
    double min_weight_;
 diff --git a/include/cppjieba/HMMModel.hpp b/include/cppjieba/HMMModel.hpp
-index 11524957..e181241d 100644
+index 11524957..1068cb16 100644
 --- a/include/cppjieba/HMMModel.hpp
 +++ b/include/cppjieba/HMMModel.hpp
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,16 @@
  #ifndef CPPJIEBA_HMMMODEL_H
  #define CPPJIEBA_HMMMODEL_H
 
 +#include <istream>
++#include <locale.h>
++#include <stdlib.h>
++#include <locale>
++#include <memory>
++#include <sstream>
++#include <type_traits>
++#ifdef __APPLE__
++#include <xlocale.h>
++#endif
  #include "UnicodeFile.hpp"
  #include "limonp/StringUtil.hpp"
  #include "Trie.hpp"
-@@ -18,24 +19,22 @@ struct HMMModel {
+@@ -18,24 +28,22 @@ struct HMMModel {
    enum {B = 0, E = 1, M = 2, S = 3, STATUS_SUM = 4};
 
    HMMModel(const string& modelPath) {
@@ -191,7 +200,25 @@ index 11524957..e181241d 100644
      string line;
      vector<string> tmp;
      vector<string> tmp2;
-@@ -81,7 +80,7 @@ struct HMMModel {
+@@ -44,7 +52,7 @@ struct HMMModel {
+     Split(line, tmp, " ");
+     XCHECK(tmp.size() == STATUS_SUM);
+     for (size_t j = 0; j< tmp.size(); j++) {
+-      startProb[j] = atof(tmp[j].c_str());
++      startProb[j] = ParseProbability(tmp[j]);
+     }
+
+     //Load transProb
+@@ -53,7 +61,7 @@ struct HMMModel {
+       Split(line, tmp, " ");
+       XCHECK(tmp.size() == STATUS_SUM);
+       for (size_t j =0; j < STATUS_SUM; j++) {
+-        transProb[i][j] = atof(tmp[j].c_str());
++        transProb[i][j] = ParseProbability(tmp[j]);
+       }
+     }
+
+@@ -81,7 +89,7 @@ struct HMMModel {
      }
      return cit->second;
    }
@@ -200,12 +227,45 @@ index 11524957..e181241d 100644
      while (getline(ifile, line)) {
        Trim(line);
        if (line.empty()) {
-@@ -124,6 +123,20 @@ struct HMMModel {
+@@ -111,7 +119,7 @@ struct HMMModel {
+         XLOG(ERROR) << "TransCode failed.";
+         return false;
+       }
+-      mp[unicode[0]] = atof(tmp2[1].c_str());
++      mp[unicode[0]] = ParseProbability(tmp2[1]);
+     }
+     return true;
+   }
+@@ -124,6 +132,44 @@ struct HMMModel {
    EmitProbMap emitProbM;
    EmitProbMap emitProbS;
    vector<EmitProbMap* > emitProbVec;
 +
 + private:
++  // HMM files always use a decimal point, even in a comma-decimal locale.
++  static double ParseProbability(const string& text) {
++#ifdef _WIN32
++    using Locale = std::remove_pointer_t<_locale_t>;
++    static const std::unique_ptr<Locale, decltype(&_free_locale)> numericLocale(
++        _create_locale(LC_NUMERIC, "C"), &_free_locale);
++    if (numericLocale) {
++      return _strtod_l(text.c_str(), NULL, numericLocale.get());
++    }
++#else
++    using Locale = std::remove_pointer_t<locale_t>;
++    static const std::unique_ptr<Locale, decltype(&freelocale)> numericLocale(
++        newlocale(LC_NUMERIC_MASK, "C", NULL), &freelocale);
++    if (numericLocale) {
++      return strtod_l(text.c_str(), NULL, numericLocale.get());
++    }
++#endif
++    std::istringstream input(text);
++    input.imbue(std::locale::classic());
++    double value = 0;
++    input >> value;
++    return value;
++  }
++
 +  void Init() {
 +    memset(startProb, 0, sizeof(startProb));
 +    memset(transProb, 0, sizeof(transProb));

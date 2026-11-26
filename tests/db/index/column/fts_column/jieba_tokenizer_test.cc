@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -23,6 +24,7 @@
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
+#include "ailego/pattern/scope_guard.h"
 #include "db/index/column/fts_column/tokenizer/jieba_embedded_dict.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 
@@ -187,6 +189,38 @@ TEST_F(JiebaEmbeddedTokenizerTest, DefaultWorksWithoutExternalDictDir) {
     EXPECT_EQ(tokens[i].position, i);
   }
   EXPECT_TRUE(tokenizer.tokenize("").empty());
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, HmmProbabilitiesIgnoreNumericLocale) {
+  const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { std::setlocale(LC_NUMERIC, saved_locale.c_str()); });
+  ASSERT_NE(std::setlocale(LC_NUMERIC, "C"), nullptr);
+  const auto trie = zvec::fts::get_embedded_jieba_trie();
+  ASSERT_TRUE(trie.has_value());
+  const auto check_model = [&]() {
+    // Load a fresh model through the same stream constructor as the embedded
+    // loader so this test is independent of the process-wide model cache.
+    std::ifstream stream(kDictDir + "/hmm_model.utf8");
+    ASSERT_TRUE(stream.good());
+    cppjieba::HMMModel model(stream);
+    EXPECT_DOUBLE_EQ(model.startProb[model.E], -3.14e+100);
+    EXPECT_DOUBLE_EQ(model.transProb[model.B][model.E], -0.510825623765990);
+    EXPECT_DOUBLE_EQ(model.emitProbB.at(U'耀'), -10.460283);
+    std::vector<std::string> tokens;
+    cppjieba::QuerySegment(trie->get(), &model).Cut("沈若萱", tokens);
+    EXPECT_EQ(tokens, (std::vector<std::string>{"沈若", "萱"}));
+  };
+  check_model();
+  for (const char *locale :
+       {"de_DE.UTF-8", "fr_FR.UTF-8", "German_Germany.1252"}) {
+    if (std::setlocale(LC_NUMERIC, locale) &&
+        std::string(std::localeconv()->decimal_point) == ",") {
+      check_model();
+      return;
+    }
+  }
+  GTEST_SKIP() << "No comma-decimal locale installed";
 }
 
 TEST_F(JiebaEmbeddedTokenizerTest, EmbeddedEntriesMatchCppjiebaTextLoader) {
