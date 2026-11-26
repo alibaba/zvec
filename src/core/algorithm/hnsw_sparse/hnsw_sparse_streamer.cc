@@ -216,7 +216,8 @@ int HnswSparseStreamer::init(const IndexMeta &imeta,
 
 int HnswSparseStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
-    this->close();
+    const int ret = this->close();
+    if (ret != 0) return ret;
   }
 
   LOG_INFO("HnswSparseStreamer cleanup");
@@ -324,7 +325,6 @@ int HnswSparseStreamer::open(IndexStorage::Pointer stg) {
 int HnswSparseStreamer::close() {
   LOG_INFO("HnswSparseStreamer close");
 
-  stats_.clear();
   meta_.set_metric(metric_->name(), 0, metric_->params());
   if (entity_.dirty()) {
     int ret = entity_.set_index_meta(meta_);
@@ -334,6 +334,7 @@ int HnswSparseStreamer::close() {
   if (ret != 0) {
     return ret;
   }
+  stats_.clear();
   state_ = STATE_INITED;
 
   return 0;

@@ -184,8 +184,8 @@ class ZVEC_AILEGO_API File {
   }
 
   //! Map a region of file into memory. Ordinary mappings accept arbitrary
-  //! byte offsets; unmap/flush must use the returned pointer and logical
-  //! length.
+  //! byte offsets. Use TryMemoryUnmapFile with the original offset to release
+  //! a file view whose offset may be unaligned.
   static void *MemoryMap(NativeHandle handle, ssize_t off, size_t len,
                          int opts);
 
@@ -204,6 +204,9 @@ class ZVEC_AILEGO_API File {
   static void MemoryUnmap(void *addr, size_t len);
   // Report success before callers refund mapped-backing RSS ownership.
   static bool TryMemoryUnmap(void *addr, size_t len);
+
+  //! Unmap the logical address and length returned for a given file offset.
+  static bool TryMemoryUnmapFile(void *addr, size_t len, size_t offset);
 
   //! Synchronize a memory map
   static bool MemoryFlush(void *addr, size_t len);

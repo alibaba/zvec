@@ -90,6 +90,17 @@ size_t File::MemoryMapFootprint(size_t offset, size_t len) {
   return MappedPageBytes(len, offset % FileMappingOffsetAlignment());
 }
 
+bool File::TryMemoryUnmapFile(void *addr, size_t len, size_t offset) {
+  const size_t alignment = FileMappingOffsetAlignment();
+  const size_t excess = offset % alignment;
+  if (!addr || !len ||
+      reinterpret_cast<uintptr_t>(addr) % alignment != excess ||
+      len > (std::numeric_limits<size_t>::max)() - excess) {
+    return false;
+  }
+  return TryMemoryUnmap(static_cast<char *>(addr) - excess, len + excess);
+}
+
 #if !defined(_WIN64) && !defined(_WIN32)
 
 File::Identity File::Identify(NativeHandle handle) {
@@ -528,10 +539,7 @@ void File::MemoryUnmap(void *addr, size_t len) {
 }
 
 bool File::TryMemoryUnmap(void *addr, size_t len) {
-  if (!addr || len == 0) return false;
-  const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
-  if (len > std::numeric_limits<size_t>::max() - excess) return false;
-  return ::munmap(static_cast<char *>(addr) - excess, len + excess) == 0;
+  return addr && len && ::munmap(addr, len) == 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t len) {

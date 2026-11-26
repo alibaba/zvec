@@ -365,7 +365,8 @@ int HnswStreamer::init(
 
 int HnswStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
-    this->close();
+    const int ret = this->close();
+    if (ret != 0) return ret;
   }
 
   LOG_INFO("HnswStreamer cleanup");
@@ -782,7 +783,6 @@ int HnswStreamer::open(IndexStorage::Pointer stg, bool read_only) {
 int HnswStreamer::close() {
   LOG_INFO("HnswStreamer close");
 
-  stats_.clear();
   if (metric_) {
     meta_.set_metric(metric_->name(), 0, metric_->params());
   }
@@ -794,6 +794,7 @@ int HnswStreamer::close() {
   if (ret != 0) {
     return ret;
   }
+  stats_.clear();
   state_ = STATE_INITED;
 
   return 0;

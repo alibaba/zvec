@@ -456,13 +456,17 @@ int VamanaStreamerEntity::close() {
   LOG_DEBUG("close Vamana index");
   std::lock_guard<std::mutex> lock(mutex_);
   flush_header();
+  // Keep storage alive until every chunk handle has been released.
+  const auto storage = broker_->storage();
+  const int ret = broker_->close();
+  if (ret != 0) return ret;
   mutable_header()->reset();
   keys_map_->clear();
   header_.clear();
   node_chunks_.clear();
   dist_chunks_.clear();
   dist_loaded_ = false;
-  return broker_->close();
+  return 0;
 }
 
 int VamanaStreamerEntity::flush(uint64_t checkpoint) {

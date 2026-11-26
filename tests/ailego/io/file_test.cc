@@ -352,7 +352,8 @@ TEST(File, UnalignedMappingRoundTrip) {
   EXPECT_EQ(0, std::memcmp(data, expected.data() + offset, length));
   std::memset(data, 'b', length);
   ASSERT_TRUE(File::MemoryFlush(data, length));
-  File::MemoryUnmap(data, length);
+  EXPECT_FALSE(File::TryMemoryUnmapFile(data + 1, length, offset));
+  ASSERT_TRUE(File::TryMemoryUnmapFile(data, length, offset));
   std::fill(expected.begin() + offset, expected.begin() + offset + length, 'b');
   file.close();
 
@@ -360,7 +361,7 @@ TEST(File, UnalignedMappingRoundTrip) {
   data = static_cast<char *>(file.map(offset, length, 0));
   ASSERT_NE(nullptr, data);
   EXPECT_EQ(0, std::memcmp(data, expected.data() + offset, length));
-  File::MemoryUnmap(data, length);
+  ASSERT_TRUE(File::TryMemoryUnmapFile(data, length, offset));
   std::vector<char> actual(expected.size());
   ASSERT_EQ(actual.size(), file.read(0, actual.data(), actual.size()));
   EXPECT_EQ(expected, actual);  // prefix and suffix must remain unchanged
@@ -370,7 +371,7 @@ TEST(File, UnalignedMappingRoundTrip) {
   data = static_cast<char *>(file.map(offset, length, 0));
   ASSERT_NE(nullptr, data);
   std::memset(data, 'c', length);  // private mapping must not modify the file
-  File::MemoryUnmap(data, length);
+  ASSERT_TRUE(File::TryMemoryUnmapFile(data, length, offset));
   ASSERT_EQ(actual.size(), file.read(0, actual.data(), actual.size()));
   EXPECT_EQ(expected, actual);
   file.close();
@@ -402,7 +403,7 @@ TEST(File, MappingAccessModes) {
       MEMORY_BASIC_INFORMATION info{};
       EXPECT_EQ(sizeof(info), VirtualQuery(data, &info, sizeof(info)));
       EXPECT_EQ(mode.protection, info.Protect);
-      File::MemoryUnmap(data, page);
+      ASSERT_TRUE(File::TryMemoryUnmapFile(data, page, offset));
     }
   }
   file.close();
@@ -415,7 +416,7 @@ TEST(File, MappingAccessModes) {
   MEMORY_BASIC_INFORMATION info{};
   EXPECT_EQ(sizeof(info), VirtualQuery(data, &info, sizeof(info)));
   EXPECT_EQ(static_cast<DWORD>(PAGE_READONLY), info.Protect);
-  File::MemoryUnmap(data, page);
+  ASSERT_TRUE(File::TryMemoryUnmapFile(data, page, page + 7));
   file.close();
   EXPECT_TRUE(File::Delete(path));
 }
@@ -438,7 +439,7 @@ TEST(File, UnalignedRemapPreservesLogicalOffset) {
   EXPECT_EQ('y', data[page - 1]);
   data[page * 3 - 1] = 'z';
   ASSERT_TRUE(File::MemoryFlush(data, page * 3));
-  File::MemoryUnmap(data, page * 3);
+  ASSERT_TRUE(File::TryMemoryUnmapFile(data, page * 3, offset));
   char value = 0;
   ASSERT_EQ(1u, file.read(offset + page * 3 - 1, &value, 1));
   EXPECT_EQ('z', value);

@@ -179,12 +179,13 @@ int ChunkBroker::close() {
   const int ret = stg_ && chunk_meta_segment_ && (dirty_ || stg_->is_dirty())
                       ? flush(0UL)
                       : 0;
+  if (ret != 0) return ret;
   chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
 
-  return ret;
+  return 0;
 }
 
 int ChunkBroker::flush(uint64_t checkpoint) {

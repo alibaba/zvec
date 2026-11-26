@@ -388,8 +388,10 @@ void IndexMapping::swap(IndexMapping &rhs) noexcept {
   swap(current_header_start_offset_, rhs.current_header_start_offset_);
 }
 
-void IndexMapping::release_meta_mapping(const MetaMapping &mapping) {
-  if (!ailego::File::TryMemoryUnmap(mapping.header, mapping.length)) {
+void IndexMapping::release_meta_mapping(size_t offset,
+                                        const MetaMapping &mapping) {
+  if (!ailego::File::TryMemoryUnmapFile(mapping.header, mapping.length,
+                                        offset)) {
     LOG_ERROR("Failed to unmap index metadata; retaining its memory charge");
     return;
   }
@@ -402,7 +404,7 @@ void IndexMapping::release_meta_mapping(const MetaMapping &mapping) {
 void IndexMapping::reset_mappings() {
   this->unmap_all();
   for (const auto &item : header_addr_map_) {
-    release_meta_mapping(item.second);
+    release_meta_mapping(item.first, item.second);
   }
   // Reset members
   segment_ids_offset_ = 0;
@@ -557,7 +559,7 @@ int IndexMapping::append(const std::string &id, size_t size) try {
     if (ret != 0) {
       auto it = header_addr_map_.find(old_size);
       if (it != header_addr_map_.end()) {
-        release_meta_mapping(it->second);
+        release_meta_mapping(it->first, it->second);
         header_addr_map_.erase(it);
       }
       header_ = old_header;
@@ -629,6 +631,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
                     meta->data_index;
 
     void *addr = nullptr;
+    bool file_backed = true;
     if (!copy_on_write_) {
       int opts = ailego::File::MMAP_SHARED;
       if (huge_page_) {
@@ -647,6 +650,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
         addr = ailego::File::MemoryMap(file_.native_handle(), offset,
                                        mapping_size, opts);
       } else {
+        file_backed = false;
         addr = ailego::File::MemoryMap(mapping_size, opts);
       }
     }
@@ -656,6 +660,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
       return nullptr;
     }
     item->set_data(addr);
+    item->file_backed_ = file_backed;
 
     // Lock memory
     if (locked) {
@@ -671,29 +676,27 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
 
 void IndexMapping::unmap(const std::string &id) {
   auto iter = segments_.find(id);
-  if (iter != segments_.end()) {
-    SegmentInfo &segment_info = iter->second;
-    Segment *item = &segment_info.segment;
-
-    if (item->data()) {
-      ailego::File::MemoryUnmap(
-          item->data(), item->meta()->data_size + item->meta()->padding_size);
-      item->set_data(nullptr);
-    }
-  }
+  if (iter != segments_.end()) unmap_segment(iter->second);
 }
 
 void IndexMapping::unmap_all() {
-  for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
-    SegmentInfo &segment_info = iter->second;
-    Segment *item = &segment_info.segment;
+  for (auto &entry : segments_) unmap_segment(entry.second);
+}
 
-    if (item->data()) {
-      ailego::File::MemoryUnmap(
-          item->data(), item->meta()->data_size + item->meta()->padding_size);
-      item->set_data(nullptr);
-    }
+void IndexMapping::unmap_segment(SegmentInfo &info) {
+  auto &segment = info.segment;
+  if (!segment.data()) return;
+  const auto *meta = segment.meta();
+  const size_t length = meta->data_size + meta->padding_size;
+  if (segment.file_backed_) {
+    const size_t offset = info.segment_header_start_offset +
+                          info.segment_header->content_offset +
+                          meta->data_index;
+    ailego::File::TryMemoryUnmapFile(segment.data(), length, offset);
+  } else {
+    ailego::File::MemoryUnmap(segment.data(), length);
   }
+  segment.set_data(nullptr);
 }
 
 int IndexMapping::flush() {

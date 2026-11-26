@@ -214,7 +214,12 @@ int HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
   {
     std::lock_guard<std::mutex> node_lock(lock_pool_[id & kLockMask]);
     const int ret = update_neighbors(dc, id, level, topk_heap, ctx);
-    if (ret != 0) return ret;
+    if (ctx->error()) return ret;
+    if (ret != 0) {
+      // The Streamer has already published the vector and key. A storage
+      // failure in graph maintenance cannot turn that insert into a retry.
+      LOG_ERROR("Failed to write HNSW neighbors for node %u: %d", id, ret);
+    }
   }
 
   // reverse update neighbors
@@ -222,7 +227,11 @@ int HnswAlgorithm<EntityType>::add_neighbors(node_id_t id, level_t level,
     const int ret =
         reverse_update_neighbors(dc, topk_heap[i].first, level, id,
                                  topk_heap[i].second, ctx->update_heap(), ctx);
-    if (ret != 0) return ret;
+    if (ctx->error()) return ret;
+    if (ret != 0) {
+      LOG_ERROR("Failed to write HNSW reverse neighbor for node %u: %d",
+                topk_heap[i].first, ret);
+    }
   }
 
   return 0;

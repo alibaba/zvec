@@ -143,6 +143,24 @@ TYPED_TEST(StreamerLayoutTest, CloseFlushesNewStorageWithoutVectorChanges) {
   EXPECT_FALSE(storage->is_dirty());
 }
 
+TYPED_TEST(StreamerLayoutTest, FailedCloseKeepsStorageForRetry) {
+  auto storage = std::make_shared<LayoutTestStorage>();
+  IndexStreamer::Stats stats;
+  TypeParam broker(stats);
+  ASSERT_EQ(0, OpenBroker(broker, storage));
+  auto metadata = storage->segments.at("HnswT2S0");
+  metadata->fail_write = true;
+  EXPECT_EQ(IndexError_WriteData, broker.close());
+  EXPECT_EQ(storage.get(), broker.storage().get());
+  EXPECT_EQ(0, storage->flushes);
+  metadata->fail_write = false;
+  EXPECT_EQ(0, broker.close());
+  EXPECT_EQ(nullptr, broker.storage());
+  EXPECT_EQ(1, storage->flushes);
+  ASSERT_EQ(0, OpenBroker(broker, storage));
+  EXPECT_EQ(0, broker.close());
+}
+
 TYPED_TEST(StreamerLayoutTest, DirtyClosePersistsRecoveredWriterLayout) {
   auto storage = std::make_shared<LayoutTestStorage>();
   storage->seed_legacy(4096);

@@ -14,6 +14,7 @@
 
 #include <functional>
 #include <gtest/gtest.h>
+#include "hnsw_params.h"
 #include "hnsw_streamer.h"
 #include "hnsw_streamer_entity.h"
 #include "../streamer_layout_test_helper.h"
@@ -143,7 +144,7 @@ TEST(HnswNeighborPublication, AdmissionFailureFallsBackBeforePublishingCount) {
   EXPECT_EQ(0, entity.close());
 }
 
-TEST(HnswNeighborPublication, StreamerReportsForwardAndReverseWriteFailures) {
+TEST(HnswNeighborPublication, AdjacencyFailureDoesNotRejectPublishedKey) {
   for (int failing_batch : {1, 2}) {
     SCOPED_TRACE(failing_batch);
     auto storage = std::make_shared<ObservedNeighborStorage>("HnswT3S0");
@@ -153,7 +154,10 @@ TEST(HnswNeighborPublication, StreamerReportsForwardAndReverseWriteFailures) {
     constexpr size_t kDimension = 4;
     IndexMeta meta(type, kDimension);
     meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
-    ASSERT_EQ(0, streamer->init(meta, {}));
+    ailego::Params params;
+    params.set(PARAM_HNSW_STREAMER_FILTER_SAME_KEY, true);
+    params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, true);
+    ASSERT_EQ(0, streamer->init(meta, params));
     ASSERT_EQ(0, streamer->open(storage));
     auto ctx = streamer->create_context();
     ASSERT_NE(nullptr, ctx);
@@ -166,12 +170,49 @@ TEST(HnswNeighborPublication, StreamerReportsForwardAndReverseWriteFailures) {
     storage->segment->batch_failure = [&] {
       return ++batches == failing_batch ? IndexError_WriteData : 0;
     };
-    EXPECT_EQ(IndexError_WriteData, streamer->add_impl(1, second, qmeta, ctx));
-    EXPECT_EQ(failing_batch, batches);
+    EXPECT_EQ(0, streamer->add_impl(1, second, qmeta, ctx));
+    EXPECT_EQ(2, batches);
+    EXPECT_NE(nullptr, streamer->get_vector(1));
     storage->segment->batch_failure = nullptr;
     ctx.reset();
     EXPECT_EQ(0, streamer->close());
   }
+}
+
+TEST(HnswNeighborPublication, CloseFailureKeepsIndexOpenForRetry) {
+  auto storage = std::make_shared<LayoutTestStorage>();
+  auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
+  ASSERT_NE(nullptr, streamer);
+  const auto type = IndexMeta::DataType::DT_FP32;
+  IndexMeta meta(type, 4);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  ailego::Params params;
+  params.set(PARAM_HNSW_STREAMER_FILTER_SAME_KEY, true);
+  params.set(PARAM_HNSW_STREAMER_USE_ID_MAP, true);
+  ASSERT_EQ(0, streamer->init(meta, params));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto ctx = streamer->create_context();
+  ASSERT_NE(nullptr, ctx);
+  const IndexQueryMeta qmeta(type, 4);
+  const float vector[4]{42.0f};
+  ASSERT_EQ(0, streamer->add_impl(0, vector, qmeta, ctx));
+  ctx.reset();
+
+  auto metadata = storage->segments.at("HnswT2S0");
+  metadata->fail_write = true;
+  EXPECT_EQ(IndexError_WriteData, streamer->close());
+  EXPECT_EQ(IndexError_WriteData, streamer->cleanup());
+  const auto *data = static_cast<const float *>(streamer->get_vector(0));
+  ASSERT_NE(nullptr, data);
+  EXPECT_EQ(vector[0], data[0]);
+
+  metadata->fail_write = false;
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, streamer->open(storage));
+  data = static_cast<const float *>(streamer->get_vector(0));
+  ASSERT_NE(nullptr, data);
+  EXPECT_EQ(vector[0], data[0]);
+  EXPECT_EQ(0, streamer->close());
 }
 }  // namespace
 }  // namespace zvec::core

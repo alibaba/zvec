@@ -203,13 +203,14 @@ int SparseChunkBroker::close() {
                           (dirty_ || stg_->is_dirty())
                       ? flush(0UL)
                       : 0;
+  if (ret != 0) return ret;
   chunk_meta_segment_.reset();
   stg_.reset();
   check_crc_ = false;
   dirty_ = false;
   legacy_layout_pending_ = false;
 
-  return ret;
+  return 0;
 }
 
 int SparseChunkBroker::flush(uint64_t checkpoint) {

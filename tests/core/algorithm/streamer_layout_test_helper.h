@@ -58,6 +58,7 @@ class LayoutTestSegment : public IndexStorage::Segment {
     return std::min(len, used - offset);
   }
   size_t write(size_t offset, const void *data, size_t len) override {
+    if (fail_write) return 0;
     if (offset > bytes.size() || len > bytes.size() - offset) return 0;
     std::memcpy(bytes.data() + offset, data, len);
     used = std::max(used, offset + len);
@@ -73,6 +74,7 @@ class LayoutTestSegment : public IndexStorage::Segment {
   }
   std::vector<char> bytes;
   size_t used{0};
+  bool fail_write{false};
 };
 
 class LayoutTestStorage : public IndexStorage {

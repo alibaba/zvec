@@ -692,6 +692,10 @@ int HnswStreamerEntity::close() {
 
   std::lock_guard<std::mutex> lock(mutex_);
   flush_header();
+  // Keep storage alive until every chunk handle has been released.
+  const auto storage = broker_->storage();
+  const int ret = broker_->close();
+  if (ret != 0) return ret;
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
   keys_map_->clear();
@@ -701,7 +705,7 @@ int HnswStreamerEntity::close() {
   upper_neighbor_chunks_.clear();
   upper_neighbor_chunk_bases_.reset();
 
-  return broker_->close();
+  return 0;
 }
 
 int HnswStreamerEntity::flush(uint64_t checkpoint) {

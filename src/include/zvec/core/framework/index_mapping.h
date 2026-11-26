@@ -83,6 +83,7 @@ class IndexMapping {
     IndexFormat::SegmentMeta *meta_{nullptr};
     void *data_{nullptr};
     mutable bool dirty_{false};
+    bool file_backed_{false};
   };
 
   struct SegmentInfo {
@@ -197,6 +198,7 @@ class IndexMapping {
   int create_impl(const std::string &path, size_t seg_meta_capacity,
                   bool exclusive);
   void reset_mappings();
+  static void unmap_segment(SegmentInfo &segment_info);
   int check_backing_file() const;
   int discard_unpublished_tail();
   int flush_locked(bool expanding = false);
@@ -219,7 +221,7 @@ class IndexMapping {
   int init_index_mapping_admitted(
       size_t len, HeaderMap::node_type node,
       ailego::MemoryLimitPool::PendingAllocation &memory);
-  static void release_meta_mapping(const MetaMapping &mapping);
+  static void release_meta_mapping(size_t offset, const MetaMapping &mapping);
   //! Members
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};
