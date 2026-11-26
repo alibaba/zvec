@@ -27,7 +27,10 @@
 #include "iterator/fts_doc_iterator.h"
 #include "tokenizer/tokenizer_factory.h"
 #include "bm25_scorer.h"
+#include "fts_field.h"
+#include "fts_legacy_reader.h"
 #include "fts_query_ast.h"
+#include "fts_reader.h"
 
 
 namespace zvec::fts {
@@ -46,7 +49,8 @@ struct FtsResult {
 
 /*! FTS column indexer
  *  Handles both read (search with BM25 + WAND) and write (insert / flush)
- *  operations on a single FTS column backed by RocksDB.
+ *  operations on a single FTS column. Mutable writes use RocksDB; queries
+ *  use an owning legacy or custom reader.
  *  Uses cross-CF WriteBatch to batch all per-document writes into a single
  *  atomic RocksDB Write() call for optimal write throughput.
  */
@@ -78,7 +82,8 @@ class FtsColumnIndexer {
                     rocksdb::ColumnFamilyHandle *term_freq_cf,
                     rocksdb::ColumnFamilyHandle *max_tf_cf,
                     rocksdb::ColumnFamilyHandle *doc_len_cf,
-                    rocksdb::ColumnFamilyHandle *stat_cf);
+                    rocksdb::ColumnFamilyHandle *stat_cf,
+                    std::shared_ptr<RocksdbContext> context_owner = {});
 
   /*! Initialize for read-only (immutable / standalone reader path).
    *  No tokenizer is acquired; insert() will fail if called.
@@ -100,10 +105,15 @@ class FtsColumnIndexer {
                            rocksdb::ColumnFamilyHandle *max_tf_cf,
                            rocksdb::ColumnFamilyHandle *doc_len_cf,
                            rocksdb::ColumnFamilyHandle *stat_cf,
-                           BM25Params bm25_params = BM25Params{});
+                           BM25Params bm25_params = BM25Params{},
+                           std::shared_ptr<RocksdbContext> context_owner = {});
+
+  // Open an immutable custom field; its generation remains pinned by queries.
+  Result<void> open_reader(FtsFieldReader::Pointer reader);
 
   /*! Release all CF pointers and reset internal state.
-   *  Must be called before the underlying RocksdbStore is closed.
+   *  An owned context is released after its last reader. Borrowed contexts
+   *  must outlive this indexer and all queries using it.
    *  The caller is responsible for ensuring no concurrent search() or
    *  reset_side_cfs() call is in flight — this method does NOT drain
    *  or wait for them.
@@ -146,6 +156,11 @@ class FtsColumnIndexer {
    */
   Result<void> flush();
 
+  // After WAL replay, reconstruct exact mutable statistics from the retained
+  // per-row lengths. Replay may overlap a partially flushed checkpoint.
+  // Caller holds writer exclusion; workspace does not grow with row count.
+  Result<void> recover_statistics(uint64_t row_count);
+
   /*! Convert all Roaring-format postings in postings_cf to BitPacked format
    *  with inline tf/doc_len/max_score payloads and synchronously flush them
    *  along with segment statistics. Preserve auxiliary data until CF removal.
@@ -175,6 +190,10 @@ class FtsColumnIndexer {
     return total_tokens_.load(std::memory_order_relaxed);
   }
 
+  const FieldSchema::Ptr &field_schema() const {
+    return field_meta_;
+  }
+
   // Accessors used by the compaction-time FTS reducer to feed source segments
   // (postings + positions) without going through the higher-level search path.
   RocksdbContext *ctx() const {
@@ -195,11 +214,9 @@ class FtsColumnIndexer {
       const PhraseNode &phrase_node) const;
   Result<DocIteratorPtr> build_and_iterator(const AndNode &and_node) const;
   Result<DocIteratorPtr> build_or_iterator(const OrNode &or_node) const;
-  Result<DocIteratorPtr> create_term_iterator_from_raw(
-      const std::string &term, rocksdb::PinnableSlice raw_data,
-      float boost = 1.0f) const;
-  std::vector<rocksdb::PinnableSlice> batch_get_postings(
-      const std::vector<rocksdb::Slice> &terms) const;
+  Result<DocIteratorPtr> build_batch_or_iterator(const OrNode &or_node) const;
+  Result<DocIteratorPtr> create_term_iterator(FtsReadTerm::Ptr term,
+                                              float boost = 1.0f) const;
 
   // --- Write helpers ---
   static void encode_varint(uint32_t value, std::string *output);
@@ -213,20 +230,18 @@ class FtsColumnIndexer {
   // --- Reader state ---
   std::string field_name_;
   RocksdbContext *ctx_{nullptr};
+  std::shared_ptr<RocksdbContext> context_owner_;
   BM25ScorerPtr scorer_;
+  FtsSegmentReader::Ptr reader_;
+  LegacyFtsReader::Ptr legacy_reader_;
 
   rocksdb::ColumnFamilyHandle *postings_cf_{nullptr};
   rocksdb::ColumnFamilyHandle *positions_cf_{nullptr};
   std::atomic<rocksdb::ColumnFamilyHandle *> term_freq_cf_{nullptr};
   std::atomic<rocksdb::ColumnFamilyHandle *> max_tf_cf_{nullptr};
   std::atomic<rocksdb::ColumnFamilyHandle *> doc_len_cf_{nullptr};
-  mutable std::atomic<int> cf_counter_{0};
   std::atomic<bool> cf_dropped_{false};
   rocksdb::ColumnFamilyHandle *stat_cf_{nullptr};
-
-  // Minimum doc length observed so far. Used as a (loose) lower bound on
-  // doc_len when computing the WAND max_score for Roaring-format postings.
-  std::atomic<uint32_t> min_doc_len_{std::numeric_limits<uint32_t>::max()};
 
   std::atomic<bool> opened_{false};
 

@@ -45,8 +45,7 @@ arrow::AsyncGenerator<std::optional<cp::ExecBatch>> FtsRecallNode::gen() {
       auto fts_ret = self->prepare();
       if (!fts_ret) {
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare fts failed:",
-                                          fts_ret.error().c_str()));
+            ToArrowError(fts_ret.error()));
       }
       state.fts_result_ = fts_ret.value();
       state.iter_ = state.fts_result_->create_iterator();

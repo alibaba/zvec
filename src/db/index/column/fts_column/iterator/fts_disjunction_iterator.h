@@ -39,6 +39,7 @@ class DisjunctionIterator : public DocIterator {
   float score() override;
   uint64_t cost() const override;
   float max_score() const override;
+  Status status() const override;
 
   //! Update the minimum competitive score threshold for WAND pruning.
   //! Documents whose total max_score sum falls below this threshold

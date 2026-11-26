@@ -14,7 +14,9 @@
 
 //! Encoder/decoder for the collection manifest.
 //!
-//! The on-disk layout is the protobuf wire format. This header and its
+//! Legacy manifests use protobuf wire format. Manifests referencing custom
+//! FTS bases wrap that payload in a checksummed, versioned envelope whose
+//! leading field-zero byte makes old readers fail closed. This header and its
 //! implementation in manifest/manifest_codec.cc are the authoritative
 //! definition of that format: the field numbers assigned there and the enum
 //! values in manifest_enum.h are part of the persisted format and must never
@@ -39,6 +41,12 @@ namespace zvec {
 //! In-memory representation of the manifest file contents.
 struct ManifestData {
   uint32_t version{0};
+  // Once explicit commit records are in use, keep the old-reader gate even
+  // if a later DDL removes the last custom FTS base.
+  bool requires_commit_record{false};
+  // A crash after gating the legacy numbered checkpoint but before installing
+  // manifest.current leaves this one recoverable kind of gated manifest.
+  bool bootstrap_baseline{false};
   CollectionSchema::Ptr schema;
   bool enable_mmap{false};
   std::vector<SegmentMeta::Ptr> persisted_segment_metas;
@@ -56,6 +64,10 @@ struct ManifestCodec {
   //! Parses a manifest. Returns an error for malformed input.
   static Status Decode(std::string_view buf, ManifestData *data);
 
+  // Wrap the exact bytes of a committed legacy checkpoint, preserving unknown
+  // protobuf fields. Only the bootstrap path may assign the baseline role.
+  static Result<std::string> GateLegacyBaseline(std::string_view bytes);
+
   // The helpers below are exposed for unit testing so that each message can
   // be checked against the format independently.
 
@@ -70,10 +82,12 @@ struct ManifestCodec {
   static CollectionSchema::Ptr DecodeCollectionSchema(std::string_view buf);
 
   static void EncodeBlockMeta(const BlockMeta &meta, std::string *out);
-  static BlockMeta::Ptr DecodeBlockMeta(std::string_view buf);
+  static BlockMeta::Ptr DecodeBlockMeta(std::string_view buf,
+                                        Status *error = nullptr);
 
   static void EncodeSegmentMeta(const SegmentMeta &meta, std::string *out);
-  static SegmentMeta::Ptr DecodeSegmentMeta(std::string_view buf);
+  static SegmentMeta::Ptr DecodeSegmentMeta(std::string_view buf,
+                                            Status *error = nullptr);
 };
 
 }  // namespace zvec

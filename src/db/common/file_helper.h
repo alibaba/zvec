@@ -14,6 +14,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <zvec/ailego/io/file.h>
@@ -153,6 +154,11 @@ class FileHelper {
     return ailego::FileHelper::PathJoin(
         seg_path, ailego::StringHelper::Concat("fts.", block_id, ".rocksdb"));
   }
+
+  // The base identity prevents a retry/rewrite from reusing a live path.
+  static std::string MakeCustomFtsPath(const std::string &seg_path,
+                                       uint32_t block_id, uint64_t generation,
+                                       const std::array<uint8_t, 16> &base_id);
 
   static const std::string MakeVectorIndexPath(const std::string &path,
                                                const std::string &column,

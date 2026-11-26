@@ -18,6 +18,7 @@
 #include <arrow/record_batch.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/parallel/thread_pool.h>
+#include "db/sqlengine/common/util.h"
 
 namespace zvec::sqlengine {
 
@@ -31,8 +32,7 @@ SegmentNode::gen() {
       auto status = self->prepare();
       if (!status.ok()) {
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("prepare segment node failed:",
-                                          status.c_str()));
+            ToArrowError(status));
       }
     }
     // process backward
@@ -42,8 +42,7 @@ SegmentNode::gen() {
       auto status = back->ReadNext(&batch);
       if (!status.ok()) {
         return arrow::Future<std::optional<cp::ExecBatch>>::MakeFinished(
-            arrow::Status::ExecutionError("read next batch failed:",
-                                          status.ToString()));
+            status);
       }
       if (batch == nullptr) {
         LOG_DEBUG("batch finished: %p", back.get());

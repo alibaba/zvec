@@ -62,6 +62,8 @@ class IDMap {
 
   void remove(const std::string &key);
 
+  Result<uint64_t> lookup(const std::string &key) const;
+
   bool has(const std::string &key, uint64_t *doc_id = nullptr) const;
 
   Status multi_get(const std::vector<std::string> &keys,

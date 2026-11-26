@@ -22,7 +22,14 @@
 #include <unordered_set>
 #include <vector>
 #include <gtest/gtest.h>
+#include <rocksdb/cache.h>
+#include <rocksdb/table.h>
 #include <rocksdb/utilities/stackable_db.h>
+#include <rocksdb/version.h>
+#if __has_include(<rocksdb/advanced_cache.h>)
+#include <rocksdb/advanced_cache.h>
+#endif
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
 #include "db/common/file_helper.h"
 #include "db/index/common/index_filter.h"
@@ -197,6 +204,135 @@ class FtsColumnIndexerTest : public ::testing::Test {
 // ============================================================
 // open()
 // ============================================================
+
+TEST_F(FtsColumnIndexerTest, ReaderSurvivesIndexerGenerationRelease) {
+  const std::string path = "./fts_reader_generation_test";
+  FileHelper::RemoveDirectory(path);
+  FieldSchemaPtrList fields{make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"))};
+  auto generation = FtsIndexer::CreateAndOpen(path, fields, true);
+  ASSERT_NE(generation, nullptr);
+  ASSERT_TRUE(generation->insert("text", 0, "alpha beta").ok());
+  ASSERT_TRUE(generation->insert("text", 1, "alpha").ok());
+  auto reader = generation->get("text");
+  ASSERT_NE(reader, nullptr);
+  std::vector<FtsResult> before, after;
+  ASSERT_TRUE(search_ok(*reader, "alpha OR beta", 10, &before));
+  ASSERT_TRUE(generation->close().ok());
+  generation.reset();
+  ASSERT_TRUE(search_ok(*reader, "alpha OR beta", 10, &after));
+  ASSERT_EQ(after.size(), before.size());
+  for (size_t i = 0; i < after.size(); ++i) {
+    EXPECT_EQ(after[i].doc_id, before[i].doc_id);
+    EXPECT_FLOAT_EQ(after[i].score, before[i].score);
+  }
+  reader.reset();
+  FileHelper::RemoveDirectory(path);
+}
+
+TEST_F(FtsColumnIndexerTest, LegacyPackedBoundsAreValidatedBeforeTraversal) {
+  auto indexer = make_indexer();
+  ASSERT_TRUE(indexer->insert(0, "word"));
+  ASSERT_TRUE(indexer->flush());
+  ASSERT_TRUE(indexer->convert_postings_to_bitpacked());
+  std::string original;
+  ASSERT_TRUE(
+      db_.db_->Get(db_.read_opts_, postings_cf_, "word", &original).ok());
+  using Packed = zvec::fts::BitPackedPostingList;
+  Packed::BlockMeta meta;
+  std::memcpy(&meta, original.data() + sizeof(Packed::Header), sizeof(meta));
+  for (int damage = 0; damage < 4; ++damage) {
+    auto bytes = original;
+    if (damage == 0) {
+      auto invalid = meta;
+      invalid.block_offset = UINT32_MAX;
+      std::memcpy(bytes.data() + sizeof(Packed::Header), &invalid,
+                  sizeof(invalid));
+    } else if (damage == 1) {
+      bytes[meta.block_offset + 4] = 33;  // Illegal doc bit width.
+    } else if (damage == 2) {
+      bytes[meta.block_offset + 7] = 0;  // Empty block with a nonzero DF.
+    } else {
+      bytes.resize(meta.block_offset + sizeof(Packed::BlockHeader));
+    }
+    ASSERT_TRUE(
+        db_.db_->Put(db_.write_opts_, postings_cf_, "word", bytes).ok());
+    zvec::fts::FtsQueryParams params;
+    params.topk = 10;
+    params.candidate_ids.emplace();
+    auto result = indexer->search(zvec::fts::TermNode("word"), params);
+    ASSERT_FALSE(result) << "damage=" << damage;
+    EXPECT_EQ(zvec::StatusCode::INTERNAL_ERROR, result.error().code());
+  }
+}
+
+TEST_F(FtsColumnIndexerTest, CustomFormatBaselinePreservesSealStatistics) {
+  int previous_level = ailego::Logger::LEVEL_FATAL + 1;
+  for (int level = ailego::Logger::LEVEL_DEBUG;
+       level <= ailego::Logger::LEVEL_FATAL; ++level) {
+    if (ailego::LoggerBroker::IsLevelEnabled(level)) {
+      previous_level = level;
+      break;
+    }
+  }
+  struct RestoreLogLevel {
+    int level;
+    ~RestoreLogLevel() {
+      ailego::LoggerBroker::SetLevel(level);
+    }
+  } restore{previous_level};
+  ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_INFO);
+  // Record effective per-CF options rather than assuming RocksDB defaults or
+  // the unrelated global merge-operator branch's write-buffer size.
+  LOG_INFO("FTS P0 RocksDB=%d.%d.%d", ROCKSDB_MAJOR, ROCKSDB_MINOR,
+           ROCKSDB_PATCH);
+  EXPECT_TRUE(db_.write_opts_.disableWAL);
+  for (auto *cf : {postings_cf_, positions_cf_, term_freq_cf_, max_tf_cf_,
+                   doc_len_cf_, stat_cf_}) {
+    const auto options = db_.db_->GetOptions(cf);
+    const auto *table =
+        options.table_factory->GetOptions<rocksdb::BlockBasedTableOptions>();
+    ASSERT_NE(table, nullptr);
+    LOG_INFO(
+        "FTS P0 cf=%s write_buffer_size=%zu max_write_buffers=%d "
+        "compression=%d block_cache=%zu block_size=%zu",
+        cf->GetName().c_str(), options.write_buffer_size,
+        options.max_write_buffer_number, static_cast<int>(options.compression),
+        table->block_cache ? table->block_cache->GetCapacity() : size_t{0},
+        static_cast<size_t>(table->block_size));
+  }
+
+  auto indexer = make_indexer();
+  ASSERT_TRUE(indexer->insert(0, "alpha alpha beta"));
+  // Row 1 has no field; row 2 has the field but no tokens.
+  ASSERT_TRUE(indexer->insert(2, ""));
+  ASSERT_TRUE(indexer->insert(3, "beta gamma"));
+  ASSERT_TRUE(indexer->flush());
+  EXPECT_EQ(indexer->total_docs(), 3u);
+  EXPECT_EQ(indexer->total_tokens(), 5u);
+  const std::vector<std::string> queries = {"alpha", "alpha OR beta",
+                                            "\"alpha beta\""};
+  std::vector<std::vector<FtsResult>> before(queries.size());
+  for (size_t i = 0; i < queries.size(); ++i) {
+    ASSERT_TRUE(search_ok(*indexer, queries[i], 10, &before[i]));
+    for (const auto &result : before[i]) {
+      LOG_INFO("FTS P0 query=%s row=%zu score=%.9g", queries[i].c_str(),
+               static_cast<size_t>(result.doc_id), result.score);
+    }
+  }
+  ASSERT_TRUE(indexer->convert_postings_to_bitpacked());
+  EXPECT_EQ(indexer->total_docs(), 3u);
+  EXPECT_EQ(indexer->total_tokens(), 5u);
+  for (size_t i = 0; i < queries.size(); ++i) {
+    std::vector<FtsResult> after;
+    ASSERT_TRUE(search_ok(*indexer, queries[i], 10, &after));
+    ASSERT_EQ(after.size(), before[i].size());
+    for (size_t j = 0; j < after.size(); ++j) {
+      EXPECT_EQ(after[j].doc_id, before[i][j].doc_id);
+      EXPECT_FLOAT_EQ(after[j].score, before[i][j].score);
+    }
+  }
+}
 
 TEST_F(FtsColumnIndexerTest, OpenWithValidTokenizer) {
   auto fts_params = std::make_shared<zvec::FtsIndexParams>("whitespace");
@@ -2063,6 +2199,115 @@ INSTANTIATE_TEST_SUITE_P(SealPaths, FtsSealRecoveryDeathTest,
 
 namespace zvec {
 namespace {
+struct CloseCalls {
+  size_t flushes{0};
+  size_t closes{0};
+  bool fail_close{false};
+  bool fail_flush{false};
+};
+
+class ObserveCloseDB : public rocksdb::StackableDB {
+ public:
+  ObserveCloseDB(rocksdb::DB *db, std::shared_ptr<CloseCalls> calls)
+      : rocksdb::StackableDB(db), calls_(std::move(calls)) {}
+
+  rocksdb::Status Close() override {
+    ++calls_->closes;
+    if (calls_->fail_close) {
+      calls_->fail_close = false;
+      return rocksdb::Status::IOError("injected close failure");
+    }
+    return rocksdb::StackableDB::Close();
+  }
+
+  rocksdb::Status Flush(const rocksdb::FlushOptions &options,
+                        rocksdb::ColumnFamilyHandle *cf) override {
+    ++calls_->flushes;
+    if (calls_->fail_flush) {
+      calls_->fail_flush = false;
+      return rocksdb::Status::IOError("injected close flush failure");
+    }
+    return rocksdb::StackableDB::Flush(options, cf);
+  }
+
+ private:
+  std::shared_ptr<CloseCalls> calls_;
+};
+
+class FtsCloseTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    FileHelper::RemoveDirectory(path_);
+    auto field = make_test_field_meta(
+        "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+    indexer_ = FtsIndexer::CreateAndOpen(path_, {field}, true);
+    ASSERT_NE(indexer_, nullptr);
+    ASSERT_TRUE(indexer_->insert("text", 0, "alpha").ok());
+    ASSERT_TRUE(indexer_->flush().ok());
+    auto *ctx = indexer_->get("text")->ctx();
+    flushes_per_pass_ = ctx->cf_handles_.size() + 1;
+    ctx->db_.reset(new ObserveCloseDB(ctx->db_.release(), calls_));
+  }
+
+  void TearDown() override {
+    indexer_.reset();
+    FileHelper::RemoveDirectory(path_);
+  }
+
+  std::string path_{"./test_fts_close"};
+  FtsIndexer::Ptr indexer_;
+  std::shared_ptr<CloseCalls> calls_{std::make_shared<CloseCalls>()};
+  size_t flushes_per_pass_{0};
+};
+
+TEST_F(FtsCloseTest, UnpinnedCloseFlushesOnce) {
+  ASSERT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(flushes_per_pass_, calls_->flushes);
+  EXPECT_EQ(1u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, CloseFailureIsReturnedAndRetryable) {
+  calls_->fail_close = true;
+  ASSERT_FALSE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(2u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, FlushFailureIsReturnedAndRetryable) {
+  calls_->fail_flush = true;
+  ASSERT_FALSE(indexer_->close().ok());
+  EXPECT_EQ(0u, calls_->closes);
+  EXPECT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(1u, calls_->closes);
+}
+
+TEST_F(FtsCloseTest, PinnedReaderRemainsUsableUntilReleased) {
+  auto reader = indexer_->get("text");
+  ASSERT_TRUE(indexer_->close().ok());
+  EXPECT_EQ(0u, calls_->closes);
+  fts::TermNode query("alpha");
+  auto result = reader->search(query, {});
+  ASSERT_TRUE(result);
+  ASSERT_EQ(1u, result->size());
+  EXPECT_EQ(0u, result->front().doc_id);
+  // A retained mutable column can still write, so its eventual release must
+  // flush again instead of assuming the earlier close covered later writes.
+  ASSERT_TRUE(reader->insert(1, "alpha"));
+  ASSERT_TRUE(reader->flush());
+  reader.reset();
+  EXPECT_EQ(1u, calls_->closes);
+  auto field = make_test_field_meta(
+      "text", std::make_shared<zvec::FtsIndexParams>("whitespace"));
+  auto reopened = FtsIndexer::CreateAndOpen(path_, {field}, false);
+  ASSERT_NE(nullptr, reopened);
+  result = reopened->get("text")->search(query, {});
+  ASSERT_TRUE(result);
+  EXPECT_EQ(2u, result->size());
+}
+
 class FailDropDB : public rocksdb::StackableDB {
  public:
   FailDropDB(rocksdb::DB *db, int fail_at)

@@ -17,6 +17,19 @@
 
 namespace zvec::fts {
 
+Status ConjunctionIterator::status() const {
+  for (const auto *children :
+       {&must_iterators_, &must_not_iterators_, &should_iterators_}) {
+    for (const auto &child : *children) {
+      auto result = child->status();
+      if (!result.ok()) {
+        return result;
+      }
+    }
+  }
+  return Status::OK();
+}
+
 ConjunctionIterator::ConjunctionIterator(
     std::vector<DocIteratorPtr> must_iterators,
     std::vector<DocIteratorPtr> must_not_iterators,
@@ -29,15 +42,18 @@ ConjunctionIterator::ConjunctionIterator(
             [](const DocIteratorPtr &a, const DocIteratorPtr &b) {
               return a->cost() < b->cost();
             });
-  // Compute and cache max_score in base class field
-  float total = 0.0f;
-  for (auto &iter : must_iterators_) {
-    total += iter->cached_max_score_;
+  // Suffixes retain their own upward sum; cancellation cannot erase small
+  // remaining contributions after a much larger term has been scored.
+  size_t count = must_iterators_.size() + should_iterators_.size();
+  remaining_bounds_.resize(count + 1);
+  for (size_t i = count; i > 0; --i) {
+    remaining_bounds_[i - 1] = remaining_bounds_[i];
+    const auto &iter = i - 1 < must_iterators_.size()
+                           ? must_iterators_[i - 1]
+                           : should_iterators_[i - 1 - must_iterators_.size()];
+    remaining_bounds_[i - 1].add(iter->cached_max_score_);
   }
-  for (auto &iter : should_iterators_) {
-    total += iter->cached_max_score_;
-  }
-  cached_max_score_ = total;
+  cached_max_score_ = remaining_bounds_[0].value();
 }
 
 uint32_t ConjunctionIterator::next_doc() {
@@ -100,21 +116,21 @@ uint32_t ConjunctionIterator::advance(uint32_t target) {
 
 uint32_t ConjunctionIterator::skip_non_competitive_blocks(uint32_t candidate) {
   while (true) {
-    float block_max_sum = 0.0f;
-    float must_only_sum = 0.0f;
+    ScoreUpperBound block_max_sum;
+    ScoreUpperBound must_only_sum;
     uint32_t min_block_end = NO_MORE_DOCS;
 
     for (auto &iter : must_iterators_) {
       auto info = iter->block_max_info_for(candidate);
-      block_max_sum += info.block_max_score;
-      must_only_sum += info.block_max_score;
+      block_max_sum.add(info.block_max_score);
+      must_only_sum.add(info.block_max_score);
       if (info.block_last_doc < min_block_end) {
         min_block_end = info.block_last_doc;
       }
     }
     for (auto &iter : should_iterators_) {
       auto info = iter->block_max_info_for(candidate);
-      block_max_sum += info.block_max_score;
+      block_max_sum.add(info.block_max_score);
       if (info.block_last_doc < min_block_end) {
         min_block_end = info.block_last_doc;
       }
@@ -123,16 +139,16 @@ uint32_t ConjunctionIterator::skip_non_competitive_blocks(uint32_t candidate) {
     // All iterators returned NO_MORE_DOCS — no block info, pass through
     if (min_block_end == NO_MORE_DOCS) {
       block_max_up_to_ = NO_MORE_DOCS;
-      must_block_max_sum_ = must_only_sum;
+      must_block_max_sum_ = must_only_sum.value();
       opt_is_required_ = (!should_iterators_.empty() &&
                           must_block_max_sum_ < min_competitive_score_);
       return candidate;
     }
 
-    if (block_max_sum >= min_competitive_score_) {
+    if (block_max_sum.value() >= min_competitive_score_) {
       // Current block is competitive
       block_max_up_to_ = min_block_end;
-      must_block_max_sum_ = must_only_sum;
+      must_block_max_sum_ = must_only_sum.value();
       opt_is_required_ = (!should_iterators_.empty() &&
                           must_block_max_sum_ < min_competitive_score_);
       return candidate;
@@ -226,8 +242,8 @@ uint32_t ConjunctionIterator::do_next(uint32_t candidate,
 bool ConjunctionIterator::is_excluded(uint32_t candidate) {
   for (auto &not_iter : must_not_iterators_) {
     uint32_t not_doc = not_iter->advance(candidate);
-    if (not_doc == candidate) {
-      // This document is excluded by a must_not clause
+    if (not_doc == candidate && not_iter->matches()) {
+      // Exclude only a verified match, including phrase position checks.
       return true;
     }
   }
@@ -246,26 +262,27 @@ bool ConjunctionIterator::matches() {
 
 float ConjunctionIterator::score() {
   float total = 0.0f;
-  float remaining_max = cached_max_score_;
+  size_t scored = 0;
+  auto cannot_compete = [&]() {
+    auto upper = remaining_bounds_[++scored];
+    upper.add(total);
+    return min_competitive_score_ > 0.0f &&
+           upper.value() < min_competitive_score_;
+  };
 
   for (auto &iter : must_iterators_) {
-    remaining_max -= iter->cached_max_score_;
     total += iter->score();
-    // accumulated + remaining upper bound < threshold — cannot compete
-    if (min_competitive_score_ > 0.0f &&
-        total + remaining_max < min_competitive_score_) {
+    // Accumulated score plus an independent bound for the remaining terms.
+    if (cannot_compete()) {
       return total;
     }
   }
-
   for (auto &iter : should_iterators_) {
-    remaining_max -= iter->cached_max_score_;
     uint32_t doc = iter->advance(cached_doc_id_);
     if (doc == cached_doc_id_ && iter->matches()) {
       total += iter->score();
     }
-    if (min_competitive_score_ > 0.0f &&
-        total + remaining_max < min_competitive_score_) {
+    if (cannot_compete()) {
       return total;
     }
   }
@@ -282,14 +299,7 @@ uint64_t ConjunctionIterator::cost() const {
 }
 
 float ConjunctionIterator::max_score() const {
-  float total = 0.0f;
-  for (auto &iter : must_iterators_) {
-    total += iter->max_score();
-  }
-  for (auto &iter : should_iterators_) {
-    total += iter->max_score();
-  }
-  return total;
+  return cached_max_score_;
 }
 
 }  // namespace zvec::fts

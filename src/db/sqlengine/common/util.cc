@@ -27,6 +27,33 @@
 
 namespace zvec::sqlengine {
 
+namespace {
+class QueryStatusDetail final : public arrow::StatusDetail {
+ public:
+  explicit QueryStatusDetail(const Status &status) : status(status) {}
+  const char *type_id() const override {
+    return "zvec.query.status";
+  }
+  std::string ToString() const override {
+    return status.message();
+  }
+  const Status status;
+};
+}  // namespace
+
+arrow::Status ToArrowError(const Status &status) {
+  return arrow::Status::ExecutionError(status.message())
+      .WithDetail(std::make_shared<QueryStatusDetail>(status));
+}
+
+Status FromArrowError(const arrow::Status &status, const char *context) {
+  auto detail = std::dynamic_pointer_cast<QueryStatusDetail>(status.detail());
+  if (detail) {
+    return detail->status;
+  }
+  return Status::InternalError(context, status.ToString());
+}
+
 // std::string
 // Util::trim(const std::string str, char c) {
 //    std::string tmp = str.substr(str.find_first_not_of(c));

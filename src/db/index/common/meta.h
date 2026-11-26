@@ -15,6 +15,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -29,6 +30,28 @@ namespace zvec {
 
 using SegmentID = uint32_t;
 using BlockID = uint32_t;
+
+// Persisted reference to one immutable multi-field FTS generation. Absence on
+// a block means legacy RocksDB. The digest binds the exact container metadata,
+// which in turn binds field incarnations, statistics and section checksums.
+struct FtsBaseDescriptor {
+  uint32_t format_version{1};
+  uint32_t minimum_reader_version{1};
+  uint64_t required_features{0};
+  std::array<uint8_t, 16> base_id{};
+  uint64_t generation{0};
+  uint64_t row_count{0};
+  std::array<uint8_t, 32> metadata_digest{};
+
+  bool operator==(const FtsBaseDescriptor &other) const {
+    return format_version == other.format_version &&
+           minimum_reader_version == other.minimum_reader_version &&
+           required_features == other.required_features &&
+           base_id == other.base_id && generation == other.generation &&
+           row_count == other.row_count &&
+           metadata_digest == other.metadata_digest;
+  }
+};
 
 class BlockMeta {
  public:
@@ -120,7 +143,7 @@ class BlockMeta {
     return id_ == other.id_ && type_ == other.type_ &&
            min_doc_id_ == other.min_doc_id_ &&
            max_doc_id_ == other.max_doc_id_ && columns_ == other.columns_ &&
-           doc_count_ == other.doc_count_;
+           doc_count_ == other.doc_count_ && fts_base_ == other.fts_base_;
   }
 
   std::string to_string() const {
@@ -173,6 +196,7 @@ class BlockMeta {
   uint64_t max_doc_id_{0};
   uint32_t doc_count_{0};
   std::vector<std::string> columns_{};
+  std::optional<FtsBaseDescriptor> fts_base_;
 };
 
 class SegmentMeta {

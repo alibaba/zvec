@@ -14,10 +14,12 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <memory>
 #include <vector>
 #include "fts_doc_iterator.h"
+#include "fts_score_bound.h"
 
 namespace zvec::fts {
 
@@ -48,9 +50,12 @@ class ConjunctionIterator : public DocIterator {
   float score() override;
   uint64_t cost() const override;
   float max_score() const override;
+  Status status() const override;
 
   void set_min_competitive_score(float min_score) override {
-    min_competitive_score_ = min_score;
+    // An unbounded child disables both skipping and remaining-score pruning.
+    min_competitive_score_ =
+        std::isfinite(cached_max_score_) ? min_score : 0.0f;
   }
 
  private:
@@ -72,6 +77,8 @@ class ConjunctionIterator : public DocIterator {
   std::vector<DocIteratorPtr> must_iterators_;
   std::vector<DocIteratorPtr> must_not_iterators_;
   std::vector<DocIteratorPtr> should_iterators_;
+  // Independent suffix sums avoid subtracting rounded global bounds.
+  std::vector<ScoreUpperBound> remaining_bounds_;
   float min_competitive_score_{0.0f};
   // Block-Max: upper bound of doc_id range already verified as competitive
   uint32_t block_max_up_to_{0};

@@ -27,6 +27,21 @@ namespace zvec {
 const std::string FileHelper::BACKUP_SUFFIX = ".backup_";
 const std::string FileHelper::RECOVER_SUFFIX = ".recovering";
 
+std::string FileHelper::MakeCustomFtsPath(
+    const std::string &seg_path, uint32_t block_id, uint64_t generation,
+    const std::array<uint8_t, 16> &base_id) {
+  static constexpr char digits[] = "0123456789abcdef";
+  std::string identity;
+  identity.reserve(32);
+  for (const auto byte : base_id) {
+    identity.push_back(digits[byte >> 4]);
+    identity.push_back(digits[byte & 15]);
+  }
+  return ailego::FileHelper::PathJoin(
+      seg_path, ailego::StringHelper::Concat("fts.", block_id, ".", generation,
+                                             ".", identity, ".zfts"));
+}
+
 bool FileHelper::CopyFile(const std::string &src_file_path,
                           const std::string &dst_file_path) {
   std::string dst_file_path_tmp = dst_file_path + ".tmp";

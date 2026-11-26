@@ -25,6 +25,7 @@
 #include "db/index/column/fts_column/fts_query_ast.h"
 #include "db/index/common/doc_field_converter.h"
 #include "db/sqlengine/analyzer/query_analyzer.h"
+#include "db/sqlengine/common/util.h"
 #include "db/sqlengine/parser/select_info.h"
 #include "db/sqlengine/parser/sql_info_helper.h"
 #include "db/sqlengine/parser/zvec_parser.h"
@@ -92,8 +93,7 @@ Result<DocPtrList> SQLEngineImpl::execute(
   }
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
-    return tl::make_unexpected(Status::InternalError(
-        "Execute plan failed (query): ", reader.error().c_str()));
+    return tl::make_unexpected(reader.error());
   }
   return fill_result(select_item_meta_ptrs, reader.value().get());
 }
@@ -154,8 +154,7 @@ Result<GroupResults> SQLEngineImpl::execute_group_by(
   }
   auto reader = search_by_query_info(collection, segments, &query_infos);
   if (!reader) {
-    return tl::make_unexpected(Status::InternalError(
-        "Execute plan failed (group_by): ", reader.error().c_str()));
+    return tl::make_unexpected(reader.error());
   }
   return fill_group_by_result(*group_by_query_info, reader.value().get());
 }
@@ -538,9 +537,8 @@ Result<DocPtrList> SQLEngineImpl::fill_result(
   while (true) {
     auto read_res = reader->ReadNext(&record_batch);
     if (!read_res.ok()) {
-      return tl::make_unexpected(
-          Status::InternalError("Read next record batch failed (fill_result): ",
-                                read_res.ToString()));
+      return tl::make_unexpected(FromArrowError(
+          read_res, "Read next record batch failed (fill_result): "));
     }
     if (record_batch == nullptr) {
       break;
@@ -571,8 +569,8 @@ Result<GroupResults> SQLEngineImpl::fill_group_by_result(
   while (true) {
     auto read_res = reader->ReadNext(&record_batch);
     if (!read_res.ok()) {
-      return tl::make_unexpected(Status::InternalError(
-          "Read next record batch failed (group_by): ", read_res.ToString()));
+      return tl::make_unexpected(FromArrowError(
+          read_res, "Read next record batch failed (group_by): "));
     }
     if (record_batch == nullptr) {
       break;

@@ -83,7 +83,7 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
   }
 
   Status flush(const std::string &file_path) {
-    Status status = bitmap_.serialize(file_path, true);
+    Status status = prepare_snapshot(file_path);
     if (status.ok()) {
       LOG_DEBUG("Flushed delete store to file[%s]", file_path.c_str());
       modified_since_last_flush_ = false;
@@ -91,6 +91,16 @@ class DeleteStore : public std::enable_shared_from_this<DeleteStore> {
       LOG_ERROR("Failed to flush delete store to file[%s]", file_path.c_str());
     }
     return status;
+  }
+
+  // Preparing bytes does not acknowledge a durable version reference. Leave
+  // the dirty flag set so a failed checkpoint writes the snapshot on retry.
+  Status prepare_snapshot(const std::string &file_path) {
+    return bitmap_.serialize(file_path, true);
+  }
+
+  void checkpoint_committed() {
+    modified_since_last_flush_ = false;
   }
 
   void mark_deleted(uint64_t doc_id) {

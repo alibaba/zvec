@@ -15,6 +15,7 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -158,6 +159,13 @@ class BM25Scorer {
    */
   float score_with_idf(float idf_value, uint32_t term_freq, uint32_t doc_len,
                        float boost) const;
+
+  // Scores a bounded posting batch using one statistics snapshot. Callers
+  // requiring query-wide consistency use an immutable reader's scorer.
+  // Uses the scalar formula and evaluation order, including boost * IDF.
+  void score_batch(float idf_value, const uint32_t *term_freqs,
+                   const uint32_t *doc_lengths, size_t count, float boost,
+                   float *scores) const;
 
   /*! Update in-memory segment statistics (called by FtsColumnIndexer after
    *  each insert so that search() uses up-to-date stats for BM25 scoring)

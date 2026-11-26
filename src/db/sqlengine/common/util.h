@@ -12,10 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#pragma once
+
 #include <memory>
 #include <string>
 #include <arrow/api.h>
 #include <arrow/record_batch.h>
+#include <zvec/db/status.h>
 
 namespace zvec::sqlengine {
 
@@ -30,6 +33,9 @@ static const inline std::string kContainAny = "contain_any";
 static const inline std::string kFuncArrayLength = "array_length";
 
 #define enum_to_string(x) #x
+
+arrow::Status ToArrowError(const Status &status);
+Status FromArrowError(const arrow::Status &status, const char *context);
 
 class Util {
  public:

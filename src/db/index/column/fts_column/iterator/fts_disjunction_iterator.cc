@@ -14,8 +14,20 @@
 
 #include "fts_disjunction_iterator.h"
 #include <algorithm>
+#include <cmath>
+#include "fts_score_bound.h"
 
 namespace zvec::fts {
+
+Status DisjunctionIterator::status() const {
+  for (const auto &child : sub_iterators_) {
+    auto result = child->status();
+    if (!result.ok()) {
+      return result;
+    }
+  }
+  return Status::OK();
+}
 
 namespace {
 
@@ -41,20 +53,21 @@ DisjunctionIterator::DisjunctionIterator(
     : sub_iterators_(std::move(sub_iterators)) {
   // Initialize each sub-iterator to its first doc and prepare postings array
   total_cost_ = 0;
-  total_max_score_ = 0.0f;
+  ScoreUpperBound total;
   for (auto &iter : sub_iterators_) {
     total_cost_ += iter->cost();
-    total_max_score_ += iter->cached_max_score_;
+    total.add(iter->cached_max_score_);
     iter->next_doc();
     postings_.push_back(iter.get());
   }
   // Initial sort to establish sorted order
   resort_postings();
-  cached_max_score_ = total_max_score_;
+  cached_max_score_ = total_max_score_ = total.value();
 }
 
 void DisjunctionIterator::set_min_competitive_score(float min_score) {
-  min_competitive_score_ = min_score;
+  // Explicitly disable WAND/block skipping when any child lacks a finite bound.
+  min_competitive_score_ = std::isfinite(total_max_score_) ? min_score : 0.0f;
 }
 
 // Re-establish sorted order of postings_ by cached_doc_id_ ascending.
@@ -93,15 +106,15 @@ uint32_t DisjunctionIterator::next_doc_impl(const zvec::IndexFilter *filter) {
     }
 
     // 2. Find Pivot: accumulate max_score until it reaches the threshold
-    float partial_max_score = 0.0f;
+    ScoreUpperBound partial_max_score;
     size_t pivot_idx = 0;
     bool found_pivot = false;
     for (; pivot_idx < postings_.size(); ++pivot_idx) {
       if (postings_[pivot_idx]->cached_doc_id_ == NO_MORE_DOCS) {
         break;
       }
-      partial_max_score += postings_[pivot_idx]->cached_max_score_;
-      if (partial_max_score >= min_competitive_score_) {
+      partial_max_score.add(postings_[pivot_idx]->cached_max_score_);
+      if (partial_max_score.value() >= min_competitive_score_) {
         found_pivot = true;
         break;
       }
@@ -141,21 +154,21 @@ uint32_t DisjunctionIterator::next_doc_impl(const zvec::IndexFilter *filter) {
       //     contributions must be counted to avoid underestimating the
       //     potential score and incorrectly skipping TopK documents.
       if (min_competitive_score_ > 0.0f) {
-        float block_score_sum = 0.0f;
+        ScoreUpperBound block_score_sum;
         uint32_t min_block_end = NO_MORE_DOCS;
         bool can_skip = true;
 
         // Phase 1: accumulate [0..pivot_idx] (always needed)
         for (size_t i = 0; i <= pivot_idx; ++i) {
           auto info = postings_[i]->block_max_info_for(pivot_doc);
-          block_score_sum += info.block_max_score;
+          block_score_sum.add(info.block_max_score);
           if (info.block_last_doc < min_block_end) {
             min_block_end = info.block_last_doc;
           }
         }
 
         // Phase 2: if [0..pivot_idx] sum is already sufficient, no pruning
-        if (block_score_sum >= min_competitive_score_) {
+        if (block_score_sum.value() >= min_competitive_score_) {
           can_skip = false;
         } else {
           // Lazily accumulate remaining iterators beyond pivot_idx.
@@ -165,18 +178,18 @@ uint32_t DisjunctionIterator::next_doc_impl(const zvec::IndexFilter *filter) {
               break;
             }
             auto info = postings_[i]->block_max_info_for(pivot_doc);
-            block_score_sum += info.block_max_score;
+            block_score_sum.add(info.block_max_score);
             if (info.block_last_doc < min_block_end) {
               min_block_end = info.block_last_doc;
             }
-            if (block_score_sum >= min_competitive_score_) {
+            if (block_score_sum.value() >= min_competitive_score_) {
               can_skip = false;
               break;
             }
           }
         }
 
-        if (can_skip && block_score_sum < min_competitive_score_ &&
+        if (can_skip && block_score_sum.value() < min_competitive_score_ &&
             min_block_end != NO_MORE_DOCS) {
           // All iterators' blocks containing pivot_doc cannot produce a
           // competitive score. Advance ALL iterators in [0..pivot_idx] past
@@ -259,10 +272,12 @@ bool DisjunctionIterator::matches() {
 }
 
 float DisjunctionIterator::score() {
-  // Sum scores of all matching sub-iterators that pass phase-2 verification
+  // Sum matching clauses in their original order. WAND/advance reorder
+  // postings_ and matching_iterators_; using that transient order changes
+  // FP32 addition (and near-tie rankings) when bounds or traversal differ.
   float total = 0.0f;
-  for (DocIterator *iter : matching_iterators_) {
-    if (iter->matches()) {
+  for (const auto &iter : sub_iterators_) {
+    if (iter->cached_doc_id_ == cached_doc_id_ && iter->matches()) {
       total += iter->score();
     }
   }

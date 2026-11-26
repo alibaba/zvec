@@ -81,6 +81,9 @@ struct CompactTask {
       input_segments_;  // size must > 1 when filter is nullptr; size could = 1
                         // when filter is not nullptr
   SegmentID output_segment_id_;
+  // Allocated before building when the final path uses a different ID from
+  // the temporary directory. Custom metadata binds this stable final ID.
+  std::optional<SegmentID> published_segment_id_;
   const IndexFilter::Ptr filter_;
   bool forward_use_parquet_;
   int concurrency_;
@@ -92,19 +95,31 @@ struct CompactTask {
 struct CreateVectorIndexTask {
   CreateVectorIndexTask(const Segment::Ptr &input_segment,
                         const std::string &column_to_build_vector_index,
-                        const IndexParams::Ptr &index_params, int concurrency)
+                        const IndexParams::Ptr &index_params, int concurrency,
+                        fts::FtsRetirementQueue::Pointer retirement = {})
       : input_segment_(input_segment),
         column_to_build_vector_index_(column_to_build_vector_index),
         index_params_(index_params),
-        concurrency_(concurrency) {}
+        concurrency_(concurrency),
+        retirement_(std::move(retirement)) {}
+
+  void preserve_files() const {
+    for (const auto &owner : output_file_owners_) {
+      owner->preserve();
+    }
+  }
 
   Segment::Ptr input_segment_;
   std::string column_to_build_vector_index_;  // if empty means create index for
   // all vector columns
   IndexParams::Ptr index_params_;
   int concurrency_;
+  fts::FtsRetirementQueue::Pointer retirement_;
 
   // output
+  // Declared before the indexers so files are removed after their handles
+  // close.
+  std::vector<fts::FtsFileOwner::Pointer> output_file_owners_;
   SegmentMeta::Ptr output_segment_meta_;
   std::unordered_map<std::string, VectorColumnIndexer::Ptr>
       output_vector_indexers_;
@@ -175,6 +190,7 @@ struct CreateFtsIndexTask {
   // output
   SegmentMeta::Ptr output_segment_meta_;
   FtsIndexer::Ptr output_fts_indexer_;
+  CollectionSchema::Ptr output_schema_;
 };
 
 struct DropFtsIndexTask {
@@ -187,6 +203,14 @@ struct DropFtsIndexTask {
   // output
   SegmentMeta::Ptr output_segment_meta_;
   FtsIndexer::Ptr output_fts_indexer_;
+  CollectionSchema::Ptr output_schema_;
+};
+
+// Independent from compaction/vector tasks: migrate a single sealed segment
+// even when optimize has no purge or vector work to perform.
+struct RewriteFtsTask {
+  Segment::Ptr input_segment_;
+  std::optional<Segment::PreparedFtsSeal> prepared_;
 };
 
 class SegmentTask {
@@ -196,7 +220,7 @@ class SegmentTask {
   using TaskInfo =
       std::variant<CompactTask, CreateVectorIndexTask, DropVectorIndexTask,
                    CreateScalarIndexTask, DropScalarIndexTask,
-                   CreateFtsIndexTask, DropFtsIndexTask>;
+                   CreateFtsIndexTask, DropFtsIndexTask, RewriteFtsTask>;
 
   static Ptr CreateCompactTask(const CompactTask &task) {
     return std::make_shared<SegmentTask>(task);
@@ -226,6 +250,10 @@ class SegmentTask {
     return std::make_shared<SegmentTask>(task);
   }
 
+  static Ptr CreateRewriteFtsTask(const RewriteFtsTask &task) {
+    return std::make_shared<SegmentTask>(task);
+  }
+
  public:
   SegmentTask(const CompactTask &task) : task_info_(task) {}
 
@@ -241,9 +269,15 @@ class SegmentTask {
 
   SegmentTask(const DropFtsIndexTask &task) : task_info_(task) {}
 
+  SegmentTask(const RewriteFtsTask &task) : task_info_(task) {}
+
   TaskInfo &task_info() {
     return task_info_;
   }
+
+  // Prepared output determines the publication protocol, including the first
+  // custom generation produced by an otherwise ordinary compaction task.
+  bool requires_commit_record() const;
 
  private:
   TaskInfo task_info_;
@@ -317,14 +351,14 @@ class SegmentHelper {
       const core::IndexProvider::Pointer &raw_vector_provider,
       std::shared_ptr<FieldSchema> *out_field);
 
-  // Build a fresh FTS RocksDB under output_segment_path by streaming all
-  // FTS fields from input_segments through FtsRocksdbReducer.
-  //   - input_segments: ascending min_doc_id, contiguous doc_id range.
+  // Build a private FTS generation, accepting mixed custom/legacy inputs.
+  // Pure legacy keeps the existing reducer until custom writes are enabled.
+  //   - input_segments: ascending min_doc_id, non-overlapping row domains.
   //   - delete_row_id_bitmap: deleted positions in input scan order
   //     (shared with the vector path); empty for pure consolidation.
   static Status ReduceFts(const CollectionSchema::Ptr &schema,
                           const std::vector<Segment::Ptr> &input_segments,
-                          const std::string &output_segment_path,
+                          const FtsIndexer::CustomTarget &target,
                           const roaring::Roaring &delete_row_id_bitmap,
                           std::function<BlockID()> &block_id_generator,
                           std::vector<BlockMeta> *output_block_metas);

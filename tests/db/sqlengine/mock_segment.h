@@ -463,6 +463,11 @@ class MockSegment : public Segment {
     return Status::OK();
   }
 
+  Result<std::vector<fts::FtsFileOwner::Pointer>> prepare_vector_retirement(
+      const SegmentMeta &) override {
+    return std::vector<fts::FtsFileOwner::Pointer>{};
+  }
+
   Status reload_vector_index(
       const CollectionSchema &schema, const SegmentMeta::Ptr &segment_meta,
       const std::unordered_map<std::string, VectorColumnIndexer::Ptr>
@@ -499,6 +504,33 @@ class MockSegment : public Segment {
       const InvertedIndexer::Ptr &scalar_indexer) override {
     return Status::OK();
   }
+
+  Result<PreparedColumnChange> prepare_column_change(
+      SegmentID, const std::function<Status(Segment *)> &) override {
+    return tl::make_unexpected(Status::NotSupported("Mock segment DDL"));
+  }
+
+  Status checkpoint_for_fts() override {
+    return Status::NotSupported("Mock segment checkpoint");
+  }
+
+  Result<PreparedFtsSeal> prepare_fts_seal(const DurableFile::Hook &) override {
+    return tl::make_unexpected(Status::NotSupported("Mock FTS seal"));
+  }
+
+  void publish_fts_seal(PreparedFtsSeal) override {}
+
+  Result<fts::FtsFieldSource::Ptr> open_fts_source(
+      const std::string &) const override {
+    return tl::make_unexpected(Status::NotSupported("Mock FTS source"));
+  }
+
+  Result<PreparedFtsSeal> prepare_fts_rewrite(
+      const DurableFile::Hook &) override {
+    return tl::make_unexpected(Status::NotSupported("Mock FTS rewrite"));
+  }
+
+  void publish_fts_index(CollectionSchema::Ptr, PreparedFtsSeal) override {}
 
   Status reload_fts_index(const CollectionSchema &schema,
                           const SegmentMeta::Ptr &segment_meta,

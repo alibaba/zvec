@@ -13,12 +13,26 @@
 // limitations under the License.
 
 #include "bm25_scorer.h"
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <zvec/ailego/logger/logger.h>
 #include "fts_utils.h"
 
 namespace zvec::fts {
+namespace {
+
+float ScorePayload(float weight, uint32_t term_freq, uint32_t doc_len,
+                   BM25Params params, float avg_dl) {
+  const float tf = static_cast<float>(term_freq);
+  const float doc_length = static_cast<float>(doc_len);
+  const float tf_norm =
+      tf * (params.k1 + 1.0f) /
+      (tf + params.k1 * (1.0f - params.b + params.b * doc_length / avg_dl));
+  return weight * tf_norm;
+}
+
+}  // namespace
 
 // ============================================================
 // BM25Scorer implementation
@@ -148,15 +162,24 @@ float BM25Scorer::score_with_idf(float idf_value, uint32_t term_freq,
     return 0.0f;
   }
 
-  const float tf = static_cast<float>(term_freq);
-  const float doc_length = static_cast<float>(doc_len);
+  return ScorePayload(boost * idf_value, term_freq, doc_len, params_,
+                      snap.avg_doc_len());
+}
+
+void BM25Scorer::score_batch(float idf_value, const uint32_t *term_freqs,
+                             const uint32_t *doc_lengths, size_t count,
+                             float boost, float *scores) const {
+  const auto snap = stats_.snapshot();
+  if (idf_value <= 0.0f || snap.total_docs == 0) {
+    std::fill_n(scores, count, 0.0f);
+    return;
+  }
   const float avg_dl = snap.avg_doc_len();
-
-  const float tf_norm =
-      tf * (params_.k1 + 1.0f) /
-      (tf + params_.k1 * (1.0f - params_.b + params_.b * doc_length / avg_dl));
-
-  return boost * idf_value * tf_norm;
+  const float weight = boost * idf_value;
+  for (size_t i = 0; i < count; ++i) {
+    scores[i] =
+        ScorePayload(weight, term_freqs[i], doc_lengths[i], params_, avg_dl);
+  }
 }
 
 // ============================================================
