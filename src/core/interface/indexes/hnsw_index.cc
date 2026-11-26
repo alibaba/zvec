@@ -211,18 +211,32 @@ int HNSWIndex::open_streamer(const StorageOptions &options) {
     if (!turbo_quantizer_) {
       return Index::open_streamer(options);
     }
-    // Reuse normal initialization for old indexes, without selecting Turbo
-    // again.
+    // Validate the entire legacy pipeline before replacing the configured one.
+    HNSWIndex legacy;
+    legacy.use_legacy_pipeline_ = true;
+    int ret = legacy.Index::init(param_);
+    if (ret != 0) return ret;
+    legacy.storage_ = storage_;
+    ret = legacy.Index::open_streamer(options);
+    if (ret != 0) return ret;
+    streamer_ = std::move(legacy.streamer_);
+    converter_ = std::move(legacy.converter_);
+    reformer_ = std::move(legacy.reformer_);
+    metric_ = std::move(legacy.metric_);
+    proxima_index_meta_ = std::move(legacy.proxima_index_meta_);
+    streamer_vector_meta_ = legacy.streamer_vector_meta_;
+    context_index_ = legacy.context_index_;
     turbo_quantizer_.reset();
-    streamer_.reset();
-    converter_.reset();
-    reformer_.reset();
-    metric_.reset();
-    proxima_index_meta_.clear();
-    use_legacy_pipeline_ = true;
-    int ret = Index::init(param_);
-    use_legacy_pipeline_ = false;
-    return ret != 0 ? ret : Index::open_streamer(options);
+    return 0;
+  }
+  const auto &params = persisted_meta.quantizer_params();
+  int64_t input_dim = 0;
+  int64_t input_type = IndexMeta::DT_FP32;
+  params.get("input_data_type", &input_type);
+  if (params.get("input_dimension", &input_dim) &&
+      (input_dim != input_vector_meta_.dimension() ||
+       input_type != input_vector_meta_.data_type())) {
+    return core::IndexError_Mismatch;
   }
   // The persisted descriptor decides the search pipeline, including when a
   // caller reopens an index with a different quantizer configuration: a
@@ -272,7 +286,7 @@ int HNSWIndex::open_streamer(const StorageOptions &options) {
       static_cast<uint32_t>(turbo_quantizer_->type()),
       persisted_meta.extra_meta_size());
   streamer_vector_meta_.set_meta_type(persisted_meta.meta_type());
-  return 0;
+  return finish_streamer_open(options);
 }
 
 int HNSWIndex::create_and_init_converter_reformer(

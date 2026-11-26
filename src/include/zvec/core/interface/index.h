@@ -257,6 +257,7 @@ class ZVEC_CORE_API Index {
     return 0;
   }
   virtual int open_streamer(const StorageOptions &options);
+  int finish_streamer_open(const StorageOptions &options);
 
  protected:
   bool init_context();
@@ -393,8 +394,7 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int generate_holder();
 
  private:
-  int load_streamer();
-  int restore_legacy_pipeline();
+  int load_streamer(const core::IndexStorage::Pointer &storage);
   // Dedicated backend is used only to read existing legacy files.
   bool legacy_rabitq_{false};
   bool use_rabitq_{false};

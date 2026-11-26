@@ -2125,10 +2125,10 @@ TEST(IndexInterface, IvfRetriesOpeningWithoutRebuildingOrRedumping) {
   EXPECT_TRUE(build_state.expired());
   EXPECT_FALSE(conversion_state.expired());
   EXPECT_NE(nullptr, inspected->converted_input());
-  auto next_builder = inspected->build_state();
+  EXPECT_TRUE(inspected->build_state().expired());
   inspected->replace_reformer(std::move(reformer));
   ASSERT_EQ(0, target->train());
-  EXPECT_FALSE(next_builder.expired());
+  EXPECT_TRUE(inspected->build_state().expired());
   EXPECT_TRUE(conversion_state.expired());
   EXPECT_EQ(nullptr, inspected->converted_input());
   EXPECT_EQ(1u, target->get_doc_count());

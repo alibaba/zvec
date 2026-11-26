@@ -104,11 +104,9 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
+#if RABITQ_SUPPORTED
   if (param_.quantizer_param &&
       param_.quantizer_param->type == QuantizerType::kRabitq) {
-#if !RABITQ_SUPPORTED
-    return core::IndexError_Unsupported;
-#else
     if (param_.data_type != DataType::DT_FP32 ||
         param_.quantizer_param->enable_rotate ||
         (param_.metric_type != MetricType::kL2sq &&
@@ -122,8 +120,8 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
     proxima_index_params_.set(
         core::PARAM_DISKANN_BUILDER_QUANTIZER_PARAMS,
         (settings ? *settings : RabitqQuantizerParam{}).to_params());
-#endif
   }
+#endif
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
 
@@ -161,6 +159,12 @@ int DiskAnnIndex::open(const std::string &file_path,
     LOG_ERROR("Cannot create storage for a read-only index");
     return core::IndexError_Runtime;
   }
+#if !RABITQ_SUPPORTED
+  if (storage_options.create_new && param_.quantizer_param &&
+      param_.quantizer_param->type == QuantizerType::kRabitq) {
+    return core::IndexError_Unsupported;
+  }
+#endif
   if (is_open_) return core::IndexError_NoReady;
   core::IndexStorage::Pointer storage;
   ailego::Params storage_params;
@@ -214,6 +218,7 @@ int DiskAnnIndex::open(const std::string &file_path,
     ret = streamer_->open(storage);
     if (ret != 0) {
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
+      if (ret == core::IndexError_Unsupported) return ret;
       return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
     is_trained_ = true;

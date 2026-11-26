@@ -292,23 +292,27 @@ TEST(IVFTurboCompatibility, ReopensLegacyFp32File) {
                    .with_dimension(kDimension)
                    .with_n_list(1)
                    .build();
-  auto index = IndexFactory::CreateAndInitIndex(*param);
-  ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
-  SearchResult result;
-  ASSERT_EQ(0, index->search(
-                   VectorData{DenseVector{vector.data()}},
-                   IVFQueryParamBuilder().with_topk(1).with_nprobe(1).build(),
-                   &result));
-  ASSERT_EQ(1U, result.doc_list_.size());
-  EXPECT_EQ(29U, result.doc_list_[0].key());
-  EXPECT_FLOAT_EQ(0.0f, result.doc_list_[0].score());
-  VectorDataBuffer fetched;
-  ASSERT_EQ(0, index->fetch(29, &fetched));
-  EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
-                        kDimension * sizeof(float)),
-            std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
-  ASSERT_EQ(0, index->close());
+  for (auto type : {QuantizerType::kNone, QuantizerType::kRabitq}) {
+    param->quantizer_param = std::make_shared<QuantizerParam>(type);
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0,
+              index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+    SearchResult result;
+    ASSERT_EQ(0, index->search(
+                     VectorData{DenseVector{vector.data()}},
+                     IVFQueryParamBuilder().with_topk(1).with_nprobe(1).build(),
+                     &result));
+    ASSERT_EQ(1U, result.doc_list_.size());
+    EXPECT_EQ(29U, result.doc_list_[0].key());
+    EXPECT_FLOAT_EQ(0.0f, result.doc_list_[0].score());
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(29, &fetched));
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(vector.data()),
+                          kDimension * sizeof(float)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, index->close());
+  }
   test_util::RemoveTestFiles(path);
 }
 

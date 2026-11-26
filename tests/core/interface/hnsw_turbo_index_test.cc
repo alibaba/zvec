@@ -2355,6 +2355,53 @@ TEST(HnswTurboRabitq, BufferPoolAndContiguousStorage) {
                                  StorageOptions::StorageType::kMMAP, true);
 }
 
+TEST(HnswTurboRabitq, FailedLegacyOpenPreservesConfiguredQuantizer) {
+  const std::string legacy = "hnsw_rabitq_failed_legacy.index";
+  const auto fresh = legacy + ".new";
+  zvec::test_util::RemoveTestFiles(legacy);
+  zvec::test_util::RemoveTestFiles(fresh);
+  const auto vectors = RandomVectors(32);
+  ASSERT_NO_FATAL_FAILURE(BuildLegacyFp32Hnsw(legacy, vectors));
+  auto param = MakeParam(MetricType::kInnerProduct, QuantizerType::kRabitq);
+  auto provider = std::make_shared<
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>>(
+      kDimension);
+  for (const auto &values : vectors) {
+    zvec::ailego::NumericalVector<float> row(kDimension);
+    std::copy(values.begin(), values.end(), row.begin());
+    ASSERT_TRUE(provider->emplace(provider->count(), row));
+  }
+  param->provider = provider;
+  param->provider_meta =
+      zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  param->provider_meta.set_metric("InnerProduct", 0, zvec::ailego::Params{});
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_TRUE(index);
+  EXPECT_NE(0, index->open(legacy,
+                           {StorageOptions::StorageType::kMMAP, false, true}));
+  ASSERT_EQ(0, index->open(fresh, {StorageOptions::StorageType::kMMAP, true}));
+  EXPECT_EQ("RabitqQuantizer",
+            index->index_searcher()->meta().quantizer_name());
+  ASSERT_NO_FATAL_FAILURE(AddVectors(index.get(), vectors));
+  EXPECT_FALSE(SearchRows(index.get(), vectors.front(), true).empty());
+  ASSERT_EQ(0, index->close());
+
+  for (bool wrong_dim : {false, true}) {
+    auto config = MakeParam(MetricType::kInnerProduct, QuantizerType::kNone);
+    if (wrong_dim)
+      ++config->dimension;
+    else
+      config->data_type = DataType::DT_FP16;
+    auto reader = IndexFactory::CreateAndInitIndex(*config);
+    ASSERT_TRUE(reader);
+    EXPECT_EQ(
+        zvec::core::IndexError_Mismatch,
+        reader->open(fresh, {StorageOptions::StorageType::kMMAP, false, true}));
+  }
+  zvec::test_util::RemoveTestFiles(legacy);
+  zvec::test_util::RemoveTestFiles(fresh);
+}
+
 TEST(HnswTurboRabitq, RejectsCorruptOrUntrainedPersistedModel) {
   for (bool untrained : {false, true}) {
     SCOPED_TRACE(untrained);

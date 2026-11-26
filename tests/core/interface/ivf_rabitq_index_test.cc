@@ -6,6 +6,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <fstream>
 #include <functional>
 #include <random>
 #include <gtest/gtest.h>
@@ -14,6 +15,7 @@
 #include "ailego/pattern/defer.h"
 #include "algorithm/ivf/ivf_builder.h"
 #include "algorithm/ivf/ivf_index_format.h"
+#include "algorithm/ivf/ivf_streamer.h"
 #include "tests/test_util.h"
 
 namespace zvec::core_interface {
@@ -273,6 +275,69 @@ TEST(IVFRabitqIntegration, MergeUsesCallerWorkerForQuantizerClustering) {
   test_util::RemoveTestFiles(source_path);
 }
 
+TEST(IVFRabitqIntegration, MergeRetryTrainsOnReplacementInputs) {
+  const std::string path = "ivf_rabitq_merge_retry";
+  const auto source_path = path + ".flat";
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  for (const auto &file : {path, source_path}) test_util::RemoveTestFiles(file);
+  auto source =
+      IndexFactory::CreateAndInitIndex(*FlatIndexParamBuilder()
+                                            .with_dimension(128)
+                                            .with_metric_type(MetricType::kL2sq)
+                                            .with_data_type(DataType::DT_FP32)
+                                            .build());
+  ASSERT_TRUE(source);
+  ASSERT_EQ(0, source->open(source_path, create));
+  std::vector<std::vector<float>> rows(8, std::vector<float>(128));
+  std::mt19937 random(73);
+  for (uint32_t id = 0; id < rows.size(); ++id) {
+    auto &row = rows[id];
+    for (auto &value : row) value = static_cast<float>(random() % 127) / 127;
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{row.data()}}, id));
+  }
+  auto params = RabitqParam(MetricType::kL2sq);
+  auto target = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(target);
+  std::weak_ptr<turbo::Quantizer> build_model =
+      std::dynamic_pointer_cast<core::IVFStreamer>(target->index_searcher())
+          ->quantizer();
+  {
+    std::ofstream blocker(path);
+    ASSERT_TRUE(blocker.good());
+  }
+  ASSERT_EQ(0, target->open(path + "/index", create));
+  IndexFilter first, second;
+  first.set([](uint64_t id) { return id >= 4; });
+  second.set([](uint64_t id) { return id < 4; });
+  EXPECT_NE(0, target->merge({source}, first));
+  test_util::RemoveTestFiles(path);
+  ASSERT_EQ(0, target->merge({source}, second));
+  EXPECT_TRUE(build_model.expired());
+  auto direct = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(direct);
+  ASSERT_EQ(0, direct->open(path + "/direct", create));
+  ASSERT_EQ(0, direct->merge({source}, second));
+  // Each of the four training vectors is its own centroid. Both indexes
+  // should return the exact self distance with the replacement codebook.
+  auto query = IVFQueryParamBuilder().with_nprobe(4).with_topk(1).build();
+  for (uint32_t id = 4; id < 8; ++id) {
+    const auto &row = rows[id];
+    for (const auto &index : {direct, target}) {
+      SearchResult result;
+      ASSERT_EQ(0, index->search(VectorData{DenseVector{row.data()}}, query,
+                                 &result));
+      ASSERT_EQ(1u, result.doc_list_.size());
+      EXPECT_EQ(id - 4, result.doc_list_.front().key());
+      EXPECT_FLOAT_EQ(0, result.doc_list_.front().score());
+    }
+  }
+  ASSERT_EQ(0, direct->close());
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, source->close());
+  test_util::RemoveTestFiles(path);
+  test_util::RemoveTestFiles(source_path);
+}
+
 class IVFRabitqIntegrationTest
     : public testing::TestWithParam<std::tuple<MetricType, int, bool>> {};
 
@@ -305,7 +370,12 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
     // Sparse public IDs exercise persisted key mapping.
     ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[i].data()}}, i * 3));
   }
+  std::weak_ptr<turbo::Quantizer> build_model =
+      std::dynamic_pointer_cast<core::IVFStreamer>(index->index_searcher())
+          ->quantizer();
+  ASSERT_FALSE(build_model.expired());
   ASSERT_EQ(0, index->train());
+  EXPECT_TRUE(build_model.expired());
   ASSERT_EQ(0, index->train());
   EXPECT_EQ(80, index->get_doc_count());
   auto storage = core::IndexFactory::CreateStorage("MMapFileReadStorage");
@@ -457,6 +527,26 @@ TEST_P(IVFRabitqIntegrationTest, TrainSearchAndReopen) {
     ASSERT_EQ(0,
               legacy->add(VectorData{DenseVector{vectors[i].data()}}, i * 3));
   ASSERT_EQ(0, legacy->train());
+  if (metric == MetricType::kL2sq && bits == 7 && !std::get<2>(GetParam())) {
+    auto wrong = RabitqParam(metric);
+    wrong->dimension = 64;
+    auto retry = IndexFactory::CreateAndInitIndex(*wrong);
+    ASSERT_TRUE(retry);
+    EXPECT_EQ(core::IndexError_Mismatch,
+              retry->open(legacy_path,
+                          {StorageOptions::StorageType::kMMAP, false, true}));
+    const auto fresh = legacy_path + ".new";
+    test_util::RemoveTestFiles(fresh);
+    ASSERT_EQ(0,
+              retry->open(fresh, {StorageOptions::StorageType::kMMAP, true}));
+    for (uint32_t i = 0; i < 8; ++i)
+      ASSERT_EQ(0, retry->add(VectorData{DenseVector{vectors[i].data()}}, i));
+    ASSERT_EQ(0, retry->train());
+    EXPECT_EQ("RabitqQuantizer",
+              retry->index_searcher()->meta().quantizer_name());
+    ASSERT_EQ(0, retry->close());
+    test_util::RemoveTestFiles(fresh);
+  }
   ASSERT_EQ(0, reopened->open(legacy_path,
                               {StorageOptions::StorageType::kMMAP, false}));
   ASSERT_EQ(0, reopened->search(input, query, &before));
@@ -645,8 +735,12 @@ INSTANTIATE_TEST_SUITE_P(
                      testing::Values(1, 7, 9), testing::Bool()));
 #else
 TEST(IVFRabitqIntegration, UnsupportedPlatform) {
-  EXPECT_EQ(nullptr,
-            IndexFactory::CreateAndInitIndex(*RabitqParam(MetricType::kL2sq)));
+  auto index =
+      IndexFactory::CreateAndInitIndex(*RabitqParam(MetricType::kL2sq));
+  ASSERT_TRUE(index);
+  EXPECT_EQ(core::IndexError_Unsupported,
+            index->open("ivf_unsupported.index",
+                        {StorageOptions::StorageType::kMMAP, true}));
 }
 #endif
 }  // namespace

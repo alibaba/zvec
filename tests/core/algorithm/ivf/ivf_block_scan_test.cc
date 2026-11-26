@@ -96,6 +96,36 @@ void WriteIndex(const std::string &path, size_t block_size, bool packed,
   ASSERT_EQ(0, file->close());
 }
 
+#if RABITQ_SUPPORTED
+TEST(IVFBlockScan, RejectsSerializedUntrainedRabitq) {
+  const std::string path = "ivf_untrained_rabitq.index";
+  IndexMeta raw(IndexMeta::DT_FP32, kDim);
+  raw.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  raw.set_major_order(IndexMeta::MO_ROW);
+  raw.set_quantizer("RabitqQuantizer", 0, ailego::Params{});
+  auto quantizer = IndexFactory::CreateQuantizer(raw.quantizer_name());
+  ASSERT_TRUE(quantizer);
+  ASSERT_EQ(0, quantizer->init(raw, {}));
+  ASSERT_TRUE(quantizer->require_train());
+  auto file = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_EQ(0, file->create(path));
+  IVFDumper dumper(quantizer->meta(), file, 1, 32);
+  std::string record(quantizer->meta().element_size(), 0);
+  ASSERT_EQ(0, dumper.dump_inverted_vector(0, 0, record.data()));
+  ASSERT_EQ(0, dumper.dump_inverted_vector_finished());
+  ASSERT_EQ(0, dumper.dump_turbo_quantizer(quantizer));
+  ASSERT_EQ(0, IndexHelper::SerializeToDumper(raw, file.get()));
+  ASSERT_EQ(0, file->close());
+  auto storage = IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, false));
+  IVFEntity entity;
+  EXPECT_EQ(IndexError_NoReady, entity.load(storage));
+  ASSERT_EQ(0, storage->close());
+  ailego::File::Delete(path);
+}
+#endif
+
 TEST(IVFBlockScan, StorageFallbackFiltersGroupsAndQueryIsolation) {
   ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(
                    ailego::PoolPayloadBudget::storage_metadata_bytes(1) +

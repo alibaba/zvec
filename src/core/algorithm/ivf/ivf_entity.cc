@@ -757,6 +757,10 @@ int IVFEntity::load_quantizer(const IndexStorage::Pointer &container) {
     ivf_check_with_msg(ret, "Failed to restore Turbo IVF quantizer");
   }
 
+  if (quantizer->type() == turbo::QuantizeType::kRabit &&
+      quantizer->require_train()) {
+    return IndexError_NoReady;
+  }
   const auto &output = quantizer->meta();
   if (output.data_type() != meta_.data_type() ||
       output.dimension() != meta_.dimension() ||

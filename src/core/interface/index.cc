@@ -555,10 +555,11 @@ int Index::init(const BaseIndexParam &param) {
 
 
 int Index::open_streamer(const StorageOptions &options) {
-  if (pending_quantizer_training_) return 0;
-  return streamer_ && streamer_->open(storage_, options.read_only) == 0
-             ? 0
-             : core::IndexError_Runtime;
+  if (!pending_quantizer_training_ &&
+      (!streamer_ || streamer_->open(storage_, options.read_only) != 0)) {
+    return core::IndexError_Runtime;
+  }
+  return finish_streamer_open(options);
 }
 
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
@@ -642,6 +643,12 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     return ret;
   }
 
+  is_open_ = true;
+  is_read_only_ = storage_options.read_only;
+  return 0;
+}
+
+int Index::finish_streamer_open(const StorageOptions &storage_options) {
   // If a converter exists but reformer was not created during init() because
   // its params are only available after training, create it now from the
   // persisted meta loaded by the streamer. When there is no converter
@@ -679,12 +686,13 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     if (storage_options.create_new && converter_ != nullptr) {
       if (converter_->dump_to_storage(storage_) != 0) {
         LOG_ERROR("Failed to dump converter to storage, path: %s",
-                  file_path.c_str());
+                  storage_->file_path().c_str());
         return core::IndexError_Runtime;
       }
     }
     if (reformer_->load(storage_) != 0) {
-      LOG_ERROR("Failed to load reformer, path: %s", file_path.c_str());
+      LOG_ERROR("Failed to load reformer, path: %s",
+                storage_->file_path().c_str());
       return core::IndexError_Runtime;
     }
   }
@@ -695,8 +703,6 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  is_open_ = true;
-  is_read_only_ = storage_options.read_only;
   return 0;
 }
 

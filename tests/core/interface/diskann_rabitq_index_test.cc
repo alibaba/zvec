@@ -243,10 +243,40 @@ TEST(DiskAnnRabitq, BuildFilterFetchAndReopenWithDefaultParameters) {
   }
 }
 #else
-TEST(DiskAnnRabitq, UnsupportedPlatformRejectsInsteadOfSilentlyBuildingPq) {
-  auto params = Parameters(MetricType::kL2sq, 3);
-  SmallDiskAnn index;
-  EXPECT_NE(0, index.initialize(*params));
+TEST(DiskAnnRabitq, UnsupportedBuildReopensPqAndRejectsNewRabitq) {
+  const std::string path = "diskann_unsupported_rabitq.index";
+  test_util::RemoveTestFiles(path);
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  auto params = Parameters(MetricType::kL2sq, 3, 32);
+  auto reader = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(reader);
+  params->quantizer_param = std::make_shared<QuantizerParam>();
+  params->pq_chunk_num = 4;
+  auto writer = std::make_shared<SmallDiskAnn>();
+  ASSERT_EQ(0, writer->initialize(*params));
+  Index::Pointer index = writer;
+  ASSERT_EQ(0, index->open(path, create));
+  std::vector<float> row(32);
+  for (uint32_t id = 0; id < 300; ++id) {
+    std::fill(row.begin(), row.end(), static_cast<float>(id));
+    ASSERT_EQ(0, index->add(VectorData{DenseVector{row.data()}}, id));
+  }
+  ASSERT_EQ(0, index->train());
+  ASSERT_EQ(0, index->close());
+  // Reject create before touching the existing PQ file.
+  EXPECT_EQ(core::IndexError_Unsupported, reader->open(path, create));
+  ASSERT_EQ(0, reader->open(path, {create.type, false, true}));
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 1;
+  query->list_size = 64;
+  std::fill(row.begin(), row.end(), 17.0f);
+  SearchResult result;
+  ASSERT_EQ(
+      0, reader->search(VectorData{DenseVector{row.data()}}, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(17u, result.doc_list_.front().key());
+  ASSERT_EQ(0, reader->close());
+  test_util::RemoveTestFiles(path);
 }
 #endif
 }  // namespace

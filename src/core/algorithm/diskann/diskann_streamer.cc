@@ -141,6 +141,10 @@ int DiskAnnStreamer::open(IndexStorage::Pointer storage) {
     return ret;
   }
 
+#if !RABITQ_SUPPORTED
+  if (meta_.quantizer_name() == "RabitqQuantizer")
+    return IndexError_Unsupported;
+#endif
   ret = entity_.load(meta_, storage);
   if (ret != 0) {
     LOG_INFO("Searcher Entity Load Failed");
