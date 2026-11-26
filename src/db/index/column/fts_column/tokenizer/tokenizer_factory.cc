@@ -26,6 +26,15 @@ namespace zvec::fts {
 
 Result<TokenizerPipelinePtr> TokenizerFactory::create(
     const FtsIndexParams &params) {
+  auto prepared = prepare(params);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  return prepared->get();
+}
+
+Result<PreparedTokenizerPipeline> TokenizerFactory::prepare(
+    const FtsIndexParams &params) {
   // Parse extra_params JSON string into a JsonObject.
   // Empty string is treated as an empty object; malformed JSON fails.
   ailego::JsonObject extra_json;
@@ -45,7 +54,15 @@ Result<TokenizerPipelinePtr> TokenizerFactory::create(
   }
 
   TokenizerPtr tokenizer;
-  auto status = create_tokenizer(params.tokenizer_name, extra_json, &tokenizer);
+  std::shared_ptr<JiebaTokenizer> jieba;
+  Status status;
+  if (params.tokenizer_name == "jieba") {
+    jieba = std::make_shared<JiebaTokenizer>();
+    status = jieba->configure(extra_json);
+    tokenizer = jieba;
+  } else {
+    status = create_tokenizer(params.tokenizer_name, extra_json, &tokenizer);
+  }
   if (!status.ok()) {
     return tl::make_unexpected(std::move(status));
   }
@@ -64,8 +81,22 @@ Result<TokenizerPipelinePtr> TokenizerFactory::create(
     filters.push_back(std::move(filter));
   }
 
-  return std::make_shared<TokenizerPipeline>(std::move(tokenizer),
-                                             std::move(filters));
+  auto pipeline = std::make_shared<TokenizerPipeline>(std::move(tokenizer),
+                                                      std::move(filters));
+  if (jieba && !jieba->is_valid()) {
+    return std::async(std::launch::deferred,
+                      [jieba, pipeline]() -> Result<TokenizerPipelinePtr> {
+                        auto load_status = jieba->load_resources({}, {});
+                        if (!load_status.ok()) {
+                          return tl::make_unexpected(std::move(load_status));
+                        }
+                        return pipeline;
+                      })
+        .share();
+  }
+  std::promise<Result<TokenizerPipelinePtr>> ready;
+  ready.set_value(std::move(pipeline));
+  return ready.get_future().share();
 }
 
 std::vector<Token> TokenizerPipeline::process(const std::string &text) const {
@@ -83,8 +114,6 @@ Status TokenizerFactory::create_tokenizer(const std::string &tokenizer_name,
     *tokenizer = std::make_shared<StandardTokenizer>();
   } else if (tokenizer_name == "ngram") {
     *tokenizer = std::make_shared<NGramTokenizer>();
-  } else if (tokenizer_name == "jieba") {
-    *tokenizer = std::make_shared<JiebaTokenizer>();
   } else if (tokenizer_name == "whitespace") {
     *tokenizer = std::make_shared<WhitespaceTokenizer>();
   } else {

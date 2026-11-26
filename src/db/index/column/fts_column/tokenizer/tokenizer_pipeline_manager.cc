@@ -46,6 +46,20 @@ std::string TokenizerPipelineManager::make_key(const FtsIndexParams &params) {
 
 TokenizerPipelinePtr TokenizerPipelineManager::acquire(
     const FtsIndexParams &params) {
+  auto prepared = prepare(params);
+  if (!prepared) {
+    return nullptr;
+  }
+  const auto &pipeline = prepared->get();
+  if (!pipeline) {
+    release(params);
+    return nullptr;
+  }
+  return *pipeline;
+}
+
+Result<PreparedTokenizerPipeline> TokenizerPipelineManager::prepare(
+    const FtsIndexParams &params) {
   const std::string key = make_key(params);
 
   // Fast path: pipeline already exists.
@@ -63,16 +77,16 @@ TokenizerPipelinePtr TokenizerPipelineManager::acquire(
 
   // Create the pipeline outside of the lock to avoid blocking other
   // acquire/release calls during the (potentially expensive) construction.
-  auto pipeline_result = TokenizerFactory::create(params);
+  auto pipeline_result = TokenizerFactory::prepare(params);
   if (!pipeline_result.has_value()) {
     LOG_ERROR(
         "TokenizerPipelineManager: failed to create pipeline for "
         "tokenizer[%s] key[%s]: %s",
         params.tokenizer_name.c_str(), key.c_str(),
         pipeline_result.error().message().c_str());
-    return nullptr;
+    return tl::make_unexpected(pipeline_result.error());
   }
-  TokenizerPipelinePtr pipeline = std::move(pipeline_result).value();
+  auto pipeline = std::move(pipeline_result).value();
 
   // Re-acquire the lock and check whether another thread has already
   // created a pipeline with the same key while we were constructing ours.
