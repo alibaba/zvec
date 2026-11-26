@@ -1508,17 +1508,17 @@ TEST(SearchQuery, ValidateAndSanitize) {
     FieldSchema schema("embedding", DataType::VECTOR_FP32, 128, false, params);
     for (int nprobe : {-1, 0, 1, 1025}) {
       query.target_.query_params_ = std::make_shared<IVFQueryParams>(nprobe);
-      auto status = query.validate(&schema, nullptr);
+      auto status = internal::validate_search_query(query, &schema, nullptr);
       EXPECT_EQ(nprobe > 0, status.ok()) << status.message();
       if (nprobe <= 0) EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code());
     }
     query.target_.query_params_ = nullptr;
-    EXPECT_TRUE(query.validate(&schema, nullptr).ok());
+    EXPECT_TRUE(internal::validate_search_query(query, &schema, nullptr).ok());
     // Ordinary IVF retains its automatic probing option.
     std::dynamic_pointer_cast<IVFIndexParams>(schema.index_params())
         ->set_quantize_type(QuantizeType::UNDEFINED);
     query.target_.query_params_ = std::make_shared<IVFQueryParams>(0);
-    EXPECT_TRUE(query.validate(&schema, nullptr).ok());
+    EXPECT_TRUE(internal::validate_search_query(query, &schema, nullptr).ok());
   }
 
   // FTS clause validation

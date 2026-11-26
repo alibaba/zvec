@@ -16,7 +16,17 @@
 // <zvec/detail/float_helper.h> so the stable API can reach them without a
 // default package installing anything under zvec/ailego/.  The namespace
 // and the class names are unchanged, so this is purely a path move.
+//
+// The header this stands in for also pulled in
+// <zvec/ailego/internal/platform.h>, and engine code all over src/ reaches the
+// AILEGO_* feature macros and the helpers next to them (ailego_assert,
+// static_cast_from_float_to_uint8, ...) through that path -- for example
+// cube.h -> type_helper.h -> here.  Keep providing it: this shim is engine-only
+// and never installed, so the stable closure is unaffected, while
+// <zvec/detail/float_helper.h> stays free of engine includes for the published
+// API's sake and re-derives the one macro it needs on its own.
 
 #pragma once
 
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/detail/float_helper.h>
