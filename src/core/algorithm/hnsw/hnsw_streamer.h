@@ -97,6 +97,14 @@ class HnswStreamer : public IndexStreamer {
     return entity_->storage_mode();
   }
 
+  IndexProvider::Pointer original_provider() const override {
+    return provider_;
+  }
+
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
+    return quantizer_;
+  }
+
   //! Whether the active search distance path is backed by a turbo quantizer.
   bool uses_turbo_distance() const {
     return quantizer_ != nullptr;
@@ -221,6 +229,9 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
+  bool valid_original_provider(int dimension) const;
+  int create_quantizer_segment(const IndexStorage::Pointer &storage);
+
   int check_params(const void *query, const IndexQueryMeta &qmeta,
                    bool search = false) const;
 

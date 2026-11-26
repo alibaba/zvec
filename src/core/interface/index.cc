@@ -232,7 +232,10 @@ core::IndexContext::Pointer &Index::acquire_context() {
 }
 
 int Index::train() {
-  if (pending_quantizer_training_) return core::IndexError_NoReady;
+  if (pending_quantizer_training_ ||
+      (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors() &&
+       turbo_quantizer_->require_train()))
+    return core::IndexError_NoReady;
   is_trained_ = true;
   return 0;
 }
@@ -485,6 +488,25 @@ int Index::init_converter_reformer(const std::string &converter_name,
 }
 
 int Index::init(const BaseIndexParam &param) {
+  if (param.quantizer_param &&
+      param.quantizer_param->type == QuantizerType::kRabitq) {
+    switch (param.index_type) {
+      case IndexType::kHNSW:
+      case IndexType::kIVF:
+      case IndexType::kDiskAnn:
+        if (param.quantizer_param->enable_rotate) {
+          LOG_ERROR("RABITQ does not support additional enable_rotate");
+          return core::IndexError_Unsupported;
+        }
+        break;
+      case IndexType::kHNSWRabitq:
+      case IndexType::kIVFRabitq:
+        break;  // Preserve the dedicated indexes' parameter handling.
+      default:
+        LOG_ERROR("RABITQ is unsupported for this index type");
+        return core::IndexError_Unsupported;
+    }
+  }
   param_ = param;  // will lose the original type info
 
   is_sparse_ = param.is_sparse;
@@ -531,6 +553,14 @@ int Index::init(const BaseIndexParam &param) {
   return 0;
 }
 
+
+int Index::open_streamer(const StorageOptions &options) {
+  if (!pending_quantizer_training_ &&
+      (!streamer_ || streamer_->open(storage_, options.read_only) != 0)) {
+    return core::IndexError_Runtime;
+  }
+  return finish_streamer_open(options);
+}
 
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (storage_options.read_only && storage_options.create_new) {
@@ -606,13 +636,19 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
   if (ret != 0) {
     return ret;
   }
-  if (!pending_quantizer_training_ &&
-      (streamer_ == nullptr ||
-       streamer_->open(storage_, storage_options.read_only) != 0)) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
-    return core::IndexError_Runtime;
+  ret = open_streamer(storage_options);
+  if (ret != 0) {
+    LOG_ERROR("Failed to open streamer, path: %s, ret=%d", file_path.c_str(),
+              ret);
+    return ret;
   }
 
+  is_open_ = true;
+  is_read_only_ = storage_options.read_only;
+  return 0;
+}
+
+int Index::finish_streamer_open(const StorageOptions &storage_options) {
   // If a converter exists but reformer was not created during init() because
   // its params are only available after training, create it now from the
   // persisted meta loaded by the streamer. When there is no converter
@@ -650,12 +686,13 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     if (storage_options.create_new && converter_ != nullptr) {
       if (converter_->dump_to_storage(storage_) != 0) {
         LOG_ERROR("Failed to dump converter to storage, path: %s",
-                  file_path.c_str());
+                  storage_->file_path().c_str());
         return core::IndexError_Runtime;
       }
     }
     if (reformer_->load(storage_) != 0) {
-      LOG_ERROR("Failed to load reformer, path: %s", file_path.c_str());
+      LOG_ERROR("Failed to load reformer, path: %s",
+                storage_->file_path().c_str());
       return core::IndexError_Runtime;
     }
   }
@@ -666,8 +703,6 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     return core::IndexError_Runtime;
   }
 
-  is_open_ = true;
-  is_read_only_ = storage_options.read_only;
   return 0;
 }
 
@@ -795,7 +830,7 @@ int Index::search(const VectorData &vector_data,
   }
 
   const bool has_group_by = has_group_by_search(search_param);
-  if (has_group_by && is_group_by_unsupported_index(param_.index_type)) {
+  if (has_group_by && !supports_group_by()) {
     LOG_ERROR("group_by search is not supported for this index type");
     return core::IndexError_Unsupported;
   }
@@ -973,10 +1008,21 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (turbo_quantizer_ != nullptr) {
     auto *new_vector = context->mutable_features();
-    new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
-    turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
-    if (streamer_->add_with_id_impl(doc_id, new_vector->data(),
-                                    streamer_vector_meta_, context) != 0) {
+    core::IndexQueryMeta new_meta;
+    if (turbo_quantizer_->requires_original_vectors()) {
+      if (turbo_quantizer_->quantize_datapoint(dense_vector.data,
+                                               input_vector_meta_, new_vector,
+                                               &new_meta) != 0) {
+        LOG_ERROR("Failed to quantize vector with turbo quantizer");
+        return core::IndexError_Runtime;
+      }
+    } else {
+      new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
+      turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
+      new_meta = streamer_vector_meta_;
+    }
+    if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
+                                    context) != 0) {
       LOG_ERROR("Failed to add vector");
       return core::IndexError_Runtime;
     }

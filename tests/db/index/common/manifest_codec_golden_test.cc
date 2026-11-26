@@ -344,6 +344,9 @@ void ExpectRichSchemaFields(const CollectionSchema &schema,
   EXPECT_EQ(ivf->metric_type(), MetricType::COSINE);
   EXPECT_EQ(ivf->n_list(), 512);
   EXPECT_EQ(ivf->n_iters(), 12);
+  EXPECT_EQ(ivf->quantizer_param().total_bits(),
+            core_interface::kDefaultRabitqTotalBits);
+  EXPECT_EQ(ivf->quantizer_param().sample_count(), 0);
   EXPECT_TRUE(ivf->use_soar());
   EXPECT_EQ(ivf->quantize_type(), QuantizeType::INT4);
   EXPECT_TRUE(ivf->quantizer_param().enable_rotate());
@@ -1146,6 +1149,83 @@ TEST(ManifestCodecGolden, WireReaderRejectsGroups) {
   }
 }
 
+TEST(ManifestCodecGolden, IvfRabitqQuantizationRoundTrip) {
+  IVFIndexParams params(MetricType::COSINE, 32, 7, false, QuantizeType::RABITQ,
+                        QuantizerParam::ForRabitq(false, 9, 4, 1234, 6));
+  std::string encoded;
+  ManifestCodec::EncodeIndexParams(&params, &encoded);
+  auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
+      ManifestCodec::DecodeIndexParams(encoded));
+  ASSERT_NE(nullptr, decoded);
+  EXPECT_EQ(IndexType::IVF, decoded->type());
+  EXPECT_EQ(params, *decoded);
+  EXPECT_EQ(9, decoded->quantizer_param().total_bits());
+  EXPECT_EQ(1234, decoded->quantizer_param().sample_count());
+  EXPECT_EQ(params, *params.clone());
+}
+
+TEST(ManifestCodecRabitqTest, MigratesLegacyIvfEffectiveQuantizerSettings) {
+  // Build the old wire shape directly: nested bits/samples used to be ignored.
+  for (bool explicit_outer : {false, true}) {
+    SCOPED_TRACE(explicit_outer);
+    std::string quantizer, base, ivf, encoded;
+    pbwire::Writer qw(&quantizer);
+    qw.put_varint(2, 3);   // nested bits
+    qw.put_varint(3, 5);   // model centroids
+    qw.put_varint(4, 24);  // nested samples
+    qw.put_varint(5, 6);   // model iterations
+    pbwire::Writer bw(&base);
+    bw.put_varint(1, static_cast<uint64_t>(MetricType::L2));
+    bw.put_varint(2, static_cast<uint64_t>(QuantizeType::RABITQ));
+    bw.put_message(4, quantizer);
+    pbwire::Writer iw(&ivf);
+    iw.put_message(1, base);
+    iw.put_varint(2, 8);   // IVF lists
+    iw.put_varint(3, 10);  // IVF iterations
+    if (explicit_outer) {
+      iw.put_varint(5, 9);
+      iw.put_varint(6, 128);
+    }
+    pbwire::Writer(&encoded).put_message(4, ivf);
+    auto decoded = std::dynamic_pointer_cast<IVFIndexParams>(
+        ManifestCodec::DecodeIndexParams(encoded));
+    ASSERT_NE(nullptr, decoded);
+    EXPECT_EQ(8, decoded->n_list());
+    EXPECT_EQ(10, decoded->n_iters());
+    const auto &q = decoded->quantizer_param();
+    EXPECT_EQ(explicit_outer ? 9 : 7, q.total_bits());
+    EXPECT_EQ(explicit_outer ? 128 : 0, q.sample_count());
+    EXPECT_EQ(5, q.num_clusters());
+    EXPECT_EQ(6, q.n_iters());
+    std::string canonical;
+    ManifestCodec::EncodeIndexParams(decoded.get(), &canonical);
+    auto reopened = ManifestCodec::DecodeIndexParams(canonical);
+    ASSERT_NE(nullptr, reopened);
+    EXPECT_EQ(*decoded, *reopened);
+  }
+}
+
+TEST(ManifestCodecRabitqTest, QuantizerSettingsRoundTrip) {
+  using namespace zvec;
+  auto q = QuantizerParam::ForRabitq(false, 3, 4, 24, 6);
+  HnswIndexParams hnsw(MetricType::L2, 16, 100, QuantizeType::RABITQ, false, q);
+  IVFIndexParams ivf(MetricType::L2, 8, 10, false, QuantizeType::RABITQ, q);
+  DiskAnnIndexParams diskann(MetricType::L2, 16, 100, 0, QuantizeType::RABITQ,
+                             q);
+  for (const IndexParams *params :
+       {static_cast<IndexParams *>(&hnsw), static_cast<IndexParams *>(&ivf),
+        static_cast<IndexParams *>(&diskann)}) {
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(params, &encoded);
+    auto decoded = ManifestCodec::DecodeIndexParams(encoded);
+    ASSERT_NE(decoded, nullptr);
+    auto vector = std::dynamic_pointer_cast<VectorIndexParams>(decoded);
+    ASSERT_NE(vector, nullptr);
+    EXPECT_EQ(vector->quantizer_param(), q);
+    EXPECT_TRUE(*params == *decoded);
+  }
+}
+
 TEST(ManifestCodecTest, IvfPqParametersSurvivePersistence) {
   for (bool rotate : {false, true}) {
     for (int mode = 0; mode < 3; ++mode) {
@@ -1164,5 +1244,55 @@ TEST(ManifestCodecTest, IvfPqParametersSurvivePersistence) {
       ManifestCodec::EncodeIndexParams(restored.get(), &reencoded);
       EXPECT_EQ(encoded, reencoded);
     }
+  }
+}
+
+TEST(ManifestCodecTest, QuantizerFieldsBeforeTypePreserveBothFormats) {
+  // These overlapping tags predate the merge: RaBitQ interprets them as
+  // bits/clusters/samples/iterations, PQ as chunks/bits/fast-scan/OPQ.
+  for (const auto type : {QuantizeType::RABITQ, QuantizeType::PQ}) {
+    const QuantizerParam qp =
+        type == QuantizeType::RABITQ
+            ? QuantizerParam::ForRabitq(false, 3, 4, 24, 6)
+            : QuantizerParam(false, 4, 4, true, 0, 0);
+    IVFIndexParams params(MetricType::L2, 8, 10, false, type, qp);
+    std::string encoded;
+    ManifestCodec::EncodeIndexParams(&params, &encoded);
+    pbwire::Reader outer(encoded);
+    ASSERT_TRUE(outer.next());
+    ASSERT_EQ(outer.field(), 4u);  // IVFIndexParams
+    pbwire::Reader ivf(outer.bytes());
+    std::string reordered_ivf;
+    pbwire::Writer iw(&reordered_ivf);
+    while (ivf.next()) {
+      if (ivf.field() != 1) {
+        iw.put_varint(ivf.field(), ivf.varint(), false);
+        continue;
+      }
+      pbwire::Reader base(ivf.bytes());
+      std::string fields, quantizer_first;
+      pbwire::Writer fw(&fields), qw(&quantizer_first);
+      while (base.next()) {
+        if (base.field() == 4) {
+          qw.put_message(4, std::string(base.bytes()));
+        } else {
+          fw.put_varint(base.field(), base.varint(), false);
+        }
+      }
+      ASSERT_TRUE(base.ok());
+      quantizer_first += fields;
+      iw.put_message(1, quantizer_first);
+    }
+    ASSERT_TRUE(ivf.ok());
+    std::string reordered;
+    pbwire::Writer(&reordered).put_message(4, reordered_ivf);
+    auto restored = std::dynamic_pointer_cast<IVFIndexParams>(
+        ManifestCodec::DecodeIndexParams(reordered));
+    ASSERT_NE(restored, nullptr);
+    EXPECT_EQ(params, *restored);
+    EXPECT_EQ(qp, restored->quantizer_param());
+    std::string reencoded;
+    ManifestCodec::EncodeIndexParams(restored.get(), &reencoded);
+    EXPECT_EQ(encoded, reencoded);
   }
 }

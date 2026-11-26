@@ -1495,6 +1495,30 @@ TEST(SearchQuery, ValidateAndSanitize) {
     EXPECT_TRUE(s.ok()) << s.message();
   }
 
+  // Integrated RaBitQ rejects invalid probes before Flat fallback or optimize.
+  {
+    SearchQuery query;
+    query.target_.field_name_ = "embedding";
+    query.topk_ = 10;
+    query.target_.set_vector(std::string(128 * sizeof(float), '\0'));
+    auto params = std::make_shared<IVFIndexParams>(MetricType::L2);
+    params->set_quantize_type(QuantizeType::RABITQ);
+    FieldSchema schema("embedding", DataType::VECTOR_FP32, 128, false, params);
+    for (int nprobe : {-1, 0, 1, 1025}) {
+      query.target_.query_params_ = std::make_shared<IVFQueryParams>(nprobe);
+      auto status = query.validate(&schema, nullptr);
+      EXPECT_EQ(nprobe > 0, status.ok()) << status.message();
+      if (nprobe <= 0) EXPECT_EQ(StatusCode::INVALID_ARGUMENT, status.code());
+    }
+    query.target_.query_params_ = nullptr;
+    EXPECT_TRUE(query.validate(&schema, nullptr).ok());
+    // Ordinary IVF retains its automatic probing option.
+    std::dynamic_pointer_cast<IVFIndexParams>(schema.index_params())
+        ->set_quantize_type(QuantizeType::UNDEFINED);
+    query.target_.query_params_ = std::make_shared<IVFQueryParams>(0);
+    EXPECT_TRUE(query.validate(&schema, nullptr).ok());
+  }
+
   // FTS clause validation
   {
     auto fts_params = std::make_shared<FtsIndexParams>();

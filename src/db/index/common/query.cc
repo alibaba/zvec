@@ -193,6 +193,18 @@ Status QueryTarget::validate(const FieldSchema *schema,
         IndexTypeCodeBook::AsString(schema->index_type()), " but got ",
         IndexTypeCodeBook::AsString(query_params->type()));
   }
+  if (query_params && query_params->type() == IndexType::IVF) {
+    auto index_params =
+        std::dynamic_pointer_cast<IVFIndexParams>(schema->index_params());
+    if (index_params && index_params->quantize_type() == QuantizeType::RABITQ) {
+      auto ivf_params = std::dynamic_pointer_cast<IVFQueryParams>(query_params);
+      if (!ivf_params || ivf_params->nprobe() <= 0) {
+        return Status::InvalidArgument(
+            "Invalid query: IVF with RaBitQ requires IVFQueryParams with "
+            "nprobe greater than 0");
+      }
+    }
+  }
   // Validate refinement support for the field and configured index.
   if (query_params && query_params->is_using_refiner()) {
     if (schema->is_sparse_vector()) {
