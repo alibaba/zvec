@@ -35,13 +35,32 @@ namespace ailego {
 
 namespace {
 
-size_t ReserveMappedPages(size_t bytes, size_t page_offset = 0) {
-  if (bytes == 0) return 0;
-  auto &pool = MemoryLimitPool::get_instance();
-  const size_t page = pool.page_buffer_size();
-  if (bytes > (std::numeric_limits<size_t>::max)() - page_offset - (page - 1))
+size_t FileMappingOffsetAlignment() {
+#if defined(_WIN32)
+  static const size_t granularity = [] {
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return info.dwAllocationGranularity;
+  }();
+  return granularity;
+#else
+  return MemoryLimitPool::page_buffer_size();
+#endif
+}
+
+size_t MappedPageBytes(size_t bytes, size_t prefix) {
+  const size_t page = MemoryLimitPool::page_buffer_size();
+  if (!bytes ||
+      bytes > (std::numeric_limits<size_t>::max)() - prefix - (page - 1)) {
     return 0;
-  const size_t rounded = ((page_offset + bytes + page - 1) / page) * page;
+  }
+  return ((prefix + bytes + page - 1) / page) * page;
+}
+
+size_t ReserveMappedPages(size_t bytes, size_t page_offset = 0) {
+  const size_t rounded = MappedPageBytes(bytes, page_offset);
+  if (!rounded) return 0;
+  auto &pool = MemoryLimitPool::get_instance();
   return pool.try_reserve_materialization(rounded) ? rounded : 0;
 }
 
@@ -66,6 +85,10 @@ void FinishMappedPages(size_t bytes, bool materialized) {
 }
 
 }  // namespace
+
+size_t File::MemoryMapFootprint(size_t offset, size_t len) {
+  return MappedPageBytes(len, offset % FileMappingOffsetAlignment());
+}
 
 #if !defined(_WIN64) && !defined(_WIN32)
 
@@ -386,7 +409,7 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   }
   // A file can have been written on a machine with a smaller page size.
   // Keep the logical offset independent of the OS mapping boundary.
-  const size_t excess = static_cast<size_t>(off) % getpagesize();
+  const size_t excess = static_cast<size_t>(off) % FileMappingOffsetAlignment();
   if (len > std::numeric_limits<size_t>::max() - excess ||
       ((opts & File::MMAP_HUGE_PAGE) && excess != 0)) {
     errno = EINVAL;
@@ -847,11 +870,9 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   // length, and return base + excess. MemoryUnmap recovers the base by rounding
   // down to granularity.
 
-  SYSTEM_INFO si;
-  GetSystemInfo(&si);
-  DWORD granularity = si.dwAllocationGranularity;
-  ssize_t aligned_off = (off / (ssize_t)granularity) * (ssize_t)granularity;
-  size_t excess = (size_t)(off - aligned_off);
+  const auto granularity = static_cast<ssize_t>(FileMappingOffsetAlignment());
+  const ssize_t aligned_off = (off / granularity) * granularity;
+  const size_t excess = static_cast<size_t>(off - aligned_off);
 
   LARGE_INTEGER max_size;
   max_size.QuadPart = off + len;
