@@ -252,14 +252,20 @@ static void close_windows_io_handles(IOContext ctx) {
 }
 #endif
 
-int setup_io_ctx(IOContext &ctx) {
+static int setup_io_ctx(IOContext &ctx, bool report_failure) {
   const auto selected = ailego::IOBackend::Instance().available();
   DiskAnnReadReservation memory;
   try {
     ctx = memory.create<IoBackend>();
   } catch (const std::bad_alloc &) {
     ctx = nullptr;
-    LOG_ERROR("Failed to allocate DiskAnn I/O context");
+    if (report_failure) {
+      try {
+        LOG_ERROR("Failed to allocate DiskAnn I/O context");
+      } catch (...) {
+        // Diagnostics must preserve the allocation status.
+      }
+    }
     return IndexError_NoMemory;
   }
   ctx->memory = std::move(memory);
@@ -305,6 +311,21 @@ int setup_io_ctx(IOContext &ctx) {
 #endif
   log_diskann_io_backend(ctx->type);
   return 0;
+}
+
+int setup_io_ctx(IOContext &ctx) {
+  return setup_io_ctx(ctx, /*report_failure=*/true);
+}
+
+static int prepare_bypass_read_context(IOContext &ctx) {
+  if (ctx) return 0;
+#if !defined(_WIN32) && !defined(_WIN64)
+  // The caller already owns the read buffers. POSIX pread needs no context.
+  const int status = setup_io_ctx(ctx, /*report_failure=*/false);
+  return status == IndexError_NoMemory ? 0 : status;
+#else
+  return setup_io_ctx(ctx);
+#endif
 }
 
 int destroy_io_ctx(IOContext &ctx) {
@@ -989,10 +1010,8 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     // one page exceeds its budget. Keep batched direct I/O in this case and
     // never enter page-cache operations that require initialized entries.
     if (!pool_->cache_enabled()) {
-      if (ctx == nullptr) {
-        const int status = setup_io_ctx(ctx);
-        if (status != 0) return status;
-      }
+      const int status = prepare_bypass_read_context(ctx);
+      if (status != 0) return status;
       const int ret = bypass_reader_.read(read_reqs, ctx);
       if (ret == 0) {
         for (const AlignedRead &req : read_reqs) {
@@ -1240,10 +1259,8 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     flush_bypass_run();
 
     if (!bypass_requests.empty()) {
-      if (ctx == nullptr) {
-        const int status = setup_io_ctx(ctx);
-        if (status != 0) return status;
-      }
+      const int status = prepare_bypass_read_context(ctx);
+      if (status != 0) return status;
       const int read_ret = bypass_reader_.read(bypass_requests, ctx);
       if (read_ret != 0) {
         return read_ret;
@@ -1594,7 +1611,7 @@ int BufferPoolAlignedFileReader::submit(PendingBatch &batch,
     return synchronous();
   }
   if (!plan->reads.empty()) {
-    if (!ctx && setup_io_ctx(ctx) != 0) {
+    if (!ctx && setup_io_ctx(ctx, /*report_failure=*/false) != 0) {
       plan.reset();
       return synchronous();
     }

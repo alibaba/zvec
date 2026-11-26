@@ -25,6 +25,26 @@
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include "../../../ailego/buffer/pool_payload_budget.h"
 
+namespace zvec::ailego {
+struct QueueResidentSampleTestPeer {
+  static bool configure_with_headroom(MemoryLimitPool &pool, size_t allowance) {
+    constexpr size_t kLimit = 64UL << 20;
+    const auto sample = +[]() -> size_t { return 32UL << 20; };
+    if (!pool.process_rss_.configure(kLimit, sample)) return false;
+    const auto used = kLimit - pool.process_rss_.available();
+    return pool.process_rss_.configure(used + allowance, sample);
+  }
+  static bool pause_background(MemoryLimitPool &pool) {
+    const bool running = pool.bg_running_.load();
+    pool.stop_background_evictor();
+    return running;
+  }
+  static void resume_background(MemoryLimitPool &pool) {
+    pool.start_background_evictor();
+  }
+};
+}  // namespace zvec::ailego
+
 using namespace zvec::core;
 
 namespace {
@@ -525,6 +545,77 @@ TEST(DiskAnnFileReaderTest, BufferPoolWithoutPageTableUsesBypassOnly) {
   reader.release_io_ctx(ctx);
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   reader.close();
+}
+
+TEST(DiskAnnFileReaderTest, BufferPoolPreadWhenIoContextDoesNotFit) {
+  namespace ailego = zvec::ailego;
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  const size_t page_size = ailego::kVectorPageSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const std::vector<uint8_t> source(2 * page_size, 0x9a);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  auto &pool_budget = ailego::PoolPayloadBudget::get_instance();
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const auto previous_pool = pool_budget.capacity();
+  const auto previous_rss = rss.process_rss_limit();
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss));
+    EXPECT_EQ(0, pool_budget.init(previous_pool));
+  });
+  ASSERT_TRUE(rss.configure_process_rss_limit(0));
+  for (bool use_cache : {false, true}) {
+    SCOPED_TRACE(use_cache);
+    const size_t capacity =
+        use_cache ? 2 * page_size +
+                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)
+                  : 1;
+    ASSERT_EQ(0, pool_budget.init(capacity));
+    auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+    const ailego::block_id_t hot_page = 0;
+    if (use_cache) {
+      ASSERT_EQ(0, pool->init());
+      ASSERT_NE(nullptr, pool->acquire_buffer(hot_page, 1));
+    }
+    const auto unpin = ailego::ScopeGuard::Make([&] {
+      if (use_cache) pool->release_pages(&hot_page, 1);
+    });
+    ASSERT_EQ(use_cache, pool->cache_enabled());
+    BufferPoolAlignedFileReader reader(pool);
+    ASSERT_EQ(0, reader.open_from_pool(file.path()));
+    AlignedBuffer output = make_aligned_buffer(page_size);
+    ASSERT_NE(nullptr, output);
+    std::vector<AlignedRead> requests{{page_size, page_size, output.get()}};
+    const bool background_running = Budget::pause_background(rss);
+    const auto resume = ailego::ScopeGuard::Make([&] {
+      EXPECT_TRUE(rss.configure_process_rss_limit(0));
+      if (background_running) Budget::resume_background(rss);
+    });
+    // A cold page needs a split and lookup plan if the page table is enabled.
+    // Allow their descriptors, leaving too little for an I/O context.
+    const size_t allowance = use_cache ? 128 : 0;
+    ASSERT_TRUE(Budget::configure_with_headroom(rss, allowance));
+    IOContext ctx{};
+    const auto release = ailego::ScopeGuard::Make([&] { destroy_io_ctx(ctx); });
+    const int status = reader.read(requests, ctx);
+    EXPECT_EQ(0, status);
+    if (status != 0) continue;
+    EXPECT_EQ(nullptr, ctx);
+    EXPECT_EQ(0,
+              std::memcmp(output.get(), source.data() + page_size, page_size));
+
+    ASSERT_TRUE(Budget::configure_with_headroom(rss, allowance));
+    std::memset(output.get(), 0, page_size);
+    PendingBatch batch;
+    ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+    EXPECT_TRUE(batch.used_pread);
+    std::vector<uint32_t> completed;
+    ASSERT_EQ(1, reader.get_completed(batch, ctx, 1, completed));
+    EXPECT_EQ((std::vector<uint32_t>{0}), completed);
+    EXPECT_EQ(0,
+              std::memcmp(output.get(), source.data() + page_size, page_size));
+  }
 }
 
 TEST(DiskAnnFileReaderTest, BufferPoolReadBeforeOpenReturnsError) {

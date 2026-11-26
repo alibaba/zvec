@@ -3402,14 +3402,24 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
           VectorPageTable::LoadClaimResult::kClaimed)
         continue;
       char *buffer = nullptr;
-      if (!budget.try_acquire_buffer(kVectorPageSize, buffer)) {
-        (void)page_table_.cancel_block_load(id);
+      bool owns_claim = true;
+      const auto rollback = ScopeGuard::Make([&] {
+        if (owns_claim) cancel_read_page(id, buffer);
+      });
+      bool acquired = false;
+      try {
+        acquired = budget.try_acquire_buffer(kVectorPageSize, buffer);
+      } catch (const std::bad_alloc &) {
+        // Optional preparation can fall back to foreground reads.
+      }
+      if (!acquired) {
         result.status = PrepareStatus::kPressure;
         break;
       }
       std::memcpy(buffer, scratch.data() + (id - first) * kVectorPageSize,
                   kVectorPageSize);
       page_table_.promote_evict_priority(id, priority);
+      owns_claim = false;
       if (!page_table_.publish_claimed_block(id, buffer,
                                              id * kVectorPageSize)) {
         // publish_claimed_block takes ownership, including on failure.
