@@ -189,6 +189,10 @@ class ZVEC_AILEGO_API File {
   static void *MemoryMap(NativeHandle handle, ssize_t off, size_t len,
                          int opts);
 
+  //! Bytes covered by an ordinary file mapping after native alignment.
+  //! Returns zero for an empty or unrepresentable extent.
+  static size_t MemoryMapFootprint(size_t offset, size_t len);
+
   //! Map an anonymous region into memory
   static void *MemoryMap(size_t len, int opts);
 
