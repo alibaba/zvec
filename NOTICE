@@ -10,6 +10,22 @@ Third-Party Components
 ================================================================================
 
 --------------------------------------------------------------------------------
+Apache Arrow
+--------------------------------------------------------------------------------
+Project: Apache Arrow
+Homepage: https://arrow.apache.org/
+License:  Apache License, Version 2.0
+Used in:  src/db/sqlengine/stile/like.cc
+
+The LIKE pattern classification in src/db/sqlengine/stile/like.cc derives
+from Apache Arrow 21.0.0 (cpp/src/arrow/compute/kernels/scalar_string_ascii.cc).
+
+Apache Arrow
+Copyright 2016-2024 The Apache Software Foundation
+This product includes software developed at
+The Apache Software Foundation (http://www.apache.org/).
+
+--------------------------------------------------------------------------------
 Unicode Character Database
 --------------------------------------------------------------------------------
 Project: Unicode Character Database

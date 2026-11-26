@@ -23,6 +23,7 @@
 #include "db/index/segment/segment.h"
 #include "db/sqlengine/analyzer/query_info.h"
 #include "db/sqlengine/analyzer/query_node.h"
+#include "db/sqlengine/stile/predicate.h"
 
 namespace zvec::sqlengine {
 
@@ -76,6 +77,7 @@ class DocFilter : public IndexFilter {
   // segment is sealed later; an owning view rejects candidates beyond it.
   uint64_t forward_rows_{0};
   ForwardReadView::Ptr forward_view_;
+  std::unique_ptr<stile::Predicate> stile_predicate_;
   // Sealed IPC replacement for delete_filter_: same results without a
   // per-candidate segment lock. Null keeps delete_filter_.
   IndexFilter::Ptr sealed_deletion_;

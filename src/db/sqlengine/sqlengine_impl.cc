@@ -30,6 +30,7 @@
 #include "db/sqlengine/parser/zvec_parser.h"
 #include "db/sqlengine/planner/op_register.h"
 #include "db/sqlengine/planner/query_planner.h"
+#include "db/sqlengine/stile/predicate.h"
 
 namespace zvec::sqlengine {
 
@@ -37,9 +38,10 @@ void global_init() {
   static std::once_flag once;
   // run once
   std::call_once(once, []() {
-    auto status = arrow::compute::Initialize();
+    auto status = stile::Initialize();
     if (!status.ok()) {
-      LOG_ERROR("arrow compute init failed: [%s]", status.ToString().c_str());
+      LOG_ERROR("forward evaluator init failed: [%s]",
+                status.ToString().c_str());
       abort();
     }
     status = OpRegister::register_ops();
