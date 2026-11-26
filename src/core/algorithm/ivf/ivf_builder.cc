@@ -548,7 +548,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
-  ret = this->prepare_quantizer(threads.get());
+  ret = this->prepare_quantizer(threads);
   ivf_check_error_code(ret);
 
   stats_.set_built_costtime(timer.milli_seconds());
@@ -992,11 +992,14 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-int IVFBuilder::prepare_quantizer(IndexThreads *threads) {
+int IVFBuilder::prepare_quantizer(const IndexThreads::Pointer &threads) {
   if (turbo_quantizer_) {
     if (turbo_quantizer_->require_train()) {
-      int ret = turbo_quantizer_->train(
-          source_holder_ ? source_holder_ : holder_, thread_count_);
+      IndexHolder::Pointer training_data =
+          source_holder_ ? source_holder_ : holder_;
+      int ret = turbo_quantizer_->type() == turbo::QuantizeType::kRabit
+                    ? turbo_quantizer_->train(training_data, threads)
+                    : turbo_quantizer_->train(training_data, thread_count_);
       ivf_check_with_msg(ret, "Failed to train Turbo IVF posting quantizer");
     }
     quantized_meta_ = turbo_quantizer_->meta();

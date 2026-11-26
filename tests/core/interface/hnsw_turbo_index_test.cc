@@ -1919,13 +1919,7 @@ TEST_P(HnswLegacyReopenTest, LegacyFp32LayoutReopenFallsBack) {
     return;
   }
 
-  const QuantizerType original_configs[] = {
-      QuantizerType::kNone,
-#if RABITQ_SUPPORTED
-      QuantizerType::kRabitq,
-#endif
-  };
-  for (auto type : original_configs) {
+  for (auto type : {QuantizerType::kNone, QuantizerType::kRabitq}) {
     auto index =
         IndexFactory::CreateAndInitIndex(*MakeParam(MetricType::kL2sq, type));
     ASSERT_NE(nullptr, index);
@@ -2409,13 +2403,28 @@ TEST(HnswTurboRabitq, RejectsCorruptOrUntrainedPersistedModel) {
     }
     segment.reset();
     ASSERT_EQ(0, storage->close());
-    auto reopened = IndexFactory::CreateAndInitIndex(*param);
-    ASSERT_NE(nullptr, reopened);
-    EXPECT_EQ(untrained ? zvec::core::IndexError_NoReady
-                        : zvec::core::IndexError_InvalidChecksum,
-              reopened->open(
-                  path, {StorageOptions::StorageType::kMMAP, false, true}));
-    reopened.reset();
+    for (const auto &config :
+         {MakeParam(MetricType::kL2sq, QuantizerType::kNone), param}) {
+      auto reopened = IndexFactory::CreateAndInitIndex(*config);
+      ASSERT_NE(nullptr, reopened);
+      EXPECT_EQ(untrained ? zvec::core::IndexError_NoReady
+                          : zvec::core::IndexError_InvalidChecksum,
+                reopened->open(
+                    path, {StorageOptions::StorageType::kMMAP, false, true}));
+      const auto fresh = path + ".fresh";
+      zvec::test_util::RemoveTestFiles(fresh);
+      ASSERT_EQ(
+          0, reopened->open(fresh, {StorageOptions::StorageType::kMMAP, true}));
+      EXPECT_EQ(config == param ? "RabitqQuantizer" : "Fp32Quantizer",
+                reopened->index_searcher()->meta().quantizer_name());
+      const auto vectors = RandomVectors(16);
+      AddVectors(reopened.get(), vectors);
+      const auto rows = SearchRows(reopened.get(), vectors[3], true);
+      ASSERT_FALSE(rows.empty());
+      EXPECT_EQ(3u, rows.front().first);
+      ASSERT_EQ(0, reopened->close());
+      zvec::test_util::RemoveTestFiles(fresh);
+    }
     zvec::test_util::RemoveTestFiles(path);
   }
 }
@@ -2532,24 +2541,39 @@ TEST(HnswTurboRabitq, ScreensDuringTraversalAndClearsRefinementForBuild) {
 
 #else
 TEST(HnswTurboRabitq, RejectsUnsupportedPlatform) {
-  class TestHnswIndex : public HNSWIndex {
-   public:
-    using HNSWIndex::create_and_init_converter_reformer;
-    using Index::init;
-  };
+  const std::string path = "hnsw_unsupported_rabitq.index";
+  zvec::test_util::RemoveTestFiles(path);
   for (auto metric :
        {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
     for (int bits : {1, 7, 9}) {
       auto param = MakeParam(metric, QuantizerType::kRabitq);
       param->quantizer_param = std::make_shared<RabitqQuantizerParam>(bits);
-      TestHnswIndex index;
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
       EXPECT_EQ(zvec::core::IndexError_Unsupported,
-                index.create_and_init_converter_reformer(
-                    *param->quantizer_param, *param));
-      EXPECT_NE(0, index.init(*param));
-      EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*param));
+                index->open(path, {StorageOptions::StorageType::kMMAP, true}));
     }
   }
+  EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+  // A default reader must also reject an on-disk RaBitQ descriptor.
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, true));
+  zvec::core::IndexMeta meta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  meta.set_quantizer("RabitqQuantizer", 0, zvec::ailego::Params{});
+  ASSERT_EQ(0,
+            zvec::core::IndexHelper::SerializeToStorage(meta, storage.get()));
+  ASSERT_EQ(0, storage->close());
+  auto reader = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_TRUE(reader);
+  EXPECT_EQ(
+      zvec::core::IndexError_Unsupported,
+      reader->open(path, {StorageOptions::StorageType::kMMAP, false, true}));
+  reader.reset();
+  zvec::test_util::RemoveTestFiles(path);
+
   // Unsupported builds must not register a usable RaBitQ backend.
   EXPECT_EQ(nullptr,
             zvec::core::IndexFactory::CreateQuantizer("RabitqQuantizer"));

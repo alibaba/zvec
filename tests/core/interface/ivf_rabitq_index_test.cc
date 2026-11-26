@@ -4,12 +4,15 @@
 // You may obtain a copy of the License at
 // http://www.apache.org/licenses/LICENSE-2.0
 
+#include <atomic>
 #include <cmath>
 #include <functional>
 #include <random>
 #include <gtest/gtest.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "ailego/pattern/defer.h"
+#include "algorithm/ivf/ivf_builder.h"
 #include "algorithm/ivf/ivf_index_format.h"
 #include "tests/test_util.h"
 
@@ -166,6 +169,110 @@ TEST(IVFRabitqIntegration, DedicatedQueryOptionsRoundTrip) {
 }
 
 #if RABITQ_SUPPORTED
+// Observe the groups used during build (after IVF partition training) while
+// forwarding all work to the actual pool supplied by merge().
+struct MergeWorkerProbe {
+  ailego::ThreadPool pool{1, false};
+  std::atomic<size_t> groups{0};
+};
+
+class ObservedBuildThreads : public core::IndexThreads {
+ public:
+  ObservedBuildThreads(Pointer threads, MergeWorkerProbe *probe)
+      : threads_(std::move(threads)), probe_(probe) {}
+  size_t count() const override {
+    return threads_->count();
+  }
+  int indexof_this() const override {
+    return threads_->indexof_this();
+  }
+  void stop() override {
+    threads_->stop();
+  }
+  void submit(ailego::ClosureHandler &&task) override {
+    threads_->submit(std::move(task));
+  }
+  TaskGroup::Pointer make_group() override {
+    auto group = threads_->make_group();
+    group->submit(ailego::Closure::New([probe = probe_]() {
+      EXPECT_EQ(0, probe->pool.indexof_this());
+      ++probe->groups;
+    }));
+    return group;
+  }
+
+ private:
+  Pointer threads_;
+  MergeWorkerProbe *probe_;
+};
+
+class ObservedIVFBuilder : public core::IVFBuilder {
+ public:
+  explicit ObservedIVFBuilder(MergeWorkerProbe *probe) : probe_(probe) {}
+  int build(core::IndexThreads::Pointer threads,
+            core::IndexHolder::Pointer holder) override {
+    if (!threads) return core::IndexError_InvalidArgument;
+    return IVFBuilder::build(
+        std::make_shared<ObservedBuildThreads>(std::move(threads), probe_),
+        std::move(holder));
+  }
+
+ private:
+  MergeWorkerProbe *probe_;
+};
+
+TEST(IVFRabitqIntegration, MergeUsesCallerWorkerForQuantizerClustering) {
+  const std::string path = "ivf_rabitq_merge_worker.index";
+  const auto source_path = path + ".flat";
+  test_util::RemoveTestFiles(source_path);
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  auto source =
+      IndexFactory::CreateAndInitIndex(*FlatIndexParamBuilder()
+                                            .with_dimension(128)
+                                            .with_data_type(DataType::DT_FP32)
+                                            .with_metric_type(MetricType::kL2sq)
+                                            .build());
+  ASSERT_TRUE(source);
+  ASSERT_EQ(0, source->open(source_path, create));
+  for (uint32_t i = 0; i < 64; ++i) {
+    std::vector<float> row(128, static_cast<float>(i));
+    ASSERT_EQ(0, source->add(VectorData{DenseVector{row.data()}}, i));
+  }
+
+  MergeWorkerProbe probe;
+  using Factory = ailego::Factory<core::IndexBuilder>;
+  Factory::Register<ObservedIVFBuilder> observe("IVFBuilder", &probe);
+  AILEGO_DEFER(
+      []() { Factory::Register<core::IVFBuilder> restore("IVFBuilder"); });
+  size_t groups_without_clustering = 0;
+  for (int samples : {4, 64}) {
+    auto param = RabitqParam(MetricType::kL2sq);
+    auto q =
+        std::dynamic_pointer_cast<RabitqQuantizerParam>(param->quantizer_param);
+    ASSERT_TRUE(q);
+    q->sample_count = samples;
+    auto target = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_TRUE(target);
+    test_util::RemoveTestFiles(path);
+    ASSERT_EQ(0, target->open(path, create));
+    probe.groups = 0;
+    ASSERT_EQ(0, target->merge({source}, {}, {1, &probe.pool}));
+    EXPECT_EQ(64u, target->get_doc_count());
+    // Four samples are used directly as centers. With 64, only RaBitQ
+    // clustering introduces extra groups into the same builder workload.
+    if (samples == 4) {
+      groups_without_clustering = probe.groups.load();
+      EXPECT_GT(groups_without_clustering, 0u);
+    } else {
+      EXPECT_GT(probe.groups.load(), groups_without_clustering);
+    }
+    ASSERT_EQ(0, target->close());
+    test_util::RemoveTestFiles(path);
+  }
+  ASSERT_EQ(0, source->close());
+  test_util::RemoveTestFiles(source_path);
+}
+
 class IVFRabitqIntegrationTest
     : public testing::TestWithParam<std::tuple<MetricType, int, bool>> {};
 
