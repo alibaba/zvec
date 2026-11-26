@@ -1,13 +1,79 @@
 // Copyright 2025-present the zvec project
 // Licensed under the Apache License, Version 2.0.
+#include <algorithm>
 #include <gtest/gtest.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
+#if RABITQ_SUPPORTED
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/core/framework/index_features.h>
+#include "core/algorithm/cluster/cluster_params.h"
+#endif
 #include "tests/test_util.h"
 
 namespace zvec::core_interface {
 namespace {
+
+#if RABITQ_SUPPORTED
+TEST(RabitqValidation, TrainingHonorsIterationLimit) {
+  class CountingThreads : public core::SingleQueueIndexThreads {
+   public:
+    CountingThreads() : SingleQueueIndexThreads(1, false) {}
+    TaskGroup::Pointer make_group() override {
+      ++groups;
+      return SingleQueueIndexThreads::make_group();
+    }
+    size_t groups{0};
+  };
+
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, 8);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+  auto holder =
+      std::make_shared<core::MultiPassIndexHolder<core::IndexMeta::DT_FP32>>(
+          meta.dimension());
+  auto features = std::make_shared<core::CompactIndexFeatures>(meta);
+  ailego::NumericalVector<float> row(meta.dimension());
+  for (uint32_t i = 0; i < 64; ++i) {
+    std::fill(row.begin(), row.end(), static_cast<float>(i));
+    ASSERT_TRUE(holder->emplace(i, row));
+    features->emplace(row.data());
+  }
+
+  // Two centers cannot fit all 64 distinct rows exactly, so the first
+  // iteration has positive cost and a two-iteration reference runs both.
+  // Compare actual work to the same clusterer configured directly, allowing
+  // its initialization to schedule its own tasks.
+  size_t preceding_groups = 0;
+  for (int limit : {1, 2}) {
+    SCOPED_TRACE(limit);
+    RabitqQuantizerParam config;
+    config.num_clusters = 2;
+    config.niters = limit;
+    auto reference = core::IndexFactory::CreateCluster("OptKmeansCluster");
+    ASSERT_TRUE(reference);
+    ailego::Params params;
+    params.set(core::OPTKMEANS_CLUSTER_MAX_ITERATIONS, limit);
+    ASSERT_EQ(0, reference->init(meta, params));
+    ASSERT_EQ(0, reference->mount(features));
+    reference->suggest(config.num_clusters);
+    auto threads = std::make_shared<CountingThreads>();
+    core::IndexCluster::CentroidList centers;
+    ASSERT_EQ(0, reference->cluster(threads, centers));
+    const size_t expected = threads->groups;
+    ASSERT_GT(expected, preceding_groups);
+    preceding_groups = expected;
+
+    auto quantizer = core::IndexFactory::CreateQuantizer("RabitqQuantizer");
+    ASSERT_TRUE(quantizer);
+    ASSERT_EQ(0, quantizer->init(meta, config.to_params()));
+    threads->groups = 0;
+    ASSERT_EQ(0, quantizer->train(holder, threads));
+    EXPECT_FALSE(quantizer->require_train());
+    EXPECT_EQ(expected, threads->groups);
+  }
+}
+#endif
 
 template <typename IndexT>
 class TestIndex : public IndexT {

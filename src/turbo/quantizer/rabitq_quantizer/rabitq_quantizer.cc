@@ -30,6 +30,7 @@
 #include <zvec/core/framework/index_features.h>
 #include <zvec/core/framework/index_threads.h>
 #include <zvec/core/interface/constants.h>
+#include "core/algorithm/cluster/cluster_params.h"
 
 namespace zvec::turbo {
 namespace {
@@ -187,7 +188,7 @@ int RabitqQuantizer::train(IndexHolder::Pointer holder,
     auto cluster = IndexFactory::CreateCluster("OptKmeansCluster");
     if (!cluster) return kErrRuntime;
     ailego::Params cluster_params;
-    cluster_params.set("proxima.optkmeans.cluster.max_iterations", niters_);
+    cluster_params.set(core::OPTKMEANS_CLUSTER_MAX_ITERATIONS, niters_);
     int ret = cluster->init(training_meta, cluster_params);
     if (ret != 0) return ret;
     ret = cluster->mount(samples);
