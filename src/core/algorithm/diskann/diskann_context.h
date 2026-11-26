@@ -181,6 +181,10 @@ class DiskAnnContext : public IndexContext,
     fetch_vector_ = v;
   }
 
+  bool fetch_vector() const override {
+    return fetch_vector_;
+  }
+
   //! Get topk
   inline uint32_t topk() const override {
     return topk_;

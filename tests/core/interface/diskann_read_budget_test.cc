@@ -24,6 +24,7 @@
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "../../../src/core/algorithm/diskann/diskann_entity.h"
+#include "../../../src/core/algorithm/diskann/diskann_file_reader.h"
 #include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace {
@@ -145,6 +146,80 @@ class DiskAnnReadBudgetTest : public ::testing::TestWithParam<StorageType> {
   uint64_t previous_rss_{0};
 };
 
+TEST_P(DiskAnnReadBudgetTest, NewStorageResetsPreviousBuildState) {
+  const auto path = (directory_ / "original.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  ASSERT_TRUE(index->is_trained());
+  ASSERT_EQ(0, index->close());
+
+  const auto next_path = (directory_ / "next.index").string();
+  ASSERT_EQ(0, index->open(next_path, {GetParam(), true}));
+  EXPECT_FALSE(index->is_trained());
+  VectorDataBuffer fetched;
+  EXPECT_EQ(core::IndexError_OutOfRange, index->fetch(0, &fetched));
+  for (auto &value : rows) value += 10.0F;
+  for (uint32_t id = 0; id < kDocs; ++id) {
+    ASSERT_EQ(
+        0,
+        index->add(VectorData{DenseVector{rows.data() + id * kDimension}}, id));
+  }
+  ASSERT_EQ(0, index->train());
+  EXPECT_TRUE(index->is_trained());
+  ASSERT_EQ(0, index->fetch(17, &fetched));
+  const std::string expected(
+      reinterpret_cast<const char *>(rows.data() + 17 * kDimension),
+      kDimension * sizeof(float));
+  EXPECT_EQ(expected, std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, index->close());
+  ASSERT_EQ(0, index->open(next_path, {GetParam(), false, true}));
+  ASSERT_EQ(0, index->fetch(17, &fetched));
+  EXPECT_EQ(expected, std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  ASSERT_EQ(0, index->close());
+
+  // Reusing an untrained object must also discard the previous input cache.
+  ASSERT_EQ(0, index->open((directory_ / "collecting.index").string(),
+                           {GetParam(), true}));
+  ASSERT_EQ(0, index->add(VectorData{DenseVector{rows.data()}}, kDocs - 1));
+  ASSERT_EQ(0, index->close());
+  ASSERT_EQ(0, index->open((directory_ / "empty.index").string(),
+                           {GetParam(), true}));
+  EXPECT_EQ(core::IndexError_OutOfRange, index->fetch(kDocs - 1, &fetched));
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, NewStorageReinitializesQuantizedBuilder) {
+  const auto param = parameters(false);
+  param->quantizer_param =
+      std::make_shared<QuantizerParam>(QuantizerType::kFP16);
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  for (uint32_t generation = 0; generation < 2; ++generation) {
+    SCOPED_TRACE(generation);
+    const auto path =
+        (directory_ / (std::to_string(generation) + ".index")).string();
+    ASSERT_EQ(0, index->open(path, {GetParam(), true}));
+    for (uint32_t id = 0; id < kDocs; ++id) {
+      std::array<float, kDimension> row;
+      row.fill(static_cast<float>(id + generation * kDocs));
+      ASSERT_EQ(0, index->add(VectorData{DenseVector{row.data()}}, id));
+    }
+    ASSERT_EQ(0, index->train());
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(17, &fetched));
+    std::array<float, kDimension> expected;
+    expected.fill(static_cast<float>(17 + generation * kDocs));
+    EXPECT_EQ(std::string(reinterpret_cast<const char *>(expected.data()),
+                          sizeof(expected)),
+              std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+    ASSERT_EQ(0, index->close());
+  }
+}
+
 TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
   const auto path = (directory_ / "fp16.index").string();
   const auto param = parameters(true);
@@ -246,7 +321,11 @@ TEST_P(DiskAnnReadBudgetTest, PrimaryKeyFetchVectorFitsSmallRssBudget) {
   if (GetParam() != StorageType::kMMAP) GTEST_SKIP();
   constexpr uint32_t kWideDimension = 2048;
   constexpr uint64_t kKey = 7;
-  constexpr size_t kRssHeadroom = 48UL << 10;
+  // Bound the vector workspace separately from the platform I/O context.
+  // Windows embeds its OVERLAPPED slots in IoBackend; pread does not.
+  constexpr size_t kRssHeadroom = (48UL << 10) + sizeof(core::IoBackend);
+  SCOPED_TRACE(::testing::Message()
+               << "I/O context bytes: " << sizeof(core::IoBackend));
   const auto path = (directory_ / "wide_vector.index").string();
   const auto param = parameters(false, kWideDimension);
   std::vector<float> rows;

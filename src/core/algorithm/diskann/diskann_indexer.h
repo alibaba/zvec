@@ -68,9 +68,11 @@ class DiskAnnIndexer {
     return entity_->find_id(key, id);
   }
 
-  //! Copy element_size() bytes from src into a new vector value string
-  std::string make_vector_copy(const void *src) const {
-    return std::string(static_cast<const char *>(src), meta_.element_size());
+  VectorInfo make_candidate_info(const DiskAnnContext *ctx, float score,
+                                 const void *src) const {
+    if (!ctx->fetch_vector()) return VectorInfo(score, kInvalidId);
+    return VectorInfo(score, std::string(static_cast<const char *>(src),
+                                         meta_.element_size()));
   }
 
   void emplace_candidate(DiskAnnContext *ctx, TopkHeap &heap, diskann_id_t id,
@@ -78,7 +80,7 @@ class DiskAnnIndexer {
     if (ctx->use_vector_candidates()) {
       ctx->emplace_vector_candidate(id, score, src);
     } else {
-      heap.emplace(id, VectorInfo(score, make_vector_copy(src)));
+      heap.emplace(id, make_candidate_info(ctx, score, src));
     }
   }
 

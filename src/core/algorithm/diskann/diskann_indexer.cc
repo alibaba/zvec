@@ -784,7 +784,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
   auto emplace_candidate = [&](diskann_id_t id, float score,
                                const void *vector) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
-      VectorInfo info(score, make_vector_copy(vector));
+      auto info = make_candidate_info(ctx, score, vector);
       diskann_key_t key;
       const int status = entity_->read_key(id, &key);
       if (status != 0) return status;
@@ -947,7 +947,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
   auto emplace_candidate = [&](diskann_id_t id, float score,
                                const void *vector) -> int {
     if (ctx->group_by_search() && ctx->group_by().is_valid()) {
-      VectorInfo info(score, make_vector_copy(vector));
+      auto info = make_candidate_info(ctx, score, vector);
       diskann_key_t key;
       const int status = entity_->read_key(id, &key);
       if (status != 0) return status;
@@ -1695,8 +1695,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
           group_topk_heap.emplace(
               std::get<0>(cached_neighbor),
-              VectorInfo(cur_expanded_dist,
-                         make_vector_copy(node_fp_coords_copy)));
+              make_candidate_info(ctx, cur_expanded_dist, node_fp_coords_copy));
 
           if (group_topk_heaps.size() >= ctx->group_num()) {
             break;
@@ -1752,7 +1751,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
           group_topk_heap.emplace(
               frontier_neighbor.first,
-              VectorInfo(cur_expanded_dist, make_vector_copy(data_buf)));
+              make_candidate_info(ctx, cur_expanded_dist, data_buf));
 
           if (group_topk_heaps.size() >= ctx->group_num()) {
             break;

@@ -216,7 +216,7 @@ int DiskAnnSearcher::update_context(DiskAnnContext *ctx) const {
   const DiskAnnEntity::Pointer entity = entity_.clone();
   if (!entity) {
     LOG_ERROR("Failed to clone search context entity");
-    return IndexError_Runtime;
+    return IndexError_NoMemory;
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
@@ -479,7 +479,7 @@ int DiskAnnSearcher::create_search_context(Context::Pointer &context) const
   const DiskAnnEntity::Pointer search_ctx_entity = entity_.clone();
   if (!search_ctx_entity) {
     LOG_ERROR("Failed to create search context entity");
-    return IndexError_Runtime;
+    return IndexError_NoMemory;
   }
 
   auto ctx = std::make_unique<DiskAnnContext>(

@@ -228,7 +228,7 @@ int DiskAnnStreamer::update_context(DiskAnnContext *ctx) const {
   const DiskAnnEntity::Pointer entity = entity_.clone();
   if (!entity) {
     LOG_ERROR("Failed to clone search context entity");
-    return IndexError_Runtime;
+    return IndexError_NoMemory;
   }
 
   return ctx->update_context(DiskAnnContext::kSearcherContext, meta_, measure_,
@@ -498,6 +498,7 @@ int DiskAnnStreamer::get_vector_by_id(const uint32_t id,
   std::lock_guard<std::mutex> lock(fetch_mutex_);
   if (!fetch_ctx_) {
     const DiskAnnEntity::Pointer fetch_entity = entity_.clone();
+    if (!fetch_entity) return IndexError_NoMemory;
     int status = 0;
     fetch_ctx_ = DiskAnnContext::create_fetch_context(meta_, measure_,
                                                       fetch_entity, &status);
@@ -555,7 +556,7 @@ int DiskAnnStreamer::create_context_with_status(Context::Pointer &context) const
   const DiskAnnEntity::Pointer search_ctx_entity = entity_.clone();
   if (!search_ctx_entity) {
     LOG_ERROR("Failed to create search context entity");
-    return IndexError_Runtime;
+    return IndexError_NoMemory;
   }
 
   auto ctx = std::make_unique<DiskAnnContext>(

@@ -144,7 +144,11 @@ int DiskAnnIndex::open(const std::string &file_path,
   if (is_open_) return core::IndexError_NoReady;
   if (storage_ && streamer_) {
     const auto &meta = converter_ ? converter_->meta() : proxima_index_meta_;
-    const int ret = streamer_->init(meta, proxima_index_params_);
+    // A completed build releases its converter. A new database needs the
+    // original input conversion and fresh builder/streamer state again.
+    const int ret = storage_options.create_new
+                        ? Index::init(param_)
+                        : streamer_->init(meta, proxima_index_params_);
     if (ret != 0) return ret;
   }
   core::IndexStorage::Pointer storage;
@@ -203,9 +207,12 @@ int DiskAnnIndex::open(const std::string &file_path,
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
       return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
-    is_trained_ = true;
   }
   storage_ = std::move(storage);
+  is_trained_ = !storage_options.create_new;
+  build_stage_ = BuildStage::kCollecting;
+  holder_.reset();
+  decltype(doc_cache_)().swap(doc_cache_);
   is_open_ = true;
   return 0;
 } catch (const std::bad_alloc &) {
