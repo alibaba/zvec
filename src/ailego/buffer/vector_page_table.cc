@@ -92,6 +92,10 @@ const size_t kVectorPageSize = MemoryHelper::PageSize();
 namespace {
 constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
 
+size_t CachePageCount(size_t end) {
+  return end == 0 ? 0 : 1 + (end - 1) / kVectorPageSize;
+}
+
 size_t CacheReadBytes(size_t end, size_t offset, size_t capacity) {
   return offset < end ? std::min(capacity, end - offset) : 0;
 }
@@ -3328,8 +3332,8 @@ void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
 
 void VecBufferPool::warmup() {
   const size_t end = readable_file_end();
-  const size_t total_pages = std::min(
-      page_table_.entry_num(), end == 0 ? 0 : 1 + (end - 1) / kVectorPageSize);
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(end));
   // Read sequentially in 4 MB chunks.
   static constexpr size_t kChunkPages = 1024;
   BudgetedMappedBuffer scratch;
@@ -3384,9 +3388,11 @@ void VecBufferPool::warmup() {
 VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
     block_id_t first_page, size_t page_count, uint8_t priority) {
   PrepareResult result;
-  if (!initialized_ || writable_ || priority > kHighPriority ||
-      first_page > page_table_.entry_num() ||
-      page_count > page_table_.entry_num() - first_page)
+  if (!initialized_ || writable_ || priority > kHighPriority) return result;
+  const size_t end = readable_file_end();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(end));
+  if (first_page > total_pages || page_count > total_pages - first_page)
     return result;
 
   // Shared across pools: two opening indexes must not both plan against the
@@ -3437,15 +3443,13 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
       ++pg;
     const size_t bytes = (pg - first) * kVectorPageSize;
     const size_t offset = first * kVectorPageSize;
-    const size_t expected = std::min(bytes, file_size_ - offset);
+    const size_t required = CacheReadBytes(end, offset, bytes);
     const ssize_t got = zvec_pread(fd_, scratch.data(), bytes, offset);
-    if (got != static_cast<ssize_t>(expected)) {
+    if (!CompleteCacheRead(scratch.data(), bytes, required, got)) {
       result.status = PrepareStatus::kReadError;
       break;
     }
-    result.bytes_read += expected;
-    if (expected != bytes)
-      std::memset(scratch.data() + expected, 0, bytes - expected);
+    result.bytes_read += static_cast<size_t>(got);
     for (size_t id = first; id < pg; ++id) {
       // A foreground reader may have acquired a page during the bulk read.
       // Never overwrite its load claim or publish a duplicate allocation.
@@ -3485,9 +3489,8 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
 
 void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
                                    uint8_t priority) {
-  const size_t end = readable_file_end();
-  const size_t total_pages = std::min(
-      page_table_.entry_num(), end == 0 ? 0 : 1 + (end - 1) / kVectorPageSize);
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(readable_file_end()));
   if (priority > kHighPriority || page_count == 0 ||
       first_page >= total_pages) {
     return;
@@ -3547,6 +3550,7 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
   if (!chunk_pages) return;
   char *chunk_buf = scratch.data();
 
+  const size_t end = readable_file_end();
   bool pool_full = false;
   size_t pg = first_page;
   while (pg < end_page && !pool_full) {
@@ -3562,17 +3566,14 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
       ++run_end;
     }
 
-    size_t run_pages = run_end - run_start;
-    size_t read_bytes = run_pages * kVectorPageSize;
-    size_t file_off = run_start * kVectorPageSize;
-    size_t expected_bytes = std::min(read_bytes, file_size_ - file_off);
-    ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
-    if (got != static_cast<ssize_t>(expected_bytes)) {
+    const size_t run_pages = run_end - run_start;
+    const size_t read_bytes = run_pages * kVectorPageSize;
+    const size_t file_off = run_start * kVectorPageSize;
+    const size_t required = CacheReadBytes(end, file_off, read_bytes);
+    const ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
+    if (!CompleteCacheRead(chunk_buf, read_bytes, required, got)) {
       pg = run_end;
       continue;
-    }
-    if (expected_bytes < read_bytes) {
-      std::memset(chunk_buf + expected_bytes, 0, read_bytes - expected_bytes);
     }
 
     for (size_t j = 0; j < run_pages; ++j) {
@@ -3852,7 +3853,8 @@ bool VecBufferPool::read_ranges_bypass_aio(const ReadRange *ranges,
 
 void VecBufferPool::prefetch_pages_aio(block_id_t first_page, size_t page_count,
                                        uint8_t priority) {
-  const size_t total_pages = page_table_.entry_num();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(readable_file_end()));
   if (priority > kHighPriority || page_count == 0 ||
       first_page >= total_pages) {
     return;

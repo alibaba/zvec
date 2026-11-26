@@ -1109,18 +1109,29 @@ TEST_F(BufferStorageDirectorySplitTest, WriterCanContinueAfterMMapTrimsSlack) {
   const zvec::ailego::block_id_t page_id =
       (first->data_offset() + last_page_offset) / page_size_;
   auto pool = writer_->vec_buffer_pool();
-  auto evict_tail = [&] {
-    for (int i = 0; i < 64 && pool->is_page_resident(page_id); ++i) {
+  auto evict_tail = [&](const zvec::ailego::VecBufferPool &target) {
+    for (int i = 0; i < 64 && target.is_page_resident(page_id); ++i) {
       zvec::ailego::BlockEvictionQueue::get_instance().batch_recycle(64);
     }
-    ASSERT_FALSE(pool->is_page_resident(page_id));
+    ASSERT_FALSE(target.is_page_resident(page_id));
   };
   ASSERT_EQ(kOldData.size(),
             first->write(last_page_offset, kOldData.data(), kOldData.size()));
   ASSERT_EQ(0, writer_->flush());
-  ASSERT_NO_FATAL_FAILURE(evict_tail());
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*pool));
   const size_t committed_end = first->data_offset() + first->capacity();
-  ASSERT_GT(writer_->vec_buffer_pool()->file_size(), committed_end);
+  ASSERT_GT(pool->file_size(), committed_end);
+
+  auto reader = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, reader);
+  ASSERT_EQ(0, reader->init({}));
+  ASSERT_EQ(0, reader->open(path_, IndexStorage::OpenOptions{false, true}));
+  auto reader_first = reader->get("first");
+  ASSERT_NE(nullptr, reader_first);
+  auto reader_pool = reader->vec_buffer_pool();
+  ASSERT_NE(nullptr, reader_pool);
+  ASSERT_GT(reader_pool->file_size(), committed_end);
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*reader_pool));
 
   auto mmap = IndexFactory::CreateStorage("MMapFileStorage");
   ASSERT_NE(nullptr, mmap);
@@ -1135,33 +1146,69 @@ TEST_F(BufferStorageDirectorySplitTest, WriterCanContinueAfterMMapTrimsSlack) {
   ASSERT_EQ(actual.size(),
             first->fetch(last_page_offset, actual.data(), actual.size()));
   EXPECT_EQ(kOldData, actual);
-  ASSERT_NO_FATAL_FAILURE(evict_tail());
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*pool));
+
+  const auto reader_stats = reader_pool->stats();
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    IndexStorage::MemoryBlock block;
+    ASSERT_EQ(kOldData.size(), reader_first->read_immutable(
+                                   last_page_offset, block, kOldData.size()));
+    EXPECT_EQ(0, std::memcmp(block.data(), kOldData.data(), kOldData.size()));
+    EXPECT_TRUE(reader_pool->is_page_resident(page_id));
+  }
+  EXPECT_EQ(reader_stats.miss + 1, reader_pool->stats().miss);
+  EXPECT_EQ(reader_stats.bypass_io_requests,
+            reader_pool->stats().bypass_io_requests);
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*reader_pool));
+
+  reader_first->prefetch(last_page_offset, kOldData.size());
+  EXPECT_TRUE(reader_pool->is_page_resident(page_id));
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*reader_pool));
+
+  const auto prepared = reader_pool->prepare_pages_if_fits(page_id, 1);
+  EXPECT_EQ(zvec::ailego::VecBufferPool::PrepareStatus::kComplete,
+            prepared.status);
+  EXPECT_EQ(1u, prepared.pages_loaded);
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*reader_pool));
 
   const size_t page_offset = page_id * page_size_;
-  char *page = nullptr;
-#if defined(__APPLE__) && TARGET_OS_OSX
-  // The native batch must accept the short tail without falling back to pread.
-  failed_read_hit = false;
-  failed_read_offset = static_cast<off_t>(page_offset);
-#endif
-  const bool acquired = pool->acquire_pages(&page_id, 1, &page);
-#if defined(__APPLE__) && TARGET_OS_OSX
-  failed_read_offset = -1;
-  EXPECT_FALSE(failed_read_hit);
-#endif
-  ASSERT_TRUE(acquired);
-  ASSERT_NE(nullptr, page);
   const size_t offset_in_page =
       first->data_offset() + last_page_offset - page_offset;
-  EXPECT_EQ(
-      0, std::memcmp(page + offset_in_page, kOldData.data(), kOldData.size()));
-  pool->release_pages(&page_id, 1);
-  ASSERT_NO_FATAL_FAILURE(evict_tail());
+  auto check_batch = [&](zvec::ailego::VecBufferPool &target) {
+    char *page = nullptr;
+#if defined(__APPLE__) && TARGET_OS_OSX
+    // The native batch must accept the short tail without fallback to pread.
+    failed_read_hit = false;
+    failed_read_offset = static_cast<off_t>(page_offset);
+#endif
+    const bool acquired = target.acquire_pages(&page_id, 1, &page);
+#if defined(__APPLE__) && TARGET_OS_OSX
+    failed_read_offset = -1;
+    EXPECT_FALSE(failed_read_hit);
+#endif
+    EXPECT_TRUE(acquired);
+    if (acquired) {
+      EXPECT_NE(nullptr, page);
+      if (page)
+        EXPECT_EQ(0, std::memcmp(page + offset_in_page, kOldData.data(),
+                                 kOldData.size()));
+      target.release_pages(&page_id, 1);
+    }
+  };
+  check_batch(*reader_pool);
+  check_batch(*pool);
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*reader_pool));
+  ASSERT_NO_FATAL_FAILURE(evict_tail(*pool));
 
   ASSERT_TRUE(file.truncate(committed_end - 1));
   EXPECT_EQ(0u, first->fetch(last_page_offset, actual.data(), actual.size()));
   EXPECT_FALSE(pool->is_page_resident(page_id));
+  EXPECT_EQ(zvec::ailego::VecBufferPool::PrepareStatus::kReadError,
+            reader_pool->prepare_pages_if_fits(page_id, 1).status);
+  reader_first->prefetch(last_page_offset, kOldData.size());
+  EXPECT_FALSE(reader_pool->is_page_resident(page_id));
   ASSERT_TRUE(file.truncate(committed_end));
+  ASSERT_EQ(0, reader->close());
 
   ASSERT_EQ(kNewData.size(),
             first->write(last_page_offset, kNewData.data(), kNewData.size()));

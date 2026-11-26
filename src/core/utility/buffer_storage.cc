@@ -1568,9 +1568,9 @@ class BufferStorage : public IndexStorage {
       return ret;
     }
     // Parsing bounds every non-tail chain by the start of the following
-    // chain. Only bytes past the tail's allocation can be discarded.
+    // chain. Readers also need this bound when another handle trims padding.
     const uint64_t used_end = meta_chains_.back().allocated_file_end();
-    if (writable) buffer_pool_->set_committed_end(used_end);
+    buffer_pool_->set_committed_end(used_end);
     if (writable && used_end < buffer_pool_->file_size() &&
         !buffer_pool_->truncate_unused_tail(used_end)) {
       this->close_index(/*force=*/true, /*flush_pending=*/false);
