@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/io/mmap_file.h>
 #include <zvec/ailego/logger/logger.h>
@@ -115,6 +116,22 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) try {
     return IndexError_SeekFile;
   }
   error_code = this->init_index_mapping(mapping_size);
+  if (error_code == 0) {
+    const size_t file_size = file_.size();
+    if (file_size < index_size_) {
+      error_code = IndexError_InvalidLength;
+    } else if (read_only) {
+      // Keep private additions beyond the backing file in read-only COW mode.
+      index_size_ = file_size;
+    } else if (file_size > index_size_) {
+      const size_t committed_size = index_size_;
+      // Release the views before shrinking, while retaining the same handle.
+      reset_mappings();
+      pending_truncate_size_ = committed_size;
+      error_code = discard_unpublished_tail();
+      if (error_code == 0) error_code = init_index_mapping(mapping_size);
+    }
+  }
   if (error_code != 0) close();
   return error_code;
 } catch (const std::bad_alloc &) {
@@ -295,6 +312,7 @@ void IndexMapping::swap(IndexMapping &rhs) noexcept {
   swap(footer_, rhs.footer_);
   swap(segments_, rhs.segments_);
   swap(index_size_, rhs.index_size_);
+  swap(pending_truncate_size_, rhs.pending_truncate_size_);
   swap(file_, rhs.file_);
   swap(path_, rhs.path_);
   swap(copy_on_write_, rhs.copy_on_write_);
@@ -316,7 +334,7 @@ void IndexMapping::release_meta_mapping(const MetaMapping &mapping) {
   }
 }
 
-void IndexMapping::close() {
+void IndexMapping::reset_mappings() {
   this->unmap_all();
   for (const auto &item : header_addr_map_) {
     release_meta_mapping(item.second);
@@ -331,11 +349,30 @@ void IndexMapping::close() {
   segments_.clear();
   current_header_start_offset_ = 0;
   seg_meta_capacity_ = 0;
+  pending_truncate_size_ = 0;
+  header_dirty_ = false;
+}
+
+void IndexMapping::close() {
+  reset_mappings();
   file_.close();
   copy_on_write_ = false;
   full_mode_ = false;
-  header_dirty_ = false;
   huge_page_ = false;
+}
+
+int IndexMapping::discard_unpublished_tail() {
+  if (pending_truncate_size_ == 0) return 0;
+  const size_t file_size = file_.size();
+  if (file_size < pending_truncate_size_ ||
+      (file_size > pending_truncate_size_ &&
+       !file_.truncate(pending_truncate_size_))) {
+    LOG_ERROR("Failed to discard unlinked index metadata, %s",
+              ailego::FileHelper::GetLastErrorString().c_str());
+    return IndexError_TruncateFile;
+  }
+  pending_truncate_size_ = 0;
+  return 0;
 }
 
 void IndexMapping::refresh(uint64_t check_point) {
@@ -368,6 +405,8 @@ int IndexMapping::append(const std::string &id, size_t size) try {
   size_t id_size = std::strlen(id.c_str()) + 1;
   size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
   if (need_size > footer_->segments_meta_size) return IndexError_InvalidLength;
+  int ret = discard_unpublished_tail();
+  if (ret != 0) return ret;
   // Stage in the destination so a first insert also admits the lazy map.
   auto entry = segments_.try_emplace(std::string_view(id), SegmentInfo{});
   auto pending_node = segments_.extract(entry.first);
@@ -386,7 +425,6 @@ int IndexMapping::append(const std::string &id, size_t size) try {
     if (!old_file_size) return IndexError_InvalidLength;
     const auto old_meta_capacity = seg_meta_capacity_;
     current_header_start_offset_ = old_size;
-    int ret;
     try {
       ret = huge_page_ ? init_hugepage_meta_section() : init_meta_section();
     } catch (const std::bad_alloc &) {
@@ -407,14 +445,9 @@ int IndexMapping::append(const std::string &id, size_t size) try {
       seg_meta_capacity_ = old_meta_capacity;
       // The new section is still unlinked. Restore the physical EOF as well
       // as the logical cursor, which may be ahead of EOF in copy-on-write mode.
-      const auto failed_file_size = file_.size();
-      if (!failed_file_size || (failed_file_size > old_file_size &&
-                                !file_.truncate(old_file_size))) {
-        LOG_ERROR("Failed to discard unlinked index metadata, %s",
-                  ailego::FileHelper::GetLastErrorString().c_str());
-        return IndexError_TruncateFile;
-      }
-      return ret;
+      pending_truncate_size_ = old_file_size;
+      const int cleanup = discard_unpublished_tail();
+      return cleanup == 0 ? ret : cleanup;
     }
     old_footer->next_meta_header_offset = current_header_start_offset_;
     refresh(0);
@@ -444,8 +477,9 @@ int IndexMapping::append(const std::string &id, size_t size) try {
   footer_->segments_meta_crc =
       ailego::Crc32c::Hash(segment_start_, footer_->segments_meta_size, 0);
   footer_->segment_count += 1;
-  footer_->content_size += size;
-  footer_->total_size += size;
+  footer_->total_size = index_size_ - current_header_start_offset_;
+  footer_->content_size = footer_->total_size - header_->content_offset;
+  footer_->content_padding_size = 0;
   IndexFormat::UpdateMetaFooter(footer_, 0);
   pending_node.key() = std::string_view(
       reinterpret_cast<const char *>(segment_start_) + segment_ids_offset_,
@@ -543,6 +577,8 @@ void IndexMapping::unmap_all() {
 }
 
 int IndexMapping::flush() {
+  const int cleanup = discard_unpublished_tail();
+  if (cleanup != 0) return cleanup;
   if ((file_.size() < index_size_) && !file_.truncate(index_size_)) {
     LOG_ERROR("Failed to truncate file size %zu, %s", index_size_,
               ailego::FileHelper::GetLastErrorString().c_str());
@@ -695,17 +731,31 @@ int IndexMapping::init_index_mapping_admitted(
   }
 
   seg_meta_capacity_ = footer_->segments_meta_size;
-  index_size_ = file_.size();
-  if ((footer_->total_size > index_size_) ||
-      (footer_->content_size + footer_->content_padding_size +
-           header_->content_offset >
-       index_size_)) {
-    return IndexError_InvalidLength;
-  }
   if (ailego::Crc32c::Hash(footer_, sizeof(*footer_), footer_->footer_crc) !=
       footer_->footer_crc) {
     return IndexError_InvalidChecksum;
   }
+
+  const uint64_t next_header = footer_->next_meta_header_offset;
+  if (next_header && next_header <= current_header_start_offset_) {
+    return IndexError_InvalidFormat;
+  }
+  const uint64_t section_end = next_header ? next_header : file_size;
+  const uint64_t section_size = section_end - current_header_start_offset_;
+  const uint64_t content_offset = header_->content_offset;
+  if (section_end > file_size || content_offset < len ||
+      content_offset > section_size || footer_->total_size > section_size) {
+    return IndexError_InvalidLength;
+  }
+  const uint64_t content_capacity = section_size - content_offset;
+  if (footer_->content_size > content_capacity ||
+      footer_->content_padding_size >
+          content_capacity - footer_->content_size) {
+    return IndexError_InvalidLength;
+  }
+  uint64_t used_size =
+      (std::max)(footer_->total_size, content_offset + footer_->content_size +
+                                          footer_->content_padding_size);
 
   // Unpack segment table
   if (sizeof(IndexFormat::SegmentMeta) * footer_->segment_count >
@@ -731,9 +781,15 @@ int IndexMapping::init_index_mapping_admitted(
     if (iter->data_index > footer_->content_size) {
       return IndexError_InvalidValue;
     }
-    if (iter->data_index + iter->data_size > footer_->content_size) {
+    if (iter->data_size > footer_->content_size - iter->data_index ||
+        iter->padding_size >
+            content_capacity - iter->data_index - iter->data_size) {
       return IndexError_InvalidLength;
     }
+    // Older writers could leave the footer short of the reserved segment.
+    const uint64_t segment_end = content_offset + iter->data_index +
+                                 iter->data_size + iter->padding_size;
+    used_size = (std::max)(used_size, segment_end);
 
     if (iter->segment_id_offset < segment_ids_offset_) {
       segment_ids_offset_ = iter->segment_id_offset;
@@ -763,11 +819,8 @@ int IndexMapping::init_index_mapping_admitted(
   //   header_dirty_ = true;
   // }
 
-  if (footer_->next_meta_header_offset > 0) {
-    if (footer_->next_meta_header_offset <= current_header_start_offset_) {
-      return IndexError_InvalidFormat;
-    }
-    current_header_start_offset_ = footer_->next_meta_header_offset;
+  if (next_header) {
+    current_header_start_offset_ = next_header;
     // Growth on a different platform can use a different metadata page size.
     // Read each section's own length instead of reusing the first one's.
     if (!file_.seek(current_header_start_offset_,
@@ -779,6 +832,7 @@ int IndexMapping::init_index_mapping_admitted(
     return ret == 0 ? this->init_index_mapping(next_len) : ret;
   }
 
+  index_size_ = current_header_start_offset_ + used_size;
   return 0;
 }
 

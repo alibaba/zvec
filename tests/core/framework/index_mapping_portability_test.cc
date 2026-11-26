@@ -26,12 +26,14 @@
 #elif defined(__APPLE__)
 #include <sys/mman.h>
 #include <dlfcn.h>
+#include <unistd.h>
 #include <cerrno>
 #endif
 
 #if defined(__APPLE__)
 namespace {
 thread_local bool fail_next_file_mapping = false;
+thread_local off_t fail_truncate_to = 0;
 }  // namespace
 
 // The File implementation is linked into this test. Fail one native file
@@ -47,6 +49,17 @@ extern "C" void *mmap(void *addr, size_t size, int prot, int flags, int fd,
       reinterpret_cast<decltype(&mmap)>(dlsym(RTLD_NEXT, "mmap"));
   return map(addr, size, prot, flags, fd, offset);
 }
+
+extern "C" int ftruncate(int fd, off_t len) {
+  if (fail_truncate_to && len == fail_truncate_to) {
+    fail_truncate_to = 0;
+    errno = EIO;
+    return -1;
+  }
+  static const auto truncate =
+      reinterpret_cast<decltype(&ftruncate)>(dlsym(RTLD_NEXT, "ftruncate"));
+  return truncate(fd, len);
+}
 #endif
 
 namespace zvec {
@@ -57,7 +70,8 @@ namespace {
 constexpr uint64_t kOriginal = 1234567;
 
 void WriteForeignIndex(const std::string &path, size_t writer_page,
-                       uint32_t first_id_offset = 58) {
+                       uint32_t first_id_offset = 58,
+                       bool legacy_short_footer = false) {
   ailego::File file;
   ASSERT_TRUE(file.create(path, writer_page * 2));
   IndexFormat::MetaHeader header;
@@ -79,8 +93,8 @@ void WriteForeignIndex(const std::string &path, size_t writer_page,
   footer.segments_meta_size = table.size();
   footer.segments_meta_crc =
       ailego::Crc32c::Hash(table.data(), table.size(), 0);
-  footer.content_size = writer_page;
-  footer.total_size = writer_page * 2;
+  footer.content_size = legacy_short_footer ? sizeof(kOriginal) : writer_page;
+  footer.total_size = writer_page + footer.content_size;
   IndexFormat::UpdateMetaFooter(&footer, 0);
   ASSERT_EQ(sizeof(footer),
             file.write(header.meta_footer_offset, &footer, sizeof(footer)));
@@ -123,9 +137,19 @@ TEST(IndexMappingPortability, ForeignPageAppendMetadataChainAndReopen) {
     second->set_dirty();
     mapping.refresh(1);
     ASSERT_EQ(0, mapping.flush());
+    const size_t committed_size = mapping.index_size();
     mapping.close();
 
+    ailego::File file;
+    ASSERT_TRUE(file.open(path, false));
+    ASSERT_TRUE(file.truncate(committed_size + writer_page));
+    file.close();
+
     ASSERT_EQ(0, mapping.open(path, false, false));
+    EXPECT_EQ(committed_size, mapping.index_size());
+    ASSERT_TRUE(file.open(path, true));
+    EXPECT_EQ(committed_size, file.size());
+    file.close();
     first = mapping.map("first", false, false);
     second = mapping.map("second", false, false);
     ASSERT_NE(nullptr, first);
@@ -137,10 +161,51 @@ TEST(IndexMappingPortability, ForeignPageAppendMetadataChainAndReopen) {
   }
 }
 
-#if defined(__APPLE__)
-TEST(IndexMappingPortability, FailedMetadataMapRestoresFileBeforeReopen) {
+TEST(IndexMappingPortability, TailRecoveryPreservesReservedSegmentPadding) {
   constexpr size_t kWriterPage = 4096;
   constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  const std::string path = "index_mapping_legacy_padding.tmp";
+  ASSERT_NO_FATAL_FAILURE(
+      WriteForeignIndex(path, kWriterPage, kFirstIdOffset, true));
+  const auto cleanup = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(ailego::File::Delete(path)); });
+  ailego::File file;
+  ASSERT_TRUE(file.open(path, false));
+  ASSERT_TRUE(file.truncate(3 * kWriterPage));
+  file.close();
+
+  IndexMapping mapping;
+  ASSERT_EQ(0, mapping.open(path, false, false));
+  EXPECT_EQ(2 * kWriterPage, mapping.index_size());
+  ASSERT_EQ(0, mapping.append("retry", kWriterPage));
+  auto *retry = mapping.map("retry", false, false);
+  ASSERT_NE(nullptr, retry);
+  constexpr uint64_t kValue = 42;
+  std::memcpy(retry->data(), &kValue, sizeof(kValue));
+  retry->meta()->data_size = sizeof(kValue);
+  retry->meta()->padding_size -= sizeof(kValue);
+  retry->set_dirty();
+  mapping.refresh(1);
+  ASSERT_EQ(0, mapping.flush());
+  mapping.close();
+
+  ASSERT_EQ(0, mapping.open(path, false, false));
+  const auto *first = mapping.map("first", false, false);
+  retry = mapping.map("retry", false, false);
+  ASSERT_NE(nullptr, first);
+  ASSERT_NE(nullptr, retry);
+  EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(first->data()));
+  EXPECT_EQ(kWriterPage - sizeof(kOriginal), first->meta()->padding_size);
+  EXPECT_EQ(kValue, *static_cast<const uint64_t *>(retry->data()));
+}
+
+#if defined(__APPLE__)
+enum class TailRecovery { kImmediate, kReopen, kSameMapping };
+
+static void CheckMetadataMapRecovery(TailRecovery recovery) {
+  constexpr size_t kWriterPage = 4096;
+  constexpr uint32_t kFirstIdOffset = 2 * sizeof(IndexFormat::SegmentMeta) + 16;
+  const bool fail_rollback = recovery != TailRecovery::kImmediate;
   for (bool cow : {false, true}) {
     SCOPED_TRACE(cow);
     const std::string path = "index_mapping_failed_metadata_map.tmp";
@@ -153,21 +218,51 @@ TEST(IndexMappingPortability, FailedMetadataMapRestoresFileBeforeReopen) {
 
     const std::string split_id = "segment_id_that_requires_a_metadata_split";
     fail_next_file_mapping = true;
+    if (fail_rollback) fail_truncate_to = kWriterPage * 2;
     const int append_status = mapping.append(split_id, kWriterPage);
     EXPECT_FALSE(fail_next_file_mapping);
     fail_next_file_mapping = false;
-    EXPECT_EQ(IndexError_MMapFile, append_status);
+    EXPECT_EQ(0, fail_truncate_to);
+    fail_truncate_to = 0;
+    EXPECT_EQ(fail_rollback ? IndexError_TruncateFile : IndexError_MMapFile,
+              append_status);
     EXPECT_EQ(0u, mapping.footer().next_meta_header_offset);
     EXPECT_EQ(kWriterPage * 2, mapping.index_size());
     EXPECT_FALSE(mapping.has(split_id));
-    mapping.close();
+    if (recovery != TailRecovery::kSameMapping) mapping.close();
 
     ailego::File file;
     ASSERT_TRUE(file.open(path, true));
-    EXPECT_EQ(kWriterPage * 2, file.size());
+    if (fail_rollback) {
+      EXPECT_GT(file.size(), kWriterPage * 2);
+    } else {
+      EXPECT_EQ(kWriterPage * 2, file.size());
+    }
     file.close();
 
-    ASSERT_EQ(0, mapping.open(path, cow, cow));
+    if (recovery == TailRecovery::kReopen) {
+      fail_truncate_to = kWriterPage * 2;
+      const int reopen_status = mapping.open(path, cow, cow);
+      EXPECT_EQ(0, fail_truncate_to);
+      fail_truncate_to = 0;
+      EXPECT_EQ(IndexError_TruncateFile, reopen_status);
+      EXPECT_EQ(0u, mapping.index_size());
+    }
+    if (recovery == TailRecovery::kSameMapping) {
+      fail_truncate_to = kWriterPage * 2;
+      EXPECT_EQ(IndexError_TruncateFile, mapping.flush());
+      EXPECT_EQ(0, fail_truncate_to);
+      fail_truncate_to = kWriterPage * 2;
+      EXPECT_EQ(IndexError_TruncateFile, mapping.append("retry", kWriterPage));
+      EXPECT_EQ(0, fail_truncate_to);
+      fail_truncate_to = 0;
+      EXPECT_FALSE(mapping.has("retry"));
+    } else {
+      ASSERT_EQ(0, mapping.open(path, cow, cow));
+      ASSERT_TRUE(file.open(path, true));
+      EXPECT_EQ(kWriterPage * 2, file.size());
+      file.close();
+    }
     // The shorter ID fits in the original directory. Any unlinked tail left
     // on disk would shift the segment past the directory's declared content.
     ASSERT_EQ(0, mapping.append("retry", kWriterPage));
@@ -191,6 +286,19 @@ TEST(IndexMappingPortability, FailedMetadataMapRestoresFileBeforeReopen) {
     EXPECT_EQ(kOriginal, *static_cast<const uint64_t *>(first->data()));
     EXPECT_EQ(kValue, *static_cast<const uint64_t *>(retry->data()));
   }
+}
+
+TEST(IndexMappingPortability, FailedMetadataMapRestoresFileBeforeReopen) {
+  CheckMetadataMapRecovery(TailRecovery::kImmediate);
+}
+
+TEST(IndexMappingPortability, FailedRollbackTruncateIsRetriedOnOpen) {
+  CheckMetadataMapRecovery(TailRecovery::kReopen);
+}
+
+TEST(IndexMappingPortability,
+     FailedRollbackTruncateBlocksWritesUntilRecovered) {
+  CheckMetadataMapRecovery(TailRecovery::kSameMapping);
 }
 #endif
 
