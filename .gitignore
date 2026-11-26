@@ -66,3 +66,6 @@ config/
 examples/python/
 examples/c_api/
 logs/
+
+# Continuous benchmark indexes, logs and result files.
+/bench-runs/
