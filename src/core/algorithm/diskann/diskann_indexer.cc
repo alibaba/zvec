@@ -1267,8 +1267,9 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   auto &stats = ctx->query_stats();
   auto &dc = ctx->dist_calculator();
   auto &topk_heap = ctx->topk_heap();
-  auto &visit_filter = ctx->visit_filter();
+  auto &visit_filter = ctx->search_visit_filter();
 
+  visit_filter.clear();
   topk_heap.clear();
 
   IOContext &io_ctx = ctx->io_ctx();
@@ -1361,10 +1362,13 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
     while (candidates.has_unexpanded_node() &&
            frontier.size() < effective_beam_width &&
            num_seen < effective_beam_width) {
-      const auto neighbor = candidates.closest_unexpanded();
       bool filtered;
-      const int status = is_filtered(ctx, neighbor.id, &filtered);
+      const int status =
+          is_filtered(ctx, candidates.peek_closest_unexpanded().id, &filtered);
       if (status != 0) return status;
+      // Traverse filtered nodes, but let only eligible nodes occupy the
+      // expanded history. The visited bitmap still prevents reinsertion.
+      const auto neighbor = candidates.closest_unexpanded(!filtered);
       num_seen++;
 
       auto iter = neighbor_cache_.find(neighbor.id);
@@ -1550,7 +1554,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
   // Divide the initial candidates into groups.
   auto &topk_heap = ctx->topk_heap();
-  auto &visit_filter = ctx->visit_filter();
+  auto &visit_filter = ctx->search_visit_filter();
   populate_group_topk_heaps(ctx);
   if (ctx->error()) return ctx->error_code();
   auto &group_topk_heaps = ctx->group_topk_heaps();

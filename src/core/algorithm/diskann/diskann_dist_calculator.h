@@ -174,7 +174,7 @@ class DistCalculator {
   }
 
   int quantized_dist_unvisited(const diskann_id_t *ids, uint32_t n,
-                               VisitFilter &visited,
+                               DiskAnnSearchVisitFilter &visited,
                                DiskAnnReadVector<diskann_id_t> &unvisited,
                                DiskAnnReadVector<float> &distances) try {
     unvisited.clear();

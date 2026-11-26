@@ -302,6 +302,10 @@ class DiskAnnContext : public IndexContext,
     return visit_filter_;
   }
 
+  DiskAnnSearchVisitFilter &search_visit_filter() {
+    return search_visit_filter_;
+  }
+
   //! Reset context
   void reset() override {
     set_filter(nullptr);
@@ -450,7 +454,7 @@ class DiskAnnContext : public IndexContext,
   std::vector<float> occlude_factor_;
 
   VisitFilter visit_filter_{};
-  uint32_t filter_mode_{VisitFilter::ByteMap};
+  DiskAnnSearchVisitFilter search_visit_filter_;
   float negative_probility_{DiskAnnEntity::kDefaultBFNegativeProbility};
 };
 

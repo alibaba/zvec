@@ -24,8 +24,10 @@
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "../../../src/core/algorithm/diskann/diskann_context.h"
 #include "../../../src/core/algorithm/diskann/diskann_entity.h"
 #include "../../../src/core/algorithm/diskann/diskann_file_reader.h"
+#include "../../../src/core/algorithm/diskann/diskann_searcher_entity.h"
 #include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace {
@@ -64,6 +66,9 @@ struct QueueResidentSampleTestPeer {
   }
   static size_t available(MemoryLimitPool &pool) {
     return pool.process_rss_.available();
+  }
+  static void refresh_rss(MemoryLimitPool &pool) {
+    pool.process_rss_.refresh(true);
   }
   static bool pause_background(MemoryLimitPool &pool) {
     const bool running = pool.bg_running_.load();
@@ -264,6 +269,58 @@ TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
   ASSERT_EQ(1u, result.doc_list_.size());
   EXPECT_EQ(7u, result.doc_list_.front().key());
   ASSERT_EQ(0, index->close());
+}
+
+TEST(DiskAnnVisitBitmapBudgetTest, RejectsAndRetriesWith4095ByteCache) {
+  auto &payload = ailego::PoolPayloadBudget::get_instance();
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const auto previous_capacity = payload.capacity();
+  const auto previous_limit = rss.process_rss_limit();
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  ASSERT_EQ(0, payload.init(4095));
+  const bool background_running = Budget::pause_background(rss);
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(previous_limit));
+    EXPECT_EQ(0, payload.init(previous_capacity));
+    if (background_running) Budget::resume_background(rss);
+  });
+
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, 16);
+  auto measure = core::IndexFactory::CreateMetric("SquaredEuclidean");
+  ASSERT_NE(nullptr, measure);
+  auto entity = std::make_shared<core::DiskAnnSearcherEntity>();
+  // Only metadata is needed to create the context. The real visited bitmap
+  // will cover 16 Mi IDs without building an index of that size.
+  *entity->mutable_doc_cnt() = uint64_t{1} << 24;
+  const auto create_context = [&](std::unique_ptr<core::DiskAnnContext> &out) {
+    auto context = std::make_unique<core::DiskAnnContext>(meta, measure, entity);
+    const int status = context->init(core::DiskAnnContext::kSearcherContext, 16,
+                                     4, meta.element_size(), false);
+    if (status == 0) out = std::move(context);
+    return status;
+  };
+
+  // Enough for the bitmap words and query scratch, but not the generation
+  // bytes. A failed context must refund any partially allocated backing.
+  constexpr size_t kInsufficient = (2UL << 20) + (128UL << 10);
+  ASSERT_TRUE(Budget::configure_headroom(rss, kInsufficient));
+  ASSERT_EQ(kInsufficient, Budget::available(rss));
+  std::unique_ptr<core::DiskAnnContext> context;
+  EXPECT_EQ(core::IndexError_NoMemory, create_context(context));
+  EXPECT_EQ(nullptr, context);
+  context.reset();
+  // Account for heap allocations that have been freed since the last sample.
+  Budget::refresh_rss(rss);
+  EXPECT_EQ(kInsufficient, Budget::available(rss));
+
+  constexpr size_t kSufficient = 3UL << 20;
+  ASSERT_TRUE(Budget::configure_headroom(rss, kSufficient));
+  ASSERT_EQ(0, create_context(context));
+  EXPECT_LT(Budget::available(rss), size_t{1} << 20);
+  EXPECT_EQ(0u, payload.used());
+  context.reset();
+  Budget::refresh_rss(rss);
+  EXPECT_EQ(kSufficient, Budget::available(rss));
 }
 
 TEST_P(DiskAnnReadBudgetTest, GraphPqBypassFitsSmallRssBudget) {
@@ -779,7 +836,9 @@ TEST_P(DiskAnnReadBudgetTest, GraphEvaluatesFilterOncePerExpandedNode) {
   }
   EXPECT_EQ(1u, *std::max_element(visits.begin(), visits.end()));
 
-  // A one-entry frontier also keeps visit order independent of I/O completion.
+  // The first expansion is the same with or without filtering. When all
+  // nodes are filtered the traversal can continue past the former history
+  // limit, but it still only evaluates each node once.
   query->topk = query->list_size = 1;
   std::vector<uint64_t> expanded, expanded_with_filter;
   query->filter->set([&](uint64_t id) {
@@ -795,7 +854,13 @@ TEST_P(DiskAnnReadBudgetTest, GraphEvaluatesFilterOncePerExpandedNode) {
   });
   ASSERT_EQ(0, index->search(input, query, &result));
   EXPECT_TRUE(result.doc_list_.empty());
-  EXPECT_EQ(expanded, expanded_with_filter);
+  ASSERT_FALSE(expanded.empty());
+  ASSERT_FALSE(expanded_with_filter.empty());
+  EXPECT_EQ(expanded.front(), expanded_with_filter.front());
+  std::sort(expanded_with_filter.begin(), expanded_with_filter.end());
+  EXPECT_EQ(expanded_with_filter.end(),
+            std::adjacent_find(expanded_with_filter.begin(),
+                               expanded_with_filter.end()));
   ASSERT_EQ(0, index->close());
 }
 
