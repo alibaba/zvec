@@ -92,6 +92,26 @@ const size_t kVectorPageSize = MemoryHelper::PageSize();
 namespace {
 constexpr size_t kBlockingAioBatchSize = VecBufferPool::kWritebackBatchPages;
 
+size_t CachePageCount(size_t end) {
+  return end == 0 ? 0 : 1 + (end - 1) / kVectorPageSize;
+}
+
+size_t CacheReadBytes(size_t end, size_t offset, size_t capacity) {
+  return offset < end ? std::min(capacity, end - offset) : 0;
+}
+
+bool CompleteCacheRead(char *buffer, size_t capacity, size_t required,
+                       ssize_t received) {
+  if (required == 0 || received < 0 ||
+      static_cast<size_t>(received) < required) {
+    return false;
+  }
+  if (required < capacity) {
+    std::memset(buffer + required, 0, capacity - required);
+  }
+  return true;
+}
+
 // Writable metadata owns anonymous mappings, not malloc storage that can
 // remain resident after free. Refund only backing that was actually unmapped.
 void ReleaseWritableMapping(void *data, size_t bytes,
@@ -1628,7 +1648,9 @@ int VecBufferPool::writeback_page(size_t offset, size_t length,
   // Never grow the physical file past its recorded size: an index written
   // with a smaller format page size ends inside the final host page, and a
   // full-page writeback must not push the physical EOF beyond it.
-  const size_t end = std::min(offset + length, file_size_);
+  const size_t physical_end = std::min(offset + length, file_size_);
+  const size_t end =
+      std::min(physical_end, committed_end_.load(std::memory_order_acquire));
   const auto write = [&](int fd, size_t begin, size_t limit) {
     if (begin >= limit) return 0;
     const size_t size = limit - begin;
@@ -1663,7 +1685,9 @@ int VecBufferPool::writeback_page(size_t offset, size_t length,
       }
     }
   }
-  return write(fd_, offset, end);
+  // A directory can end inside a host page even though the backing file
+  // was rounded up. Use buffered I/O for the partial write.
+  return write(end < physical_end ? meta_fd_ : fd_, offset, end);
 }
 
 bool VecBufferPool::flush_shared_page(block_id_t page_id) {
@@ -1698,14 +1722,21 @@ bool VecBufferPool::flush_writeback_batch(std::vector<block_id_t> &page_ids,
   std::sort(page_ids.begin(), page_ids.end());
   page_ids.erase(std::unique(page_ids.begin(), page_ids.end()), page_ids.end());
 
-  if (!has_unaligned_metadata_.load(std::memory_order_acquire)) {
+  const size_t writeback_end = committed_end_.load(std::memory_order_acquire);
+  if (writeback_end >= file_size_ &&
+      !has_unaligned_metadata_.load(std::memory_order_acquire)) {
     return flush_whole_pages(page_ids.data(), page_ids.size(), staging);
   }
-  // Keep shared pages out of both contiguous pwrite runs and io_uring batches.
+  // Keep pages shared with metadata or the uncommitted tail out of whole-page
+  // writes, including contiguous runs and io_uring batches.
   bool all_ok = true;
   size_t first = 0;
   for (size_t i = 0; i < page_ids.size(); ++i) {
-    if (!page_overlaps_metadata(page_ids[i] * kVectorPageSize)) continue;
+    const size_t offset = page_ids[i] * kVectorPageSize;
+    if (std::min(offset + kVectorPageSize, file_size_) <= writeback_end &&
+        !page_overlaps_metadata(offset)) {
+      continue;
+    }
     if (i != first &&
         !flush_whole_pages(page_ids.data() + first, i - first, staging)) {
       all_ok = false;
@@ -2123,27 +2154,22 @@ char *VecBufferPool::acquire_buffer(block_id_t page_id, int retry,
         !page_overlaps_metadata(page_offset)) {
       std::memset(buffer, 0, kVectorPageSize);
     } else {
-      // Accept and zero-pad an unaligned final page.
+      // A compatible opener can remove alignment padding while this handle
+      // keeps the old physical size. The committed bytes must still arrive.
+      const size_t required_bytes =
+          CacheReadBytes(readable_file_end(), page_offset, kVectorPageSize);
+      if (!required_bytes) return nullptr;
       const size_t read_len =
-          direct_io_enabled_
-              ? kVectorPageSize
-              : std::min(kVectorPageSize, file_size_ - page_offset);
-      if (read_len < kVectorPageSize) {
-        std::memset(buffer + read_len, 0, kVectorPageSize - read_len);
-      }
+          direct_io_enabled_ ? kVectorPageSize : required_bytes;
       const ssize_t read_bytes = zvec_pread(fd_, buffer, read_len, page_offset);
-      if (read_bytes != static_cast<ssize_t>(read_len)) {
-        // Accept short read at EOF: last page may not be full kVectorPageSize.
-        if (read_bytes > 0 &&
-            (page_offset + static_cast<size_t>(read_bytes) >= file_size_)) {
-          std::memset(buffer + read_bytes, 0, kVectorPageSize - read_bytes);
-        } else {
-          LOG_ERROR(
-              "Buffer pool failed to read file at offset: file[%s], "
-              "page_id[%zu], offset[%zu], expected[%zu], got[%zd]",
-              file_name_.c_str(), page_id, page_offset, read_len, read_bytes);
-          return nullptr;
-        }
+      if (!CompleteCacheRead(buffer, kVectorPageSize, required_bytes,
+                             read_bytes)) {
+        LOG_ERROR(
+            "Buffer pool failed to read file at offset: file[%s], "
+            "page_id[%zu], offset[%zu], expected[%zu], got[%zd]",
+            file_name_.c_str(), page_id, page_offset, required_bytes,
+            read_bytes);
+        return nullptr;
       }
     }
     publish_called = true;
@@ -2880,6 +2906,32 @@ bool VecBufferPool::extend_file(size_t new_size) {
 }
 
 bool VecBufferPool::truncate_unused_tail(size_t new_size) {
+  return shrink_unused_tail(new_size, /*already_truncated=*/false);
+}
+
+size_t VecBufferPool::readable_file_end() const {
+  return std::min(file_size_, committed_end_.load(std::memory_order_acquire));
+}
+
+bool VecBufferPool::sync_backing_file_tail(size_t committed_end) {
+#if defined(_MSC_VER)
+  const auto size = _filelengthi64(fd_);
+#else
+  struct stat info {};
+  if (::fstat(fd_, &info) != 0) return false;
+  const auto size = info.st_size;
+#endif
+  if (size < 0 || static_cast<uint64_t>(size) < committed_end) return false;
+  const auto actual_size = static_cast<uint64_t>(size);
+  if (actual_size == file_size_) return true;
+  // Recovery trims to exactly the directory's extent. A different EOF can
+  // include a new committed append and requires a fresh open.
+  return actual_size == committed_end &&
+         shrink_unused_tail(committed_end, /*already_truncated=*/true);
+}
+
+bool VecBufferPool::shrink_unused_tail(size_t new_size,
+                                       bool already_truncated) {
   if (writeback_quarantined()) return false;
   if (!writable_ || new_size > file_size_) return false;
   if (new_size == file_size_) return true;
@@ -2891,7 +2943,7 @@ bool VecBufferPool::truncate_unused_tail(size_t new_size) {
   const bool discard_pages = new_entry_num < page_table_.entry_num();
   if (discard_pages && !page_table_.can_discard_tail(new_entry_num))
     return false;
-  if (!ResizeBackingFile(fd_, new_size)) {
+  if (!already_truncated && !ResizeBackingFile(fd_, new_size)) {
     LOG_ERROR("truncate_unused_tail failed: file[%s], new_size[%zu]",
               file_name_.c_str(), new_size);
     return false;
@@ -3279,7 +3331,9 @@ void VecBufferPoolHandle::acquire_one(block_id_t block_id) {
 }
 
 void VecBufferPool::warmup() {
-  const size_t total_pages = page_table_.entry_num();
+  const size_t end = readable_file_end();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(end));
   // Read sequentially in 4 MB chunks.
   static constexpr size_t kChunkPages = 1024;
   BudgetedMappedBuffer scratch;
@@ -3294,17 +3348,11 @@ void VecBufferPool::warmup() {
     const size_t pages_in_chunk = std::min(chunk_pages, total_pages - base);
     const size_t read_bytes = pages_in_chunk * kVectorPageSize;
     const size_t file_offset = base * kVectorPageSize;
-    const size_t expected_bytes =
-        std::min(read_bytes, file_size_ - file_offset);
+    const size_t required = CacheReadBytes(end, file_offset, read_bytes);
 
     // One large sequential pread instead of N individual ones.
-    ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_offset);
-    if (got != static_cast<ssize_t>(expected_bytes)) break;
-    // The final page may extend past EOF. Keep its unread tail deterministic,
-    // matching the regular single-page load path.
-    if (expected_bytes < read_bytes) {
-      std::memset(chunk_buf + expected_bytes, 0, read_bytes - expected_bytes);
-    }
+    const ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_offset);
+    if (!CompleteCacheRead(chunk_buf, read_bytes, required, got)) break;
 
     // Distribute chunk data into individual page buffers.
     for (size_t j = 0; j < pages_in_chunk; ++j) {
@@ -3340,9 +3388,11 @@ void VecBufferPool::warmup() {
 VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
     block_id_t first_page, size_t page_count, uint8_t priority) {
   PrepareResult result;
-  if (!initialized_ || writable_ || priority > kHighPriority ||
-      first_page > page_table_.entry_num() ||
-      page_count > page_table_.entry_num() - first_page)
+  if (!initialized_ || writable_ || priority > kHighPriority) return result;
+  const size_t end = readable_file_end();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(end));
+  if (first_page > total_pages || page_count > total_pages - first_page)
     return result;
 
   // Shared across pools: two opening indexes must not both plan against the
@@ -3393,15 +3443,13 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
       ++pg;
     const size_t bytes = (pg - first) * kVectorPageSize;
     const size_t offset = first * kVectorPageSize;
-    const size_t expected = std::min(bytes, file_size_ - offset);
+    const size_t required = CacheReadBytes(end, offset, bytes);
     const ssize_t got = zvec_pread(fd_, scratch.data(), bytes, offset);
-    if (got != static_cast<ssize_t>(expected)) {
+    if (!CompleteCacheRead(scratch.data(), bytes, required, got)) {
       result.status = PrepareStatus::kReadError;
       break;
     }
-    result.bytes_read += expected;
-    if (expected != bytes)
-      std::memset(scratch.data() + expected, 0, bytes - expected);
+    result.bytes_read += static_cast<size_t>(got);
     for (size_t id = first; id < pg; ++id) {
       // A foreground reader may have acquired a page during the bulk read.
       // Never overwrite its load claim or publish a duplicate allocation.
@@ -3441,7 +3489,8 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
 
 void VecBufferPool::prefetch_pages(block_id_t first_page, size_t page_count,
                                    uint8_t priority) {
-  const size_t total_pages = page_table_.entry_num();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(readable_file_end()));
   if (priority > kHighPriority || page_count == 0 ||
       first_page >= total_pages) {
     return;
@@ -3501,6 +3550,7 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
   if (!chunk_pages) return;
   char *chunk_buf = scratch.data();
 
+  const size_t end = readable_file_end();
   bool pool_full = false;
   size_t pg = first_page;
   while (pg < end_page && !pool_full) {
@@ -3516,17 +3566,14 @@ void VecBufferPool::prefetch_pages_sync(block_id_t first_page,
       ++run_end;
     }
 
-    size_t run_pages = run_end - run_start;
-    size_t read_bytes = run_pages * kVectorPageSize;
-    size_t file_off = run_start * kVectorPageSize;
-    size_t expected_bytes = std::min(read_bytes, file_size_ - file_off);
-    ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
-    if (got != static_cast<ssize_t>(expected_bytes)) {
+    const size_t run_pages = run_end - run_start;
+    const size_t read_bytes = run_pages * kVectorPageSize;
+    const size_t file_off = run_start * kVectorPageSize;
+    const size_t required = CacheReadBytes(end, file_off, read_bytes);
+    const ssize_t got = zvec_pread(fd_, chunk_buf, read_bytes, file_off);
+    if (!CompleteCacheRead(chunk_buf, read_bytes, required, got)) {
       pg = run_end;
       continue;
-    }
-    if (expected_bytes < read_bytes) {
-      std::memset(chunk_buf + expected_bytes, 0, read_bytes - expected_bytes);
     }
 
     for (size_t j = 0; j < run_pages; ++j) {
@@ -3806,7 +3853,8 @@ bool VecBufferPool::read_ranges_bypass_aio(const ReadRange *ranges,
 
 void VecBufferPool::prefetch_pages_aio(block_id_t first_page, size_t page_count,
                                        uint8_t priority) {
-  const size_t total_pages = page_table_.entry_num();
+  const size_t total_pages =
+      std::min(page_table_.entry_num(), CachePageCount(readable_file_end()));
   if (priority > kHighPriority || page_count == 0 ||
       first_page >= total_pages) {
     return;
@@ -3833,6 +3881,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
   if (page_ids == nullptr || priority > kHighPriority) return false;
 
 #if defined(__APPLE__)
+  const size_t readable_end = readable_file_end();
   // Darwin has no Linux AIO backend, but resolving a batch with scalar pread
   // serializes every random miss. Use the native bounded AIO queue directly
   // into charged cache pages; no extra read staging or worker pool is needed.
@@ -3891,7 +3940,8 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
     std::array<bool, kDarwinReadBatch> read_ok{};
     for (size_t i = 0; i < submitted; ++i) {
       const size_t offset = load_pages[i] * kVectorPageSize;
-      const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
+      const size_t required =
+          CacheReadBytes(readable_end, offset, kVectorPageSize);
       const struct aiocb *pending = &requests[i];
       int status;
       while ((status = ::aio_error(pending)) == EINPROGRESS) {
@@ -3899,19 +3949,17 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
           std::this_thread::yield();
       }
       const ssize_t bytes = ::aio_return(&requests[i]);
-      read_ok[i] = status == 0 && bytes == static_cast<ssize_t>(expected);
+      read_ok[i] = status == 0 && CompleteCacheRead(buffers[i], kVectorPageSize,
+                                                    required, bytes);
     }
     for (size_t i = 0; i < allocated; ++i) {
       const size_t offset = load_pages[i] * kVectorPageSize;
-      const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
       if (!read_ok[i]) {
         pool.release_buffer(buffers[i], kVectorPageSize);
         page_table_.cancel_block_load(load_pages[i]);
         batch_ok = false;
         continue;
       }
-      if (expected < kVectorPageSize)
-        std::memset(buffers[i] + expected, 0, kVectorPageSize - expected);
       miss_count_.fetch_add(1, std::memory_order_relaxed);
       page_table_.promote_evict_priority(load_pages[i], priority);
       if (page_table_.publish_claimed_block(load_pages[i], buffers[i],
@@ -3926,6 +3974,9 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
   return true;
 #elif defined(__linux__) && !defined(__ANDROID__)
   if (!aio_enabled_) return false;
+  const size_t physical_end = file_size_;
+  const size_t readable_end =
+      std::min(physical_end, committed_end_.load(std::memory_order_acquire));
   bool use_io_uring = io_backend_type_ == IOBackendType::kIoUring &&
                       tl_blocking_io_uring.ensure();
   if (!use_io_uring && !tl_blocking_aio.ensure()) return false;
@@ -4037,15 +4088,25 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       std::array<IoUringRead, kBlockingAioBatchSize> requests{};
       for (size_t i = 0; i < allocated; ++i) {
         const size_t offset = load_pages[i] * kVectorPageSize;
-        const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
+        const size_t expected =
+            CacheReadBytes(physical_end, offset, kVectorPageSize);
         requests[i] =
             IoUringRead(offset, kVectorPageSize, buffers[i], expected);
       }
       aio_pages_submitted_.fetch_add(allocated, std::memory_order_relaxed);
       if (tl_blocking_io_uring.ring.execute(fd_, requests.data(), allocated) ==
           0) {
-        std::fill_n(read_ok.begin(), allocated, true);
+        for (size_t i = 0; i < allocated; ++i) {
+          const size_t offset = load_pages[i] * kVectorPageSize;
+          const size_t expected =
+              CacheReadBytes(physical_end, offset, kVectorPageSize);
+          const size_t required =
+              CacheReadBytes(readable_end, offset, kVectorPageSize);
+          read_ok[i] = CompleteCacheRead(buffers[i], kVectorPageSize, required,
+                                         static_cast<ssize_t>(expected));
+        }
       } else if (tl_blocking_aio.ensure()) {
+        // An opener may have removed the padding that io_uring expects.
         // io_uring uses ring-owned staging, so libaio can safely reuse the
         // destination buffers after execute() reports a drained failure.
         use_io_uring = false;
@@ -4105,17 +4166,13 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       for (size_t i = 0; i < accepted; ++i) {
         const auto idx = reinterpret_cast<uintptr_t>(events[i].data);
         const size_t offset = load_pages[idx] * kVectorPageSize;
-        const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
-        read_ok[idx] = static_cast<ssize_t>(events[i].res) ==
-                           static_cast<ssize_t>(expected) &&
-                       events[i].res2 == 0;
-        if (!read_ok[idx]) {
-          batch_ok = false;
-          continue;
-        }
-        if (expected < kVectorPageSize) {
-          std::memset(buffers[idx] + expected, 0, kVectorPageSize - expected);
-        }
+        const size_t required =
+            CacheReadBytes(readable_end, offset, kVectorPageSize);
+        read_ok[idx] =
+            events[i].res2 == 0 &&
+            CompleteCacheRead(buffers[idx], kVectorPageSize, required,
+                              static_cast<ssize_t>(events[i].res));
+        if (!read_ok[idx]) batch_ok = false;
       }
     }
 

@@ -92,8 +92,8 @@ class HnswStreamerEntity : public HnswEntity {
 
   //! Append neighbor_id to node id neighbors on level
   //! Notice: the caller must be ensure the neighbors not full
-  void add_neighbor(level_t level, node_id_t id, uint32_t size,
-                    node_id_t neighbor_id) override;
+  int add_neighbor(level_t level, node_id_t id, uint32_t size,
+                   node_id_t neighbor_id) override;
 
   //! Dump index by dumper
   int dump(const IndexDumper::Pointer &dumper) override;
@@ -412,8 +412,8 @@ class HnswStreamerEntity : public HnswEntity {
     size_t neighbors_size = get_total_upper_neighbors_size(level);
     uint64_t chunk_index = upper_neighbor_chunks_.size() - 1ULL;
     if (chunk_index == UINT64_MAX ||
-        (upper_neighbor_chunks_[chunk_index]->padding_size() <
-         neighbors_size)) {  // no space left and need to alloc
+        (upper_neighbor_chunks_[chunk_index]->data_size() + neighbors_size >
+         upper_neighbor_chunk_size_)) {  // no space left and need to alloc
       chunk_index++;
       if (ailego_unlikely(upper_neighbor_chunks_.capacity() ==
                           upper_neighbor_chunks_.size())) {
@@ -486,7 +486,7 @@ class HnswStreamerEntity : public HnswEntity {
     return node_chunks_.capacity() * node_cnt_per_chunk_;
   }
 
-  int init_chunk_params(size_t max_index_size, bool huge_page) {
+  int init_chunk_params(size_t max_index_size) {
     // Upper-neighbor offsets and their persistent hash layout must be the
     // same as in the final ordinary index, despite the compact build nodes.
     size_t layout_node_size = node_size();
@@ -498,9 +498,7 @@ class HnswStreamerEntity : public HnswEntity {
       const size_t count = std::max<size_t>(1, chunk_size_ / layout_node_size);
       while (packed_nodes_per_chunk_ < count) packed_nodes_per_chunk_ *= 2;
       packed_chunk_size_ =
-          huge_page
-              ? AlignHugePageSize(packed_nodes_per_chunk_ * layout_node_size)
-              : AlignPageSize(packed_nodes_per_chunk_ * layout_node_size);
+          broker_->align_size(packed_nodes_per_chunk_ * layout_node_size);
       layout_chunk_size = packed_chunk_size_;
       packed_max_index_size_ = max_index_size == 0
                                    ? packed_chunk_size_ * kDefaultMaxChunkCnt
@@ -510,11 +508,7 @@ class HnswStreamerEntity : public HnswEntity {
     //! align node cnt per chunk to pow of 2
     node_index_mask_bits_ = std::ceil(std::log2(node_cnt_per_chunk_));
     node_cnt_per_chunk_ = 1UL << node_index_mask_bits_;
-    if (huge_page) {
-      chunk_size_ = AlignHugePageSize(node_cnt_per_chunk_ * node_size());
-    } else {
-      chunk_size_ = AlignPageSize(node_cnt_per_chunk_ * node_size());
-    }
+    chunk_size_ = broker_->align_size(node_cnt_per_chunk_ * node_size());
     node_index_mask_ = node_cnt_per_chunk_ - 1;
     if (packed_vector_size_ == 0) layout_chunk_size = chunk_size_;
 
@@ -531,15 +525,9 @@ class HnswStreamerEntity : public HnswEntity {
     //! get a balanced ratio be sqrt of the node/neighbor size ratio
     float ratio = std::sqrt(layout_node_size * scaling_factor() * 1.0f /
                             upper_neighbor_size_);
-    if (huge_page) {
-      upper_neighbor_chunk_size_ = AlignHugePageSize(
-          std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                   static_cast<size_t>(layout_chunk_size / ratio)));
-    } else {
-      upper_neighbor_chunk_size_ = AlignPageSize(
-          std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
-                   static_cast<size_t>(layout_chunk_size / ratio)));
-    }
+    upper_neighbor_chunk_size_ = broker_->align_size(
+        std::max(get_total_upper_neighbors_size(kMaxGraphLayers),
+                 static_cast<size_t>(layout_chunk_size / ratio)));
     upper_neighbor_mask_bits_ =
         std::ceil(std::log2(upper_neighbor_chunk_size_ / upper_neighbor_size_));
     upper_neighbor_mask_ = (1 << upper_neighbor_mask_bits_) - 1;
@@ -891,7 +879,8 @@ class HnswMmapStreamerEntity : public HnswStreamerEntity {
       MmapMemoryBlock block(const_cast<char *>(base + offset));
       return TypedNeighbors(std::move(block));
     }
-    // Upper level: use index to locate chunk and offset
+    // Synchronize with add_upper_neighbor(), including slot allocation and
+    // publication. The typed mmap path bypasses get_upper_neighbor_chunk_loc.
     std::shared_lock<std::shared_mutex> lk(*upper_neighbor_rw_mutex_);
     auto it = upper_neighbor_index_->find(id);
     ailego_assert_abort(it != upper_neighbor_index_->end(),

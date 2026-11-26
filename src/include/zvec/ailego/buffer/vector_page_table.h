@@ -842,6 +842,14 @@ class ZVEC_AILEGO_API VecBufferPool {
   //! The caller must keep the removed range inaccessible to page users.
   bool truncate_unused_tail(size_t new_size);
 
+  //! Reconcile a tail already trimmed by another opener under the file lock.
+  bool sync_backing_file_tail(size_t committed_end);
+
+  //! Publish the directory's extent, excluding physical host-page padding.
+  void set_committed_end(size_t end) {
+    committed_end_.store(end, std::memory_order_release);
+  }
+
   bool writable() const {
     return writable_;
   }
@@ -929,6 +937,9 @@ class ZVEC_AILEGO_API VecBufferPool {
   }
 
  private:
+  bool shrink_unused_tail(size_t new_size, bool already_truncated);
+  size_t readable_file_end() const;
+
   friend class VecBufferPoolHandle;
   friend struct VecBufferPoolAioTestPeer;
   friend struct VecBufferPoolTestPeer;
@@ -995,6 +1006,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   int fd_;       // page-data channel: O_DIRECT or F_NOCACHE when supported
   int meta_fd_;  // metadata channel: always buffered IO
   size_t file_size_;
+  std::atomic<size_t> committed_end_{(std::numeric_limits<size_t>::max)()};
   size_t initial_file_size_;  // Newly extended pages without metadata can
                               // skip pread on first load (content is zeros).
   std::string file_name_;

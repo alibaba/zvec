@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <algorithm>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/io/mmap_file.h>
 #include <zvec/ailego/logger/logger.h>
@@ -19,10 +20,7 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_mapping.h>
 #include "ailego/utility/memory_helper.h"
-
-#if defined(_WIN32) || defined(_WIN64)
-#include <Windows.h>
-#endif
+#include "index_file_write_lock.h"
 
 #ifdef __linux__
 #include <sys/statfs.h>
@@ -102,20 +100,51 @@ int IndexMapping::open(const std::string &path, bool cow, bool full_mode) try {
     return IndexError_OpenFile;
   }
 
-  size_t mapping_size = 0u;
-  int error_code = UnpackMappingSize(file_, &mapping_size);
-  if (error_code != 0) {
-    file_.close();
-    return error_code;
+  bool opened = false;
+  AILEGO_DEFER([&] {
+    if (!opened) close();
+  });
+  // Read the directory and recover its tail under the same lock as append.
+  IndexFileWriteLock lock(file_.native_handle());
+  if (!read_only) {
+    const int status = lock.try_lock();
+    if (status != 0) return status;
   }
 
+  size_t mapping_size = 0u;
+  int error_code = UnpackMappingSize(file_, &mapping_size);
+  if (error_code != 0) return error_code;
   if (!file_.seek(0, ailego::File::Origin::End)) {
     LOG_ERROR("Failed to seek file %s, %s", path.c_str(),
               ailego::FileHelper::GetLastErrorString().c_str());
     return IndexError_SeekFile;
   }
   error_code = this->init_index_mapping(mapping_size);
-  if (error_code != 0) close();
+  if (error_code == 0) {
+    const size_t file_size = file_.size();
+    if (file_size < index_size_) {
+      error_code = IndexError_InvalidLength;
+    } else if (read_only) {
+      // Keep private additions beyond the backing file in read-only COW mode.
+      index_size_ = file_size;
+    } else if (file_size > index_size_) {
+      const size_t committed_size = index_size_;
+      // Release the views before shrinking, while retaining the same handle.
+      reset_mappings();
+      pending_truncate_size_ = committed_size;
+      bool mapped_tail = false;
+      error_code = discard_unpublished_tail(&mapped_tail);
+      if (error_code == 0) {
+        error_code = init_index_mapping(mapping_size);
+        // Future appends must allocate past a tail still covered by a reader.
+        if (error_code == 0 && mapped_tail) index_size_ = file_size;
+      }
+    }
+  }
+  if (error_code == 0) {
+    backing_file_size_ = file_.size();
+    opened = true;
+  }
   return error_code;
 } catch (const std::bad_alloc &) {
   close();
@@ -164,27 +193,26 @@ int IndexMapping::create_impl(const std::string &path, size_t seg_meta_capacity,
   const int ret =
       huge_page_ ? init_hugepage_meta_section() : init_meta_section();
   initialized = ret == 0;
+  if (initialized) backing_file_size_ = file_.size();
   return ret;
 } catch (const std::bad_alloc &) {
   return IndexError_NoMemory;
 }
 
 int IndexMapping::init_meta_section() {
-  if (current_header_start_offset_ % ailego::MemoryHelper::PageSize() != 0) {
-    LOG_ERROR("File offset %zu is not a multiple of the page size: %zu",
-              (size_t)current_header_start_offset_,
-              ailego::MemoryHelper::PageSize());
-    return IndexError_InvalidValue;
-  }
-
+  // Existing files may end on a smaller writer-page boundary. MemoryMap
+  // handles the host-page alignment when a new metadata section is appended.
   auto &path = path_;
   size_t len =
       CalcPageAlignedSize(seg_meta_capacity_ + sizeof(IndexFormat::MetaHeader) +
                               sizeof(IndexFormat::MetaFooter),
                           false);
+  const size_t extent =
+      ailego::File::MemoryMapFootprint(current_header_start_offset_, len);
+  if (!extent) return IndexError_InvalidLength;
 
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t charge = pool.capacity() ? len : 0;
+  const size_t charge = pool.capacity() ? extent : 0;
   using Pending = ailego::MemoryLimitPool::PendingAllocation;
   Pending mapping_memory(pool, Pending::Kind::kWorkspace);
   if (!mapping_memory.reserve(charge)) return IndexError_NoMemory;
@@ -297,6 +325,8 @@ void IndexMapping::swap(IndexMapping &rhs) noexcept {
   swap(footer_, rhs.footer_);
   swap(segments_, rhs.segments_);
   swap(index_size_, rhs.index_size_);
+  swap(backing_file_size_, rhs.backing_file_size_);
+  swap(pending_truncate_size_, rhs.pending_truncate_size_);
   swap(file_, rhs.file_);
   swap(path_, rhs.path_);
   swap(copy_on_write_, rhs.copy_on_write_);
@@ -307,8 +337,10 @@ void IndexMapping::swap(IndexMapping &rhs) noexcept {
   swap(current_header_start_offset_, rhs.current_header_start_offset_);
 }
 
-void IndexMapping::release_meta_mapping(const MetaMapping &mapping) {
-  if (!ailego::File::TryMemoryUnmap(mapping.header, mapping.length)) {
+void IndexMapping::release_meta_mapping(size_t offset,
+                                        const MetaMapping &mapping) {
+  if (!ailego::File::TryMemoryUnmapFile(mapping.header, mapping.length,
+                                        offset)) {
     LOG_ERROR("Failed to unmap index metadata; retaining its memory charge");
     return;
   }
@@ -318,10 +350,10 @@ void IndexMapping::release_meta_mapping(const MetaMapping &mapping) {
   }
 }
 
-void IndexMapping::close() {
+void IndexMapping::reset_mappings() {
   this->unmap_all();
   for (const auto &item : header_addr_map_) {
-    release_meta_mapping(item.second);
+    release_meta_mapping(item.first, item.second);
   }
   // Reset members
   segment_ids_offset_ = 0;
@@ -330,14 +362,75 @@ void IndexMapping::close() {
   header_addr_map_.clear();
   footer_ = nullptr;
   index_size_ = 0u;
+  backing_file_size_ = 0u;
   segments_.clear();
   current_header_start_offset_ = 0;
   seg_meta_capacity_ = 0;
+  pending_truncate_size_ = 0;
+  header_dirty_ = false;
+}
+
+void IndexMapping::close() {
+  reset_mappings();
   file_.close();
   copy_on_write_ = false;
   full_mode_ = false;
-  header_dirty_ = false;
   huge_page_ = false;
+}
+
+int IndexMapping::check_backing_file() const {
+  const size_t file_size = file_.size();
+  if (file_size == backing_file_size_ ||
+      (pending_truncate_size_ && file_size == pending_truncate_size_)) {
+    return 0;
+  }
+  LOG_ERROR("Index file size changed; reopen %s before writing", path_.c_str());
+  return IndexError_Busy;
+}
+
+int IndexMapping::discard_unpublished_tail(bool *mapped_tail) {
+  if (pending_truncate_size_ == 0) return 0;
+  const size_t file_size = file_.size();
+  if (header_ && file_size > pending_truncate_size_) {
+    // Another writer can recover and reuse the tail between retries, even
+    // growing to the same EOF. Check the last committed directory on disk.
+    IndexFormat::MetaFooter committed;
+    const auto offset =
+        current_header_start_offset_ + header_->meta_footer_offset;
+    if (file_.read(offset, &committed, sizeof(committed)) !=
+        sizeof(committed)) {
+      return IndexError_ReadData;
+    }
+    if (ailego::Crc32c::Hash(&committed, sizeof(committed),
+                             committed.footer_crc) != committed.footer_crc) {
+      return IndexError_InvalidChecksum;
+    }
+    if (committed.next_meta_header_offset ||
+        pending_truncate_size_ < current_header_start_offset_ ||
+        committed.total_size >
+            pending_truncate_size_ - current_header_start_offset_) {
+      return IndexError_Busy;
+    }
+  }
+  if (file_size < pending_truncate_size_ ||
+      (file_size > pending_truncate_size_ &&
+       !file_.truncate(pending_truncate_size_))) {
+#if defined(_WIN32) || defined(_WIN64)
+    if (mapped_tail && file_size > pending_truncate_size_ &&
+        ::GetLastError() == ERROR_USER_MAPPED_FILE) {
+      *mapped_tail = true;
+      pending_truncate_size_ = 0;
+      return 0;
+    }
+#else
+    (void)mapped_tail;
+#endif
+    LOG_ERROR("Failed to discard unlinked index metadata, %s",
+              ailego::FileHelper::GetLastErrorString().c_str());
+    return IndexError_TruncateFile;
+  }
+  pending_truncate_size_ = 0;
+  return 0;
 }
 
 void IndexMapping::refresh(uint64_t check_point) {
@@ -356,12 +449,29 @@ void IndexMapping::refresh(uint64_t check_point) {
   header_dirty_ = true;
 }
 
-int IndexMapping::append(const std::string &id, size_t size) try {
+int IndexMapping::append(const std::string &id, size_t size) {
+  return append_impl(id, size);
+}
+
+int IndexMapping::append_impl(const std::string &id, size_t size,
+                              bool holds_file_lock) try {
   if (id.find('\0') != std::string::npos) return IndexError_InvalidArgument;
   size = CalcPageAlignedSize(size, huge_page_);
   if (size == 0) {
     return IndexError_InvalidArgument;
   }
+  if (!footer_) return IndexError_Uninitialized;
+  IndexFileWriteLock lock(file_.native_handle());
+  const bool writable = !copy_on_write_ || full_mode_;
+  if (writable && !holds_file_lock) {
+    const int status = lock.try_lock();
+    if (status != 0) return status;
+    const int backing_status = check_backing_file();
+    if (backing_status != 0) return backing_status;
+  }
+  AILEGO_DEFER([&] {
+    if (writable) backing_file_size_ = file_.size();
+  });
 
   if (segments_.find(id) != segments_.end()) {
     return IndexError_Duplicate;
@@ -370,6 +480,8 @@ int IndexMapping::append(const std::string &id, size_t size) try {
   size_t id_size = std::strlen(id.c_str()) + 1;
   size_t need_size = sizeof(IndexFormat::SegmentMeta) + id_size;
   if (need_size > footer_->segments_meta_size) return IndexError_InvalidLength;
+  int ret = discard_unpublished_tail();
+  if (ret != 0) return ret;
   // Stage in the destination so a first insert also admits the lazy map.
   auto entry = segments_.try_emplace(std::string_view(id), SegmentInfo{});
   auto pending_node = segments_.extract(entry.first);
@@ -384,17 +496,33 @@ int IndexMapping::append(const std::string &id, size_t size) try {
     const auto old_ids_offset = segment_ids_offset_;
     const auto old_header_offset = current_header_start_offset_;
     const auto old_size = index_size_;
+    const auto old_file_size = file_.size();
+    if (!old_file_size) return IndexError_InvalidLength;
+    const auto old_meta_capacity = seg_meta_capacity_;
     current_header_start_offset_ = old_size;
-    int ret;
     try {
       ret = huge_page_ ? init_hugepage_meta_section() : init_meta_section();
+      if (ret == 0) {
+        refresh(0);
+        const auto unlinked_footer = *old_footer;
+        old_footer->next_meta_header_offset = current_header_start_offset_;
+        IndexFormat::UpdateMetaFooter(old_footer, 0);
+        // The new directory is already on disk. Publish its link by writing
+        // the last existing directory after all the others.
+        bool published = false;
+        AILEGO_DEFER([&] {
+          if (!published) *old_footer = unlinked_footer;
+        });
+        ret = flush_locked(true);
+        published = ret == 0;
+      }
     } catch (const std::bad_alloc &) {
       ret = IndexError_NoMemory;
     }
     if (ret != 0) {
       auto it = header_addr_map_.find(old_size);
       if (it != header_addr_map_.end()) {
-        release_meta_mapping(it->second);
+        release_meta_mapping(it->first, it->second);
         header_addr_map_.erase(it);
       }
       header_ = old_header;
@@ -403,12 +531,13 @@ int IndexMapping::append(const std::string &id, size_t size) try {
       segment_ids_offset_ = old_ids_offset;
       current_header_start_offset_ = old_header_offset;
       index_size_ = old_size;
-      return ret;
+      seg_meta_capacity_ = old_meta_capacity;
+      // The new section is still unlinked. Restore the physical EOF as well
+      // as the logical cursor, which may be ahead of EOF in copy-on-write mode.
+      pending_truncate_size_ = old_file_size;
+      const int cleanup = discard_unpublished_tail();
+      return cleanup == 0 ? ret : cleanup;
     }
-    old_footer->next_meta_header_offset = current_header_start_offset_;
-    refresh(0);
-    ret = flush();
-    if (ret != 0) return ret;
   }
 
   if (!copy_on_write_ && !file_.truncate(index_size_ + size)) {
@@ -433,8 +562,9 @@ int IndexMapping::append(const std::string &id, size_t size) try {
   footer_->segments_meta_crc =
       ailego::Crc32c::Hash(segment_start_, footer_->segments_meta_size, 0);
   footer_->segment_count += 1;
-  footer_->content_size += size;
-  footer_->total_size += size;
+  footer_->total_size = index_size_ - current_header_start_offset_;
+  footer_->content_size = footer_->total_size - header_->content_offset;
+  footer_->content_padding_size = 0;
   IndexFormat::UpdateMetaFooter(footer_, 0);
   pending_node.key() = std::string_view(
       reinterpret_cast<const char *>(segment_start_) + segment_ids_offset_,
@@ -464,6 +594,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
                     meta->data_index;
 
     void *addr = nullptr;
+    bool file_backed = true;
     if (!copy_on_write_) {
       int opts = ailego::File::MMAP_SHARED;
       if (huge_page_) {
@@ -482,6 +613,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
         addr = ailego::File::MemoryMap(file_.native_handle(), offset,
                                        mapping_size, opts);
       } else {
+        file_backed = false;
         addr = ailego::File::MemoryMap(mapping_size, opts);
       }
     }
@@ -491,6 +623,7 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
       return nullptr;
     }
     item->set_data(addr);
+    item->file_backed_ = file_backed;
 
     // Lock memory
     if (locked) {
@@ -506,32 +639,48 @@ IndexMapping::Segment *IndexMapping::map(const std::string &id, bool warmup,
 
 void IndexMapping::unmap(const std::string &id) {
   auto iter = segments_.find(id);
-  if (iter != segments_.end()) {
-    SegmentInfo &segment_info = iter->second;
-    Segment *item = &segment_info.segment;
-
-    if (item->data()) {
-      ailego::File::MemoryUnmap(
-          item->data(), item->meta()->data_size + item->meta()->padding_size);
-      item->set_data(nullptr);
-    }
-  }
+  if (iter != segments_.end()) unmap_segment(iter->second);
 }
 
 void IndexMapping::unmap_all() {
-  for (auto iter = segments_.begin(); iter != segments_.end(); ++iter) {
-    SegmentInfo &segment_info = iter->second;
-    Segment *item = &segment_info.segment;
+  for (auto &entry : segments_) unmap_segment(entry.second);
+}
 
-    if (item->data()) {
-      ailego::File::MemoryUnmap(
-          item->data(), item->meta()->data_size + item->meta()->padding_size);
-      item->set_data(nullptr);
-    }
+void IndexMapping::unmap_segment(SegmentInfo &info) {
+  auto &segment = info.segment;
+  if (!segment.data()) return;
+  const auto *meta = segment.meta();
+  const size_t length = meta->data_size + meta->padding_size;
+  if (segment.file_backed_) {
+    const size_t offset = info.segment_header_start_offset +
+                          info.segment_header->content_offset +
+                          meta->data_index;
+    ailego::File::TryMemoryUnmapFile(segment.data(), length, offset);
+  } else {
+    ailego::File::MemoryUnmap(segment.data(), length);
   }
+  segment.set_data(nullptr);
 }
 
 int IndexMapping::flush() {
+  if (!header_) return IndexError_Uninitialized;
+  IndexFileWriteLock lock(file_.native_handle());
+  const bool writable = !copy_on_write_ || full_mode_;
+  if (writable) {
+    const int status = lock.try_lock();
+    if (status != 0) return status;
+    const int backing_status = check_backing_file();
+    if (backing_status != 0) return backing_status;
+  }
+  AILEGO_DEFER([&] {
+    if (writable) backing_file_size_ = file_.size();
+  });
+  return flush_locked();
+}
+
+int IndexMapping::flush_locked(bool expanding) {
+  const int cleanup = discard_unpublished_tail();
+  if (cleanup != 0) return cleanup;
   if ((file_.size() < index_size_) && !file_.truncate(index_size_)) {
     LOG_ERROR("Failed to truncate file size %zu, %s", index_size_,
               ailego::FileHelper::GetLastErrorString().c_str());
@@ -560,28 +709,42 @@ int IndexMapping::flush() {
                 ailego::FileHelper::GetLastErrorString().c_str());
       return IndexError_WriteData;
     }
-    item->reset_dirty();
+    if (!expanding) item->reset_dirty();
   }
 
-  if (!header_dirty_) {
-    return 0;
-  }
-
-  if (full_mode_ && copy_on_write_) {
+  if (header_dirty_ && full_mode_ && copy_on_write_) {
+    ailego::BudgetedVector<uint8_t> original;
     for (auto item : header_addr_map_) {
       auto header_start_offset = item.first;
       auto header = item.second.header;
-      if (file_.write(header_start_offset, header, header->content_offset) !=
-          header->content_offset) {
-        LOG_ERROR("Failed to write segment, size %zu, %s",
-                  (size_t)header->content_offset,
-                  ailego::FileHelper::GetLastErrorString().c_str());
+      if (expanding && header == header_) continue;
+      const size_t length = header->content_offset;
+      if (expanding) {
+        original.resize(length);
+        if (file_.read(header_start_offset, original.data(), length) !=
+            length) {
+          return IndexError_ReadData;
+        }
+      }
+      const size_t written = file_.write(header_start_offset, header, length);
+      if (written != length) {
+        // Undo just the written prefix before logging or unwinding.
+        const bool restored = !expanding || !written ||
+                              file_.write(header_start_offset, original.data(),
+                                          written) == written;
+        LOG_ERROR("Short write at index directory %zu: %zu of %zu bytes",
+                  static_cast<size_t>(header_start_offset), written, length);
+        if (!restored) {
+          LOG_ERROR("Failed to restore index directory at %zu",
+                    static_cast<size_t>(header_start_offset));
+        }
         return IndexError_WriteData;
       }
     }
-  } else {
+  } else if (header_dirty_) {
     for (auto item : header_addr_map_) {
       auto header = item.second.header;
+      if (expanding && header == header_) continue;
       if (!ailego::File::MemoryFlush(header, header->content_offset)) {
         LOG_ERROR("Failed to flush mapped index header, size %zu, %s",
                   (size_t)header->content_offset,
@@ -590,13 +753,23 @@ int IndexMapping::flush() {
       }
     }
   }
+  if (expanding) {
+    // An aborted expansion can discard the tail containing these writes.
+    // Keep the flags set until the directory link has been published.
+    for (auto &entry : segments_) entry.second.segment.reset_dirty();
+  }
   header_dirty_ = false;
   return 0;
 }
 
 int IndexMapping::init_index_mapping(size_t len) {
+  const size_t extent = huge_page_ ? len
+                                   : ailego::File::MemoryMapFootprint(
+                                         current_header_start_offset_, len);
+  if (!extent) return IndexError_InvalidLength;
+
   auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t charge = pool.capacity() ? len : 0;
+  const size_t charge = pool.capacity() ? extent : 0;
   using Pending = ailego::MemoryLimitPool::PendingAllocation;
   Pending mapping_memory(pool, Pending::Kind::kWorkspace);
   if (!mapping_memory.reserve(charge)) return IndexError_NoMemory;
@@ -618,6 +791,11 @@ IndexMapping::HeaderMap::node_type IndexMapping::stage_header_mapping(
 int IndexMapping::init_index_mapping_admitted(
     size_t len, HeaderMap::node_type pending_node,
     ailego::MemoryLimitPool::PendingAllocation &mapping_memory) {
+  const size_t file_size = file_.size();
+  if (current_header_start_offset_ > file_size ||
+      len > file_size - current_header_start_offset_) {
+    return IndexError_InvalidLength;
+  }
   // The managed header already has a pending reservation for the whole view.
   // MAP_POPULATE would run the separate optional prefault admission again.
   int opts = ailego::File::MMAP_SHARED;
@@ -674,17 +852,31 @@ int IndexMapping::init_index_mapping_admitted(
   }
 
   seg_meta_capacity_ = footer_->segments_meta_size;
-  index_size_ = file_.size();
-  if ((footer_->total_size > index_size_) ||
-      (footer_->content_size + footer_->content_padding_size +
-           header_->content_offset >
-       index_size_)) {
-    return IndexError_InvalidLength;
-  }
   if (ailego::Crc32c::Hash(footer_, sizeof(*footer_), footer_->footer_crc) !=
       footer_->footer_crc) {
     return IndexError_InvalidChecksum;
   }
+
+  const uint64_t next_header = footer_->next_meta_header_offset;
+  if (next_header && next_header <= current_header_start_offset_) {
+    return IndexError_InvalidFormat;
+  }
+  const uint64_t section_end = next_header ? next_header : file_size;
+  const uint64_t section_size = section_end - current_header_start_offset_;
+  const uint64_t content_offset = header_->content_offset;
+  if (section_end > file_size || content_offset < len ||
+      content_offset > section_size || footer_->total_size > section_size) {
+    return IndexError_InvalidLength;
+  }
+  const uint64_t content_capacity = section_size - content_offset;
+  if (footer_->content_size > content_capacity ||
+      footer_->content_padding_size >
+          content_capacity - footer_->content_size) {
+    return IndexError_InvalidLength;
+  }
+  uint64_t used_size =
+      (std::max)(footer_->total_size, content_offset + footer_->content_size +
+                                          footer_->content_padding_size);
 
   // Unpack segment table
   if (sizeof(IndexFormat::SegmentMeta) * footer_->segment_count >
@@ -710,9 +902,15 @@ int IndexMapping::init_index_mapping_admitted(
     if (iter->data_index > footer_->content_size) {
       return IndexError_InvalidValue;
     }
-    if (iter->data_index + iter->data_size > footer_->content_size) {
+    if (iter->data_size > footer_->content_size - iter->data_index ||
+        iter->padding_size >
+            content_capacity - iter->data_index - iter->data_size) {
       return IndexError_InvalidLength;
     }
+    // Older writers could leave the footer short of the reserved segment.
+    const uint64_t segment_end = content_offset + iter->data_index +
+                                 iter->data_size + iter->padding_size;
+    used_size = (std::max)(used_size, segment_end);
 
     if (iter->segment_id_offset < segment_ids_offset_) {
       segment_ids_offset_ = iter->segment_id_offset;
@@ -742,13 +940,20 @@ int IndexMapping::init_index_mapping_admitted(
   //   header_dirty_ = true;
   // }
 
-  if (footer_->next_meta_header_offset > 0) {
-    current_header_start_offset_ = footer_->next_meta_header_offset;
-    // Meta sections have all the same size, so we can use the same size to map
-    // the next meta section
-    return this->init_index_mapping(len);
+  if (next_header) {
+    current_header_start_offset_ = next_header;
+    // Growth on a different platform can use a different metadata page size.
+    // Read each section's own length instead of reusing the first one's.
+    if (!file_.seek(current_header_start_offset_,
+                    ailego::File::Origin::Begin)) {
+      return IndexError_SeekFile;
+    }
+    size_t next_len = 0;
+    int ret = UnpackMappingSize(file_, &next_len);
+    return ret == 0 ? this->init_index_mapping(next_len) : ret;
   }
 
+  index_size_ = current_header_start_offset_ + used_size;
   return 0;
 }
 

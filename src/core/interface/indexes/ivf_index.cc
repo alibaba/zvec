@@ -556,14 +556,12 @@ int IVFIndex::_prepare_for_search(
     context->reset_threshold();
   }
 
-  if (ivf_search_param->nprobe > 0 || !legacy_rabitq_) {
-    ailego::Params params;
-    params.set(legacy_rabitq_ ? core::PARAM_IVF_RABITQ_NPROBE
-                              : core::PARAM_IVF_SEARCHER_NPROBE,
-               ivf_search_param->nprobe);
-    return context->update(params);
-  }
-  return 0;
+  ailego::Params params;
+  // Zero explicitly restores scan_ratio instead of retaining a previous query.
+  params.set(legacy_rabitq_ ? core::PARAM_IVF_RABITQ_NPROBE
+                            : core::PARAM_IVF_SEARCHER_NPROBE,
+             static_cast<uint32_t>(std::max(0, ivf_search_param->nprobe)));
+  return context->update(params);
 }
 
 int IVFIndex::merge(const std::vector<Index::Pointer> &indexes,

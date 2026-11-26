@@ -35,13 +35,32 @@ namespace ailego {
 
 namespace {
 
-size_t ReserveMappedPages(size_t bytes, size_t page_offset = 0) {
-  if (bytes == 0) return 0;
-  auto &pool = MemoryLimitPool::get_instance();
-  const size_t page = pool.page_buffer_size();
-  if (bytes > (std::numeric_limits<size_t>::max)() - page_offset - (page - 1))
+size_t FileMappingOffsetAlignment() {
+#if defined(_WIN32)
+  static const size_t granularity = [] {
+    SYSTEM_INFO info{};
+    ::GetSystemInfo(&info);
+    return info.dwAllocationGranularity;
+  }();
+  return granularity;
+#else
+  return MemoryLimitPool::page_buffer_size();
+#endif
+}
+
+size_t MappedPageBytes(size_t bytes, size_t prefix) {
+  const size_t page = MemoryLimitPool::page_buffer_size();
+  if (!bytes ||
+      bytes > (std::numeric_limits<size_t>::max)() - prefix - (page - 1)) {
     return 0;
-  const size_t rounded = ((page_offset + bytes + page - 1) / page) * page;
+  }
+  return ((prefix + bytes + page - 1) / page) * page;
+}
+
+size_t ReserveMappedPages(size_t bytes, size_t page_offset = 0) {
+  const size_t rounded = MappedPageBytes(bytes, page_offset);
+  if (!rounded) return 0;
+  auto &pool = MemoryLimitPool::get_instance();
   return pool.try_reserve_materialization(rounded) ? rounded : 0;
 }
 
@@ -66,6 +85,21 @@ void FinishMappedPages(size_t bytes, bool materialized) {
 }
 
 }  // namespace
+
+size_t File::MemoryMapFootprint(size_t offset, size_t len) {
+  return MappedPageBytes(len, offset % FileMappingOffsetAlignment());
+}
+
+bool File::TryMemoryUnmapFile(void *addr, size_t len, size_t offset) {
+  const size_t alignment = FileMappingOffsetAlignment();
+  const size_t excess = offset % alignment;
+  if (!addr || !len ||
+      reinterpret_cast<uintptr_t>(addr) % alignment != excess ||
+      len > (std::numeric_limits<size_t>::max)() - excess) {
+    return false;
+  }
+  return TryMemoryUnmap(static_cast<char *>(addr) - excess, len + excess);
+}
 
 #if !defined(_WIN64) && !defined(_WIN32)
 
@@ -380,6 +414,18 @@ ssize_t File::offset() const {
 }
 
 void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
+  if (off < 0 || len == 0) {
+    errno = EINVAL;
+    return nullptr;
+  }
+  // A file can have been written on a machine with a smaller page size.
+  // Keep the logical offset independent of the OS mapping boundary.
+  const size_t excess = static_cast<size_t>(off) % FileMappingOffsetAlignment();
+  if (len > std::numeric_limits<size_t>::max() - excess ||
+      ((opts & File::MMAP_HUGE_PAGE) && excess != 0)) {
+    errno = EINVAL;
+    return nullptr;
+  }
   int prot =
       ((opts & File::MMAP_READONLY) ? PROT_READ : PROT_READ | PROT_WRITE);
   int flags = (opts & File::MMAP_SHARED) ? MAP_SHARED : MAP_PRIVATE;
@@ -388,7 +434,7 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   // Populating the mapping is optional. Keep lazy access available when
   // process pressure leaves no room to fault in the whole extent.
   const size_t populate =
-      (opts & File::MMAP_POPULATE) ? ReserveMappedPages(len) : 0;
+      (opts & File::MMAP_POPULATE) ? ReserveMappedPages(len + excess) : 0;
   if (populate) {
     flags |= MAP_POPULATE;
   }
@@ -400,11 +446,12 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   }
 #endif
 
-  void *addr = mmap(nullptr, len, prot, flags, handle, off);
+  void *base = mmap(nullptr, len + excess, prot, flags, handle, off - excess);
 #if defined(MAP_POPULATE)
-  FinishMappedPages(populate, addr != MAP_FAILED);
+  FinishMappedPages(populate, base != MAP_FAILED);
 #endif
-  ailego_null_if_false(addr != MAP_FAILED);
+  ailego_null_if_false(base != MAP_FAILED);
+  void *addr = static_cast<char *>(base) + excess;
 
   const bool locked = (opts & File::MMAP_LOCKED) && MemoryLock(addr, len);
   if (!locked && (opts & File::MMAP_WARMUP)) {
@@ -450,12 +497,33 @@ void *File::MemoryMap(size_t len, int opts) {
 
 void *File::MemoryRemap(void *oldptr, size_t oldsize, void *newptr,
                         size_t newsize) {
+#if defined(__linux__) || defined(__linux) || defined(__NetBSD__)
+  const size_t page_size = getpagesize();
+  const size_t excess = reinterpret_cast<uintptr_t>(oldptr) % page_size;
+  if (!oldptr || oldsize == 0 || newsize == 0 ||
+      oldsize > std::numeric_limits<size_t>::max() - excess ||
+      newsize > std::numeric_limits<size_t>::max() - excess ||
+      (newptr && reinterpret_cast<uintptr_t>(newptr) % page_size != excess)) {
+    errno = EINVAL;
+    return nullptr;
+  }
+  void *oldbase = static_cast<char *>(oldptr) - excess;
+  void *newbase = newptr ? static_cast<char *>(newptr) - excess : nullptr;
+  void *base;
 #if defined(__linux) || defined(__linux__)
-  return newptr ? mremap(oldptr, oldsize, newsize, MREMAP_FIXED, newptr)
-                : mremap(oldptr, oldsize, newsize, MREMAP_MAYMOVE);
+  if (newbase == oldbase) {
+    base = mremap(oldbase, oldsize + excess, newsize + excess, 0);
+  } else if (newbase) {
+    base = mremap(oldbase, oldsize + excess, newsize + excess,
+                  MREMAP_FIXED | MREMAP_MAYMOVE, newbase);
+  } else {
+    base = mremap(oldbase, oldsize + excess, newsize + excess, MREMAP_MAYMOVE);
+  }
 #elif defined(__NetBSD__)
-  return newptr ? mremap(oldptr, oldsize, newptr, newsize, MAP_FIXED)
-                : mremap(oldptr, oldsize, nullptr, newsize, 0);
+  base = mremap(oldbase, oldsize + excess, newbase, newsize + excess,
+                newbase ? MAP_FIXED : 0);
+#endif
+  return base == MAP_FAILED ? nullptr : static_cast<char *>(base) + excess;
 #else
   (void)oldptr;
   (void)oldsize;
@@ -471,12 +539,14 @@ void File::MemoryUnmap(void *addr, size_t len) {
 }
 
 bool File::TryMemoryUnmap(void *addr, size_t len) {
-  return addr && ::munmap(addr, len) == 0;
+  return addr && len && ::munmap(addr, len) == 0;
 }
 
 bool File::MemoryFlush(void *addr, size_t len) {
   ailego_false_if_false(addr);
-  return (msync(addr, len, MS_ASYNC) == 0);
+  const size_t excess = reinterpret_cast<uintptr_t>(addr) % getpagesize();
+  return (msync(static_cast<char *>(addr) - excess, len + excess, MS_ASYNC) ==
+          0);
 }
 
 bool File::MemoryUnlock(void *addr, size_t len) {
@@ -808,11 +878,9 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
   // length, and return base + excess. MemoryUnmap recovers the base by rounding
   // down to granularity.
 
-  SYSTEM_INFO si;
-  GetSystemInfo(&si);
-  DWORD granularity = si.dwAllocationGranularity;
-  ssize_t aligned_off = (off / (ssize_t)granularity) * (ssize_t)granularity;
-  size_t excess = (size_t)(off - aligned_off);
+  const auto granularity = static_cast<ssize_t>(FileMappingOffsetAlignment());
+  const ssize_t aligned_off = (off / granularity) * granularity;
+  const size_t excess = static_cast<size_t>(off - aligned_off);
 
   LARGE_INTEGER max_size;
   max_size.QuadPart = off + len;
@@ -825,10 +893,10 @@ void *File::MemoryMap(NativeHandle handle, ssize_t off, size_t len, int opts) {
 
   DWORD desired_access = FILE_MAP_READ;
   if (!(opts & File::MMAP_READONLY)) {
-    desired_access |= FILE_MAP_WRITE;
-  }
-  if (!(opts & File::MMAP_SHARED)) {
-    desired_access |= FILE_MAP_COPY;
+    // Writable private views must use copy-on-write without FILE_MAP_WRITE,
+    // otherwise writes can reach the backing file.
+    desired_access =
+        (opts & File::MMAP_SHARED) ? FILE_MAP_WRITE : FILE_MAP_COPY;
   }
 
   LARGE_INTEGER view_offset;

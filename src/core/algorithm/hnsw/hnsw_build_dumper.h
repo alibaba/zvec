@@ -13,9 +13,10 @@
 // limitations under the License.
 #pragma once
 
-#include <zvec/ailego/io/file.h>
+#include <optional>
 #include <zvec/core/framework/index_dumper.h>
 #include <zvec/core/framework/index_mapping.h>
+#include "core/framework/index_file_write_lock.h"
 
 namespace zvec::core {
 
@@ -39,11 +40,10 @@ class HnswBuildDumper final : public IndexDumper {
 
  private:
   IndexMapping mapping_;
-  ailego::File file_;
+  std::optional<IndexFileWriteLock> file_lock_;
   const size_t segment_count_;
   size_t metadata_remaining_{0};
   size_t pending_{0};
-  bool opened_{false};
 };
 
 }  // namespace zvec::core

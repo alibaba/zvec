@@ -58,6 +58,27 @@ class SparseChunkBroker {
 
   int flush(uint64_t checkpoint);
 
+  // Use the writer's alignment for logical chunk addressing and growth.
+  size_t align_size(size_t size) const {
+    return (size + page_mask_) & ~page_mask_;
+  }
+
+  size_t layout_page_size() const {
+    return page_mask_ + 1;
+  }
+  size_t chunk_size() const {
+    return chunk_meta_.chunk_size;
+  }
+  bool needs_legacy_layout() const {
+    return legacy_layout_pending_;
+  }
+  bool resolve_legacy_layout(size_t page_size, size_t node_chunk_size,
+                             size_t upper_chunk_size, size_t sparse_chunk_size);
+  void set_max_chunks_size(size_t size) {
+    max_chunks_size_ = size;
+  }
+
+
   //! alloc a new chunk with size, not thread-safe
   std::pair<int, SparseChunk::Pointer> alloc_chunk(int type, uint64_t seq_id,
                                                    size_t size);
@@ -119,7 +140,7 @@ class SparseChunkBroker {
   int init_storage(size_t chunk_size);
 
   //! Load index from storage
-  int load_storage(size_t chunk_size);
+  int load_storage();
 
   static inline const std::string make_segment_id(int type, uint64_t seq_id) {
     return "HnswT" + ailego::StringHelper::ToString(type) + "S" +
@@ -134,6 +155,7 @@ class SparseChunkBroker {
   IndexStorage::Pointer stg_{};
   IndexStorage::Segment::Pointer chunk_meta_segment_{};
   bool check_crc_{false};
+  bool legacy_layout_pending_{false};
   bool dirty_{false};  // set as true if index is modified , the flag
                        // will not be cleared even if flushed
 };

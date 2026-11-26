@@ -35,6 +35,7 @@ int HnswBuildDumper::cleanup() {
 }
 
 int HnswBuildDumper::create(const std::string &path) {
+  if (file_lock_) return IndexError_Duplicate;
   // HnswT<type>S<sequence> uses at most 27 bytes plus its terminator, even
   // with a uint64_t sequence. IndexVersion and IndexMeta are shorter.
   constexpr size_t entry_size = sizeof(IndexFormat::SegmentMeta) + 32;
@@ -46,10 +47,15 @@ int HnswBuildDumper::create(const std::string &path) {
   if (segment_count_ == 0) return IndexError_InvalidArgument;
   if (segment_count_ > max_capacity / entry_size) return IndexError_Overflow;
   metadata_remaining_ = segment_count_ * entry_size;
-  opened_ = true;
-  int ret = mapping_.create(path, metadata_remaining_);
+  int ret = mapping_.create_exclusive(path, metadata_remaining_);
   if (ret != 0) return ret;
-  if (!file_.open(path.c_str(), false, false)) return IndexError_OpenFile;
+  file_lock_.emplace(mapping_.file_.native_handle());
+  ret = file_lock_->try_lock();
+  if (ret != 0) {
+    file_lock_.reset();
+    mapping_.close();
+    return ret;
+  }
   const char *version = IndexVersion::Details();
   const size_t bytes = std::strlen(version);
   if (write(version, bytes) != bytes) return IndexError_WriteData;
@@ -58,30 +64,31 @@ int HnswBuildDumper::create(const std::string &path) {
 }
 
 int HnswBuildDumper::close() {
-  int ret = 0;
-  if (opened_) {
-    mapping_.refresh(0);
-    ret = mapping_.flush();
-    mapping_.close();
-    file_.close();
-    opened_ = false;
-  }
+  if (!file_lock_) return 0;
+  mapping_.refresh(0);
+  const int ret = mapping_.flush_locked();
+  file_lock_.reset();
+  mapping_.close();
+  pending_ = 0;
   return ret;
 }
 
 size_t HnswBuildDumper::write(const void *data, size_t bytes) {
+  if (!file_lock_) return 0;
   const size_t result =
-      file_.write(mapping_.index_size() + pending_, data, bytes);
+      mapping_.file_.write(mapping_.index_size() + pending_, data, bytes);
   pending_ += result;
   return result;
 }
 
 int HnswBuildDumper::append(const std::string &id, size_t data_size,
                             size_t padding_size, uint32_t crc) {
+  if (!file_lock_) return IndexError_Uninitialized;
   if (pending_ != data_size + padding_size) return IndexError_InvalidFormat;
   const size_t metadata_size = sizeof(IndexFormat::SegmentMeta) + id.size() + 1;
   if (metadata_size > metadata_remaining_) return IndexError_IndexFull;
-  int ret = mapping_.append(id, pending_);
+  // The file lock covers the streamed payload and its directory publication.
+  int ret = mapping_.append_impl(id, pending_, /*holds_file_lock=*/true);
   if (ret != 0) return ret;
   metadata_remaining_ -= metadata_size;
   auto segment = mapping_.map(id, false, false);

@@ -17,12 +17,43 @@
 #include <sys/mman.h>
 #endif
 #include <ailego/utility/memory_helper.h>
+#include <zvec/ailego/buffer/vector_page_table.h>
 #include "utility/legacy_read_buffer.h"
 
 // #define DEBUG_PRINT
 
 namespace zvec {
 namespace core {
+namespace {
+
+int WriteNeighborFragments(Chunk *chunk,
+                           const IndexStorage::SegmentData (&writes)[2],
+                           HnswStorageMode storage_mode) {
+  bool crosses_page = false;
+  if (storage_mode == HnswStorageMode::kBufferPool && writes[0].length) {
+    const size_t offset_in_page =
+        (chunk->data_offset() + writes[1].offset) % ailego::kVectorPageSize;
+    const size_t span = writes[0].offset - writes[1].offset + writes[0].length;
+    crosses_page = span > ailego::kVectorPageSize - offset_in_page;
+  }
+  if (!crosses_page) {
+    if (chunk->write_batch(writes, 2)) return 0;
+    const int error = chunk->write_error();
+    if (error != IndexError_NoMemory) return error;
+  }
+
+  // Multi-page admission can wait on a page already pinned by the same batch.
+  // Scalar writes recycle pages between fragments and keep the count last.
+  for (const auto &fragment : writes) {
+    if (fragment.length && chunk->write(fragment.offset, fragment.data,
+                                        fragment.length) != fragment.length) {
+      return chunk->write_error();
+    }
+  }
+  return 0;
+}
+
+}  // namespace
 
 HnswStreamerEntity::HnswStreamerEntity(IndexStreamer::Stats &stats)
     : stats_(stats) {}
@@ -247,15 +278,14 @@ int HnswStreamerEntity::update_neighbors(
   }
 
   auto loc = get_neighbor_chunk_loc(level, id);
-  size_t size = reinterpret_cast<char *>(&hd->neighbors[i]) - buffer.data();
-  size_t ret = loc.first->write(loc.second, hd, size);
-  if (ailego_unlikely(ret != size)) {
-    LOG_ERROR("Write neighbor header failed, ret=%zu", ret);
-
-    return IndexError_Runtime;
-  }
-
-  return 0;
+  // A reverse link can make this node visible before its initial adjacency
+  // is filled. Publish the IDs before the count so readers cannot follow
+  // zero-filled slots into a node that has no upper layer.
+  IndexStorage::SegmentData writes[2];
+  writes[0] = {loc.second + sizeof(NeighborsHeader), i * sizeof(node_id_t),
+               hd->neighbors};
+  writes[1] = {loc.second, sizeof(hd->neighbor_cnt), &hd->neighbor_cnt};
+  return WriteNeighborFragments(loc.first, writes, storage_mode());
 }
 
 const Neighbors HnswStreamerEntity::get_neighbors(level_t level,
@@ -481,8 +511,8 @@ key_t HnswStreamerEntity::get_key(node_id_t id) const {
   }
 }
 
-void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
-                                      uint32_t size, node_id_t neighbor_id) {
+int HnswStreamerEntity::add_neighbor(level_t level, node_id_t id, uint32_t size,
+                                     node_id_t neighbor_id) {
   auto loc = get_neighbor_chunk_loc(level, id);
   size_t offset =
       loc.second + sizeof(NeighborsHeader) + size * sizeof(node_id_t);
@@ -494,11 +524,7 @@ void HnswStreamerEntity::add_neighbor(level_t level, node_id_t id,
   IndexStorage::SegmentData writes[2];
   writes[0] = {offset, sizeof(neighbor_id), &neighbor_id};
   writes[1] = {loc.second, sizeof(neighbors), &neighbors};
-  if (ailego_unlikely(!loc.first->write_batch(writes, 2))) {
-    LOG_ERROR("Append neighbor failed");
-  }
-
-  return;
+  return WriteNeighborFragments(loc.first, writes, storage_mode());
 }
 
 int HnswStreamerEntity::init_chunks(const Chunk::Pointer &header_chunk) {
@@ -589,7 +615,7 @@ int HnswStreamerEntity::open(IndexStorage::Pointer stg, uint64_t max_index_size,
     LOG_ERROR("Open index failed for %s", IndexError::What(ret));
     return ret;
   }
-  ret = init_chunk_params(max_index_size, huge_page);
+  ret = init_chunk_params(max_index_size);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("init_chunk_params failed for %s", IndexError::What(ret));
     return ret;
@@ -677,6 +703,10 @@ int HnswStreamerEntity::close() {
 
   std::lock_guard<std::mutex> lock(mutex_);
   flush_header();
+  // Keep storage alive until every chunk handle has been released.
+  const auto storage = broker_->storage();
+  const int ret = broker_->close();
+  if (ret != 0) return ret;
   mutable_header()->reset();
   upper_neighbor_index_->cleanup();
   keys_map_->clear();
@@ -686,7 +716,7 @@ int HnswStreamerEntity::close() {
   upper_neighbor_chunks_.clear();
   upper_neighbor_chunk_bases_.reset();
 
-  return broker_->close();
+  return 0;
 }
 
 int HnswStreamerEntity::flush(uint64_t checkpoint) {

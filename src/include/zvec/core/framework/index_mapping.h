@@ -83,6 +83,7 @@ class IndexMapping {
     IndexFormat::SegmentMeta *meta_{nullptr};
     void *data_{nullptr};
     mutable bool dirty_{false};
+    bool file_backed_{false};
   };
 
   struct SegmentInfo {
@@ -194,8 +195,17 @@ class IndexMapping {
   IndexMapping &operator=(const IndexMapping &) = delete;
 
  private:
+  friend class HnswBuildDumper;
+
   int create_impl(const std::string &path, size_t seg_meta_capacity,
                   bool exclusive);
+  void reset_mappings();
+  static void unmap_segment(SegmentInfo &segment_info);
+  int check_backing_file() const;
+  int discard_unpublished_tail(bool *mapped_tail = nullptr);
+  int append_impl(const std::string &id, size_t size,
+                  bool holds_file_lock = false);
+  int flush_locked(bool expanding = false);
   void swap(IndexMapping &rhs) noexcept;
   struct MetaMapping {
     IndexFormat::MetaHeader *header;
@@ -215,7 +225,7 @@ class IndexMapping {
   int init_index_mapping_admitted(
       size_t len, HeaderMap::node_type node,
       ailego::MemoryLimitPool::PendingAllocation &memory);
-  static void release_meta_mapping(const MetaMapping &mapping);
+  static void release_meta_mapping(size_t offset, const MetaMapping &mapping);
   //! Members
   uint32_t segment_ids_offset_{0};
   IndexFormat::SegmentMeta *segment_start_{nullptr};
@@ -224,6 +234,8 @@ class IndexMapping {
   IndexFormat::MetaFooter *footer_{nullptr};
   ailego::LazyMap<SegmentMap> segments_{};
   size_t index_size_{0u};
+  size_t backing_file_size_{0u};
+  size_t pending_truncate_size_{0u};
   ailego::File file_{};
   std::string path_;
   bool copy_on_write_{false};

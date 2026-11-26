@@ -56,6 +56,15 @@ class ChunkBroker {
 
   int flush(uint64_t checkpoint);
 
+  // Use the writer's alignment for logical chunk addressing and growth.
+  size_t align_size(size_t size) const {
+    return (size + page_mask_) & ~page_mask_;
+  }
+
+  size_t layout_page_size() const {
+    return page_mask_ + 1;
+  }
+
   int dump_meta(const IndexDumper::Pointer &dumper, size_t node_chunks,
                 size_t node_chunk_size, size_t max_index_size) const;
 
@@ -103,7 +112,7 @@ class ChunkBroker {
   //!
   //! Typical call sequence:
   //!   1. open(stg, chunk_size, check_crc)
-  //!   2. init_chunk_params(max_index_size, huge_page)
+  //!   2. init_chunk_params(max_index_size)
   //!   3. set_max_chunks_size(max_index_size_)           // <- must be here
   //!   4. alloc_chunk(...)
   void set_max_chunks_size(size_t max_chunks_size) {

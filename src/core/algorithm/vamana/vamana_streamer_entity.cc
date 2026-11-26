@@ -343,7 +343,6 @@ void VamanaStreamerEntity::update_entry_point(node_id_t ep) {
 int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
                                uint64_t max_index_size, bool check_crc) {
   std::lock_guard<std::mutex> lock(mutex_);
-  bool huge_page = stg->is_huge_page();
 
   int ret = broker_->open(std::move(stg), chunk_size_, check_crc);
   if (ailego_unlikely(ret != 0)) {
@@ -351,7 +350,7 @@ int VamanaStreamerEntity::open(IndexStorage::Pointer stg,
     return ret;
   }
 
-  ret = init_chunk_params(max_index_size, huge_page);
+  ret = init_chunk_params(max_index_size);
   if (ailego_unlikely(ret != 0)) {
     LOG_ERROR("init_chunk_params failed: %s", IndexError::What(ret));
     return ret;
@@ -457,13 +456,17 @@ int VamanaStreamerEntity::close() {
   LOG_DEBUG("close Vamana index");
   std::lock_guard<std::mutex> lock(mutex_);
   flush_header();
+  // Keep storage alive until every chunk handle has been released.
+  const auto storage = broker_->storage();
+  const int ret = broker_->close();
+  if (ret != 0) return ret;
   mutable_header()->reset();
   keys_map_->clear();
   header_.clear();
   node_chunks_.clear();
   dist_chunks_.clear();
   dist_loaded_ = false;
-  return broker_->close();
+  return 0;
 }
 
 int VamanaStreamerEntity::flush(uint64_t checkpoint) {

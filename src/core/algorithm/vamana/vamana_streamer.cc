@@ -124,7 +124,8 @@ int VamanaStreamer::init(const IndexMeta &imeta, const ailego::Params &params) {
 
 int VamanaStreamer::cleanup() {
   if (state_ == STATE_OPENED) {
-    this->close();
+    const int ret = this->close();
+    if (ret != 0) return ret;
   }
 
   LOG_INFO("VamanaStreamer cleanup");
@@ -350,7 +351,6 @@ int VamanaStreamer::open(IndexStorage::Pointer stg) {
 int VamanaStreamer::close() {
   LOG_INFO("VamanaStreamer close");
 
-  stats_.clear();
   meta_.set_metric(metric_->name(), 0, metric_->params());
   if (entity_->dirty()) {
     int ret = entity_->set_index_meta(meta_);
@@ -358,6 +358,7 @@ int VamanaStreamer::close() {
   }
   int ret = entity_->close();
   if (ret != 0) return ret;
+  stats_.clear();
   state_ = STATE_INITED;
   return 0;
 }
