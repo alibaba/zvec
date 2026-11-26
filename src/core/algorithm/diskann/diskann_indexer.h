@@ -82,7 +82,7 @@ class DiskAnnIndexer {
     }
   }
 
-  std::vector<bool> read_nodes(
+  std::vector<int> read_nodes(
       const std::vector<diskann_id_t> &node_ids,
       std::vector<void *> &coord_buffers,
       std::vector<std::pair<uint32_t, diskann_id_t *>> &nbr_buffers);

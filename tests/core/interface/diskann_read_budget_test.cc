@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <new>
@@ -15,9 +16,11 @@
 #include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "../../../src/core/algorithm/diskann/diskann_entity.h"
 #include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace {
@@ -193,6 +196,91 @@ TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchUsesCallerOutputBuffers) {
   EXPECT_LT(scores.front(), 1e-4f);
   EXPECT_EQ(-1, ids.back());
   EXPECT_TRUE(std::isnan(scores.back()));
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchGrowsHeapWithMatches) {
+  const auto path = (directory_ / "large_topk.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 4096;
+  query->list_size = 48;
+  query->bf_pks = std::make_shared<std::vector<uint64_t>>(1, 7);
+  const VectorData input{DenseVector{rows.data() + 7 * kDimension}};
+  SearchResult result;
+  using HeapEntry = std::pair<core::diskann_id_t, core::VectorInfo>;
+  refused_aligned_size = query->topk * sizeof(HeapEntry) +
+                         sizeof(ailego::ProcessRssBudget::MaterializationStamp);
+  const auto restore =
+      ailego::ScopeGuard::Make([] { refused_aligned_size = 0; });
+  ASSERT_EQ(0, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(7u, result.doc_list_.front().key());
+
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, index->fetch(7, &fetched));
+  query->topk = 1;
+  ASSERT_EQ(0, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(7u, result.doc_list_.front().key());
+  ASSERT_EQ(0, index->close());
+}
+
+class StartupPressureLogger final : public ailego::Logger {
+ public:
+  int init(const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    return 0;
+  }
+  void log(int, const char *, int, const char *format, va_list) override {
+    if (std::strcmp(format, "Loading centroid data from medoid vector data") ==
+        0) {
+      tightened =
+          ailego::MemoryLimitPool::get_instance().configure_process_rss_limit(
+              1);
+    }
+  }
+
+  bool tightened{false};
+};
+
+TEST_P(DiskAnnReadBudgetTest, MedoidReadPreservesNoMemoryAndCanRetry) {
+  if (GetParam() != StorageType::kBufferPool) GTEST_SKIP();
+  const auto path = (directory_ / "startup.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 77));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
+  const auto options = StorageOptions{GetParam(), false, true};
+  {
+    const auto logger = std::make_shared<StartupPressureLogger>();
+    auto previous = ailego::LoggerBroker::Register(logger);
+    int previous_level = ailego::Logger::LEVEL_DEBUG;
+    while (previous_level < ailego::Logger::LEVEL_FATAL &&
+           !ailego::LoggerBroker::IsLevelEnabled(previous_level)) {
+      ++previous_level;
+    }
+    const auto restore = ailego::ScopeGuard::Make([&] {
+      ailego::LoggerBroker::SetLevel(previous_level);
+      ailego::LoggerBroker::Register(std::move(previous));
+    });
+    ailego::LoggerBroker::SetLevel(ailego::Logger::LEVEL_INFO);
+    EXPECT_EQ(core::IndexError_NoMemory, index->open(path, options));
+    ASSERT_TRUE(logger->tightened);
+  }
+  EXPECT_EQ(0u, ailego::PoolPayloadBudget::get_instance().used());
+  ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
+  ASSERT_EQ(0, index->open(path, options));
   ASSERT_EQ(0, index->close());
 }
 

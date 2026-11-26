@@ -44,7 +44,7 @@ struct IoUringRing::AsyncReads {
     size_t offset;
     bool seen{false};
   };
-  BudgetedVector<Slot> slots;
+  OptionalBudgetedVector<Slot> slots;
   size_t submitted{0};
   size_t completed{0};
 };
@@ -67,8 +67,9 @@ int IoUringRing::submit_reads(int fd, const IoUringRead *reads, size_t count) {
     return -1;
   try {
     MemoryReservation memory;
-    memory.add(sizeof(AsyncReads));
-    auto state = std::make_unique<AsyncReads>();
+    std::unique_ptr<AsyncReads> state;
+    memory.add_for_allocation<false>(
+        sizeof(AsyncReads), [&] { state = std::make_unique<AsyncReads>(); });
     state->memory.swap(memory);
     state->slots.reserve(count);
     size_t bytes = 0;

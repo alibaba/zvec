@@ -169,7 +169,8 @@ class DiskAnnContext : public IndexContext,
   //! Set topk of search result
   void set_topk(uint32_t val) override {
     topk_ = val;
-    topk_heap_.limit(val);
+    topk_heap_.clear();
+    topk_heap_.limit_on_demand(val);
   }
 
   void set_list_size(uint32_t list_size) {
@@ -264,9 +265,7 @@ class DiskAnnContext : public IndexContext,
   //! context. Search scratch space is always owned by the original context.
   void copy_query_options_from(const DiskAnnContext &rhs) {
     copy_common_query_options_from(rhs);
-    topk_ = rhs.topk_;
-    topk_heap_.clear();
-    topk_heap_.limit(topk_);
+    set_topk(rhs.topk_);
     group_num_ = rhs.group_num_;
     group_topk_ = rhs.group_topk_;
     group_topk_heaps_.clear();
@@ -332,9 +331,7 @@ class DiskAnnContext : public IndexContext,
     group_num_ = group_num;
     group_topk_ = group_topk;
 
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(topk_);
+    set_topk(group_topk_ * group_num_);
 
     group_topk_heaps_.clear();
   }
@@ -367,6 +364,7 @@ class DiskAnnContext : public IndexContext,
 
  private:
   void clear_scratch(bool discard_slots = false);
+  void release_search_heaps();
   void prepare_vector_candidates();
 
   //! Hooks required by TopkResultBuilder.

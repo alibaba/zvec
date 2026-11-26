@@ -261,9 +261,8 @@ int Index::_search_refine_internal_ids(
 
 template <typename Id>
 int Index::_normalize_buffer_scores(const VectorData &vector_data,
-                                    const Id *output_ids,
-                                    float *output_scores, size_t count,
-                                    bool process_rss) {
+                                    const Id *output_ids, float *output_scores,
+                                    size_t count, bool process_rss) {
   if (!output_scores || count == 0) return 0;
   if (metric_ && metric_->support_normalize()) {
     for (size_t i = 0; i < count; ++i) {

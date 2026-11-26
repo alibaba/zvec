@@ -15,6 +15,8 @@ namespace zvec::ailego {
 
 template <typename T>
 using BudgetedVector = std::vector<T, BudgetedAllocator<T>>;
+template <typename T>
+using OptionalBudgetedVector = std::vector<T, OptionalBudgetedAllocator<T>>;
 using BudgetedString =
     std::basic_string<char, std::char_traits<char>, BudgetedAllocator<char>>;
 

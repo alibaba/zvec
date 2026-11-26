@@ -135,10 +135,10 @@ struct PendingBatch {
   std::shared_ptr<BufferReadBatch> buffer;
 #if defined(__linux__) && !defined(__ANDROID__)
   DiskAnnReadVector<AlignedRead> ring_reads;
-  ailego::BudgetedVector<struct iocb> cbs;
-  ailego::BudgetedVector<struct iocb *> cb_ptrs;
-  ailego::BudgetedVector<struct io_event> events;
-  ailego::BudgetedVector<void *> destinations;
+  ailego::OptionalBudgetedVector<struct iocb> cbs;
+  ailego::OptionalBudgetedVector<struct iocb *> cb_ptrs;
+  ailego::OptionalBudgetedVector<struct io_event> events;
+  ailego::OptionalBudgetedVector<void *> destinations;
 #elif defined(_WIN32) || defined(_WIN64)
   std::array<uint64_t, MAX_IO_DEPTH> expected_lengths;
   std::array<uint8_t, MAX_IO_DEPTH> completed;

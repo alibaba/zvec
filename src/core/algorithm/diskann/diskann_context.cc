@@ -40,6 +40,7 @@ DiskAnnContext::SearchResults::~SearchResults() {
   context_.staged_results_ = nullptr;
   if (committed_) {
     context_.release_candidates();
+    context_.release_search_heaps();
   } else {
     context_.clear_scratch(/*discard_slots=*/true);
   }
@@ -64,7 +65,7 @@ void DiskAnnContext::SearchResults::commit() {
 
 void DiskAnnContext::clear_scratch(bool discard_slots) {
   release_candidates();
-  topk_heap_.clear();
+  release_search_heaps();
   if (candidate_vectors_.capacity() &&
       (discard_slots || candidate_vectors_.capacity() / 2 > topk_ ||
        ailego::MemoryLimitPool::get_instance().under_process_rss_pressure())) {
@@ -73,8 +74,19 @@ void DiskAnnContext::clear_scratch(bool discard_slots) {
   best_list_nodes_.clear();
   expanded_nodes_.clear();
   visit_filter_.clear();
-  group_topk_heaps_.clear();
   error_code_ = 0;
+}
+
+void DiskAnnContext::release_search_heaps() {
+  topk_heap_.clear();
+  // Keep the common small-query allocation when the context returns to
+  // the pool. Large heaps can grow again when another query needs them.
+  constexpr size_t kRetainedTopkEntries = 256;
+  auto &entries = topk_heap_.mutable_container();
+  if (entries.capacity() > kRetainedTopkEntries) {
+    std::decay_t<decltype(entries)>{}.swap(entries);
+  }
+  group_topk_heaps_.clear();
 }
 
 void DiskAnnContext::prepare_vector_candidates() {

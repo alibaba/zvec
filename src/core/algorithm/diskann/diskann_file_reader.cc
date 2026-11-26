@@ -466,10 +466,10 @@ int execute_io_libaio(IoBackend &ctx, int fd,
   if (!ctx.aio_ctx || ctx.aio_quarantined)
     return execute_io_pread(fd, read_reqs);
   const size_t batch_size = std::min<size_t>(read_reqs.size(), MAX_EVENTS);
-  ailego::BudgetedVector<iocb_t *> cbs;
-  ailego::BudgetedVector<io_event_t> evts;
-  ailego::BudgetedVector<struct iocb> cb;
-  ailego::BudgetedVector<uint8_t> seen;
+  ailego::OptionalBudgetedVector<iocb_t *> cbs;
+  ailego::OptionalBudgetedVector<io_event_t> evts;
+  ailego::OptionalBudgetedVector<struct iocb> cb;
+  ailego::OptionalBudgetedVector<uint8_t> seen;
   const auto finish = ailego::ScopeGuard::Make([&] {
     if (ctx.aio_active)
       retire_aio_context(ctx);
@@ -1273,7 +1273,6 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
 // Per-operation state owns cache-load claims, not the caller's output buffers.
 // Kernel destinations belong to the native reader's charged I/O context.
 struct BufferReadBatch {
-  ailego::MemoryReservation memory;
   std::shared_ptr<ailego::VecBufferPool> pool;
   const BufferPoolAlignedFileReader *owner{nullptr};
   PendingBatch native;
@@ -1287,10 +1286,10 @@ struct BufferReadBatch {
     size_t page, request;
     char *destination;
   };
-  ailego::BudgetedVector<Page> pages;
-  ailego::BudgetedVector<Piece> pieces;
-  ailego::BudgetedVector<size_t> remaining, order, ends;
-  ailego::BudgetedVector<uint32_t> ready;
+  ailego::OptionalBudgetedVector<Page> pages;
+  ailego::OptionalBudgetedVector<Piece> pieces;
+  ailego::OptionalBudgetedVector<size_t> remaining, order, ends;
+  ailego::OptionalBudgetedVector<uint32_t> ready;
   ailego::MemoryReservation io_memory;
   std::vector<AlignedRead> reads;
   std::vector<uint32_t> completed;
@@ -1514,10 +1513,10 @@ int BufferPoolAlignedFileReader::submit(PendingBatch &batch,
 #endif
   std::shared_ptr<BufferReadBatch> plan;
   try {
-    ailego::MemoryReservation memory;
-    memory.add(sizeof(BufferReadBatch) + 64);
-    plan = std::make_shared<BufferReadBatch>();
-    plan->memory.swap(memory);
+    // Overlap is optional. Do not wait for cache capacity that a
+    // synchronous read can bypass.
+    plan = std::allocate_shared<BufferReadBatch>(
+        ailego::OptionalBudgetedAllocator<BufferReadBatch>{});
     plan->pool = pool_;
     plan->owner = this;
     plan->pages.reserve(occurrences);
@@ -1526,9 +1525,12 @@ int BufferPoolAlignedFileReader::submit(PendingBatch &batch,
     plan->ends.reserve(occurrences);
     plan->ready.reserve(requests.size());
     plan->remaining.resize(requests.size());
-    ailego::ReserveVectorCapacity(plan->reads, plan->io_memory, occurrences);
-    ailego::ReserveVectorCapacity(plan->completed, plan->io_memory,
-                                  occurrences);
+    plan->io_memory.add_for_allocation<false>(
+        occurrences * sizeof(AlignedRead),
+        [&] { plan->reads.reserve(occurrences); });
+    plan->io_memory.add_for_allocation<false>(
+        occurrences * sizeof(uint32_t),
+        [&] { plan->completed.reserve(occurrences); });
     for (size_t r = 0; r < requests.size(); ++r) {
       const auto &request = requests[r];
       plan->remaining[r] = request.len / page_size;

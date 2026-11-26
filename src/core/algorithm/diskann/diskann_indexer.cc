@@ -312,12 +312,12 @@ int DiskAnnIndexer::use_medroids_data_as_centroids() {
 
   auto read_status =
       read_nodes(entrypoints_, entrypoint_buffers, neighbor_buffers);
-  if (std::find(read_status.begin(), read_status.end(), false) !=
-      read_status.end()) {
-    LOG_ERROR("Failed to read one or more entrypoint vectors");
-    return IndexError_ReadData;
+  for (const int status : read_status) {
+    if (status != 0) {
+      LOG_ERROR("Failed to read entrypoint vectors, ret=%d", status);
+      return status == IndexError_NoMemory ? status : IndexError_ReadData;
+    }
   }
-
   return 0;
 }
 
@@ -329,17 +329,17 @@ diskann_id_t DiskAnnIndexer::get_id(diskann_key_t key) const {
   return entity_->get_id(key);
 }
 
-std::vector<bool> DiskAnnIndexer::read_nodes(
+std::vector<int> DiskAnnIndexer::read_nodes(
     const std::vector<diskann_id_t> &node_ids,
     std::vector<void *> &coord_buffers,
     std::vector<std::pair<uint32_t, diskann_id_t *>> &neighbor_buffers) {
-  std::vector<bool> retval(node_ids.size(), true);
+  std::vector<int> retval(node_ids.size(), 0);
   if (coord_buffers.size() != node_ids.size() ||
       neighbor_buffers.size() != node_ids.size()) {
     LOG_ERROR(
         "read_nodes: node, coordinate, and neighbor buffer counts must "
         "match");
-    std::fill(retval.begin(), retval.end(), false);
+    std::fill(retval.begin(), retval.end(), IndexError_InvalidArgument);
     return retval;
   }
   if (node_ids.empty()) {
@@ -349,26 +349,29 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   std::vector<AlignedRead> read_reqs;
   read_reqs.reserve(node_ids.size());
 
-  uint8_t *buf = nullptr;
+  void *buf = nullptr;
   auto sector_num =
       node_per_sector_ > 0
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
   DiskAnnUtil::alloc_aligned(
-      (void **)&buf, node_ids.size() * sector_num * DiskAnnUtil::kSectorSize,
+      &buf, node_ids.size() * sector_num * DiskAnnUtil::kSectorSize,
       DiskAnnUtil::kSectorSize);
   if (buf == nullptr) {
     LOG_ERROR("read_nodes: failed to allocate aligned read buffer");
-    std::fill(retval.begin(), retval.end(), false);
+    std::fill(retval.begin(), retval.end(), IndexError_NoMemory);
     return retval;
   }
+  const std::unique_ptr<void, decltype(&DiskAnnUtil::free_aligned)> buffer(
+      buf, &DiskAnnUtil::free_aligned);
 
   for (size_t i = 0; i < node_ids.size(); ++i) {
     auto node_id = node_ids[i];
 
     AlignedRead read;
     read.len = sector_num * DiskAnnUtil::kSectorSize;
-    read.buf = buf + i * sector_num * DiskAnnUtil::kSectorSize;
+    read.buf =
+        static_cast<uint8_t *>(buf) + i * sector_num * DiskAnnUtil::kSectorSize;
     read.offset =
         index_segment_offset_ +
         DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
@@ -380,10 +383,7 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
   int read_ret = reader_->read(read_reqs, init_ctx_);
   if (read_ret != 0) {
     LOG_ERROR("read_nodes: reader_->read failed, ret=%d", read_ret);
-    for (size_t i = 0; i < retval.size(); i++) {
-      retval[i] = false;
-    }
-    DiskAnnUtil::free_aligned(buf);
+    std::fill(retval.begin(), retval.end(), read_ret);
     return retval;
   }
 
@@ -406,7 +406,7 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
         LOG_ERROR(
             "read_nodes: node %u has %u neighbors, exceeding max degree %u",
             node_ids[i], neighbor_num, max_degree_);
-        retval[i] = false;
+        retval[i] = IndexError_ReadData;
         continue;
       }
 
@@ -415,8 +415,6 @@ std::vector<bool> DiskAnnIndexer::read_nodes(
              neighbor_num * sizeof(diskann_id_t));
     }
   }
-
-  DiskAnnUtil::free_aligned(buf);
 
   return retval;
 }
@@ -553,7 +551,7 @@ int DiskAnnIndexer::load_cache_list(CacheLoadState &state) {
     const auto read_status =
         read_nodes(nodes_to_read, coord_buffers, neighbor_buffers);
     for (size_t i = 0; i < read_status.size(); ++i) {
-      if (read_status[i]) {
+      if (read_status[i] == 0) {
         const size_t slot_idx = pending_slots[start_idx + i];
         state.slots[slot_idx].loaded = true;
         state.slots[slot_idx].neighbor_count = neighbor_buffers[i].first;
@@ -723,7 +721,7 @@ int DiskAnnIndexer::cache_bfs_levels(uint64_t num_nodes_to_cache,
           read_nodes(nodes_to_read, coord_buffers, neighbor_buffers);
 
       for (size_t i = 0; i < read_status.size(); i++) {
-        if (!read_status[i]) {
+        if (read_status[i] != 0) {
           continue;
         }
 
@@ -794,7 +792,7 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
       std::string group_id = ctx->group_by()(key);
       auto &group_topk_heap = group_topk_heaps[group_id];
       if (group_topk_heap.empty()) {
-        group_topk_heap.limit(ctx->group_topk());
+        group_topk_heap.limit_on_demand(ctx->group_topk());
       }
       group_topk_heap.emplace(id, std::move(info));
     } else {
@@ -957,7 +955,7 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
       std::string group_id = ctx->group_by()(key);
       auto &group_topk_heap = group_topk_heaps[group_id];
       if (group_topk_heap.empty()) {
-        group_topk_heap.limit(ctx->group_topk());
+        group_topk_heap.limit_on_demand(ctx->group_topk());
       }
       group_topk_heap.emplace(id, std::move(info));
     } else {
@@ -1539,7 +1537,7 @@ void DiskAnnIndexer::populate_group_topk_heaps(DiskAnnContext *ctx) {
 
     auto &group_topk_heap = group_topk_heaps[group_id];
     if (group_topk_heap.empty()) {
-      group_topk_heap.limit(ctx->group_topk());
+      group_topk_heap.limit_on_demand(ctx->group_topk());
     }
     group_topk_heap.emplace(id, info);
   }
@@ -1693,7 +1691,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {
-            group_topk_heap.limit(ctx->group_topk());
+            group_topk_heap.limit_on_demand(ctx->group_topk());
           }
 
           group_topk_heap.emplace(
@@ -1750,7 +1748,7 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
           auto &group_topk_heap = group_topk_heaps[group_id];
           if (group_topk_heap.empty()) {
-            group_topk_heap.limit(ctx->group_topk());
+            group_topk_heap.limit_on_demand(ctx->group_topk());
           }
 
           group_topk_heap.emplace(

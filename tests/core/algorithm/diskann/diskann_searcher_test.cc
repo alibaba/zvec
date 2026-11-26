@@ -1464,6 +1464,20 @@ TEST_F(DiskAnnSearcherTest, TestFetchVector) {
   ASSERT_EQ(1u, linear_by_p_keys_ctx->result().size());
   EXPECT_EQ(fetch_key, linear_by_p_keys_ctx->result().front().key());
 
+  auto oversized_ctx = searcher->create_context();
+  ASSERT_NE(nullptr, oversized_ctx);
+  auto &scratch = static_cast<DiskAnnContext &>(*oversized_ctx).topk_heap();
+  constexpr uint32_t kLargeTopk = 1024;
+  oversized_ctx->set_topk(kLargeTopk);
+  EXPECT_LT(scratch.container().capacity(), kLargeTopk);
+  ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, oversized_ctx));
+  ASSERT_EQ(kLargeTopk, oversized_ctx->result().size());
+  EXPECT_TRUE(scratch.empty());
+  EXPECT_EQ(0u, scratch.container().capacity());
+  oversized_ctx->set_topk(1);
+  ASSERT_EQ(0, searcher->search_bf_impl(vec.data(), qmeta, oversized_ctx));
+  ASSERT_EQ(1u, oversized_ctx->result().size());
+
   // Submit and completion go to the real reader. With fewer groups than
   // requested, the first direct read through the wrapper is the expansion.
   auto grouped_ctx = searcher->create_context();

@@ -666,6 +666,53 @@ TEST(DiskAnnLinuxAioTest, PartialSubmissionLogFailureRetiresStaging) {
   }
 }
 
+TEST(DiskAnnLinuxAioTest, CacheFullGraphSubmitFallsBackWithoutCapacityWait) {
+  const size_t page = ailego::kVectorPageSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const std::vector<uint8_t> source(2 * page, 0x67);
+  ASSERT_EQ(static_cast<ssize_t>(source.size()),
+            ::pwrite(file.fd(), source.data(), source.size(), 0));
+  auto &memory = ailego::PoolPayloadBudget::get_instance();
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const size_t previous_capacity = memory.capacity();
+  const auto previous_limit = rss.process_rss_limit();
+  ASSERT_EQ(
+      0, memory.init(2 * page +
+                     ailego::VecBufferPool::metadata_bytes_for_page_count(2)));
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(previous_limit));
+    EXPECT_EQ(0, memory.init(previous_capacity));
+  });
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(0, pool->init());
+  ASSERT_TRUE(pool->cache_enabled());
+  const ailego::block_id_t hot = 0;
+  ASSERT_NE(nullptr, pool->acquire_buffer(hot, 1));
+  const auto unpin =
+      ailego::ScopeGuard::Make([&] { pool->release_pages(&hot, 1); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(uint64_t{1} << 40));
+  auto output = std::unique_ptr<void, decltype(&std::free)>(
+      allocate_aligned(page), &std::free);
+  ASSERT_NE(nullptr, output);
+  std::vector<AlignedRead> reads{{page, page, output.get()}};
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(0, reader.open_from_pool(file.path()));
+  IOContext ctx = new IoBackend;
+  ctx->type = ailego::IOBackendType::kLibAio;
+  const auto release = ailego::ScopeGuard::Make([&] { destroy_io_ctx(ctx); });
+
+  const auto waits = rss.stats().capacity_waits;
+  PendingBatch batch;
+  ASSERT_EQ(0, reader.submit(batch, reads, ctx));
+  EXPECT_TRUE(batch.used_pread);
+  EXPECT_EQ(waits, rss.stats().capacity_waits);
+  std::vector<uint32_t> done;
+  ASSERT_EQ(1, reader.get_completed(batch, ctx, 1, done));
+  EXPECT_EQ((std::vector<uint32_t>{0}), done);
+  EXPECT_EQ(0, std::memcmp(output.get(), source.data() + page, page));
+}
+
 TEST(DiskAnnLinuxAioTest, OptionalStagingFallsBackWithoutCapacityWait) {
   TemporaryFile file;
   const auto source = make_source();
