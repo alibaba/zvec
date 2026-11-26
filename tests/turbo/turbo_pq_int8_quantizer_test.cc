@@ -101,6 +101,32 @@ TEST(PqInt8Quantizer, InitInvalidParams) {
   EXPECT_NE(0, q2->init(meta, params));
 }
 
+TEST(PqQuantizer, PublicScoresAndThresholds) {
+  for (const char *name :
+       {"PqInt4Quantizer", "PqInt8Quantizer", "PqFastQuantizer"}) {
+    for (const char *metric : {"SquaredEuclidean", "InnerProduct", "Cosine"}) {
+      SCOPED_TRACE(std::string(name) + "/" + metric);
+      auto quantizer = IndexFactory::CreateQuantizer(name);
+      ASSERT_NE(nullptr, quantizer);
+      IndexMeta meta;
+      meta.set_meta(IndexMeta::DataType::DT_FP32, 16);
+      meta.set_metric(metric, 0, Params());
+      Params params;
+      params.set("num_chunk", uint32_t{4});
+      ASSERT_EQ(0, quantizer->init(meta, params));
+      const bool inner_product = std::string(metric) == "InnerProduct";
+      ASSERT_EQ(inner_product, quantizer->support_score_normalization());
+      if (inner_product) {
+        float score = -3.25f;
+        quantizer->normalize_score(&score);
+        EXPECT_FLOAT_EQ(3.25f, score);
+        quantizer->denormalize_score(&score);
+        EXPECT_FLOAT_EQ(-3.25f, score);
+      }
+    }
+  }
+}
+
 TEST(PqInt8Quantizer, TrainAndEncode) {
   const size_t DIM = 16;
   const size_t NSQ = 4;

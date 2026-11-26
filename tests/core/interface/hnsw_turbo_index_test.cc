@@ -2864,6 +2864,31 @@ TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
     EXPECT_FLOAT_EQ(expected_rows.doc_list_[i].score(), scores[i]);
   }
 
+  if (metric == MetricType::kInnerProduct) {
+    // Compare against reconstructed PQ vectors, not another search route that
+    // could share the same missing score conversion.
+    for (const auto &doc : expected_rows.doc_list_) {
+      VectorDataBuffer decoded;
+      ASSERT_EQ(0, index->fetch(doc.key(), &decoded));
+      const auto &data =
+          std::get<DenseVectorBuffer>(decoded.vector_buffer).data;
+      const auto *reconstructed = reinterpret_cast<const float *>(data.data());
+      float dot = 0.0f;
+      for (size_t d = 0; d < kDimension; ++d) {
+        dot += vectors[11][d] * reconstructed[d];
+      }
+      EXPECT_NEAR(dot, doc.score(), 1e-4f * std::max(1.0f, std::abs(dot)));
+    }
+    ASSERT_GT(scores.front(), 0.0f);
+    query_param->radius = scores.front() + 1.0f;
+    ASSERT_EQ(0, index->search(query, query_param, &expected_rows));
+    EXPECT_TRUE(expected_rows.doc_list_.empty());
+    ASSERT_EQ(0, index->search_internal_ids(query, query_param, ids.data(),
+                                            scores.data()));
+    EXPECT_TRUE(std::all_of(ids.begin(), ids.end(),
+                            [](int64_t id) { return id == -1; }));
+  }
+
   // Train a separate codebook from reconstructed source vectors. Codes from
   // the first index must be decoded and encoded again, even with equal layout.
   auto merged = IndexFactory::CreateAndInitIndex(*param);
