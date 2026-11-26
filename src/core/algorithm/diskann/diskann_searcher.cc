@@ -102,7 +102,7 @@ int DiskAnnSearcher::cleanup() {
 }
 
 int DiskAnnSearcher::load(IndexStorage::Pointer storage,
-                          IndexMetric::Pointer measure) {
+                          IndexMetric::Pointer measure) try {
   LOG_INFO("DiskAnnSearcher::load Begin");
 
   if (!storage) {
@@ -114,11 +114,11 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
     return IndexError_NoReady;
   }
 
-  diskann_indexer_.reset();
-  entity_.clear();
-  measure_.reset();
-  meta_.clear();
-  stats_.clear();
+  reset_loaded_index();
+  bool loaded = false;
+  AILEGO_DEFER([&] {
+    if (!loaded) reset_loaded_index();
+  });
 
   auto start_time = ailego::Monotime::MilliSeconds();
 
@@ -190,13 +190,19 @@ int DiskAnnSearcher::load(IndexStorage::Pointer storage,
   magic_ = IndexContext::GenerateMagic();
 
   LOG_INFO("DiskAnnSearcher::load Done");
-
+  loaded = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 int DiskAnnSearcher::unload() {
   LOG_INFO("DiskAnnSearcher unload index");
+  reset_loaded_index();
+  return 0;
+}
 
+void DiskAnnSearcher::reset_loaded_index() {
   const State next_state = state_ == STATE_INIT ? STATE_INIT : STATE_INITED;
   diskann_indexer_.reset();
   entity_.clear();
@@ -204,8 +210,6 @@ int DiskAnnSearcher::unload() {
   meta_.clear();
   stats_.clear();
   state_ = next_state;
-
-  return 0;
 }
 
 int DiskAnnSearcher::update_context(DiskAnnContext *ctx) const {

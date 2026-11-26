@@ -1361,11 +1361,10 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
     while (candidates.has_unexpanded_node() &&
            frontier.size() < effective_beam_width &&
            num_seen < effective_beam_width) {
+      const auto neighbor = candidates.closest_unexpanded();
       bool filtered;
-      const int status =
-          is_filtered(ctx, candidates.peek_closest_unexpanded().id, &filtered);
+      const int status = is_filtered(ctx, neighbor.id, &filtered);
       if (status != 0) return status;
-      auto neighbor = candidates.closest_unexpanded(!filtered);
       num_seen++;
 
       auto iter = neighbor_cache_.find(neighbor.id);

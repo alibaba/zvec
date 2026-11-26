@@ -139,6 +139,7 @@ class DiskAnnSearcher : public IndexSearcher {
   void print_debug_info() override;
 
  private:
+  void reset_loaded_index();
   int create_search_context(Context::Pointer &context) const;
 
   template <typename T, typename LabelT = uint32_t>

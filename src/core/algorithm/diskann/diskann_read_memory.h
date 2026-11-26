@@ -61,12 +61,17 @@ class DiskAnnReadReservation {
       value.resize(size);
       return;
     }
-    if (size >= (std::numeric_limits<size_t>::max)() / 2)
+    // A fresh sized string avoids geometric growth. The supported standard
+    // libraries round its backing up by less than a cache line, including
+    // the terminator. Settle the charge against the allocated capacity.
+    constexpr size_t kAllocationSlack = 64;
+    if (size > value.max_size() ||
+        size > (std::numeric_limits<size_t>::max)() - kAllocationSlack)
       throw std::bad_alloc();
     DiskAnnReadReservation replacement_charge;
     std::string replacement;
-    replacement_charge.allocate(2 * (size + 1), [&] {
-      replacement.resize(size);
+    replacement_charge.allocate(size + kAllocationSlack, [&] {
+      replacement = std::string(size, '\0');
       return replacement.capacity() + 1;
     });
     value.swap(replacement);

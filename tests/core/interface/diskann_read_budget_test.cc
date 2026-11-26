@@ -20,6 +20,7 @@
 #include <zvec/ailego/buffer/block_eviction_queue.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/float_helper.h>
+#include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
 #include "../../../src/core/algorithm/diskann/diskann_entity.h"
@@ -52,6 +53,12 @@ struct QueueResidentSampleTestPeer {
   static bool configure_fixed_rss(MemoryLimitPool &pool, size_t limit) {
     return pool.process_rss_.configure(
         limit, +[]() -> size_t { return 32UL << 20; });
+  }
+  static bool configure_headroom(MemoryLimitPool &pool, size_t headroom) {
+    constexpr size_t kMeasurementLimit = 128UL << 20;
+    return configure_fixed_rss(pool, kMeasurementLimit) &&
+           configure_fixed_rss(pool,
+                               kMeasurementLimit - available(pool) + headroom);
   }
   static size_t available(MemoryLimitPool &pool) {
     return pool.process_rss_.available();
@@ -102,30 +109,34 @@ class DiskAnnReadBudgetTest : public ::testing::TestWithParam<StorageType> {
 
   template <typename Value>
   void build_index(const std::string &path, const BaseIndexParam &param,
-             std::vector<Value> *rows, unsigned seed) {
+                   std::vector<Value> *rows, unsigned seed,
+                   uint32_t doc_count = kDocs) {
     std::mt19937 random(seed);
     std::uniform_real_distribution<float> uniform(-1.0f, 1.0f);
-    rows->resize(kDocs * kDimension);
+    const auto dimension = static_cast<size_t>(param.dimension);
+    rows->resize(doc_count * dimension);
     for (auto &value : *rows) value = static_cast<Value>(uniform(random));
     auto index = IndexFactory::CreateAndInitIndex(param);
     ASSERT_NE(nullptr, index);
     ASSERT_EQ(0, index->open(path, {StorageType::kMMAP, true}));
-    for (uint32_t id = 0; id < kDocs; ++id) {
-      ASSERT_EQ(0, index->add(
-          VectorData{DenseVector{rows->data() + id * kDimension}}, id));
+    for (uint32_t id = 0; id < doc_count; ++id) {
+      ASSERT_EQ(
+          0, index->add(VectorData{DenseVector{rows->data() + id * dimension}},
+                        id));
     }
     ASSERT_EQ(0, index->train());
     ASSERT_EQ(0, index->close());
   }
 
-  BaseIndexParam::Pointer parameters(bool fp16) {
+  BaseIndexParam::Pointer parameters(bool fp16, uint32_t dimension = kDimension,
+                                     uint32_t pq_chunks = 8) {
     return DiskAnnIndexParamBuilder()
         .with_metric_type(MetricType::kL2sq)
         .with_data_type(fp16 ? DataType::DT_FP16 : DataType::DT_FP32)
-        .with_dimension(kDimension)
+        .with_dimension(dimension)
         .with_max_degree(16)
         .with_list_size(48)
-        .with_pq_chunk_num(8)
+        .with_pq_chunk_num(pq_chunks)
         .build();
   }
 
@@ -177,6 +188,105 @@ TEST_P(DiskAnnReadBudgetTest, SearchAndFetchWith4095ByteCache) {
   ASSERT_EQ(1u, result.doc_list_.size());
   EXPECT_EQ(7u, result.doc_list_.front().key());
   ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, GraphPqBypassFitsSmallRssBudget) {
+  if (GetParam() != StorageType::kBufferPool) GTEST_SKIP();
+  constexpr uint32_t kGraphDimension = 32;
+  constexpr uint32_t kGraphDocs = 4096;
+  constexpr size_t kRssHeadroom = 64UL << 10;
+  const auto path = (directory_ / "graph_pq.index").string();
+  // Seven bytes per PQ code exercise cuts across page boundaries.
+  const auto param = parameters(false, kGraphDimension, 7);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317, kGraphDocs));
+
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 32;
+  query->list_size = 32;
+  const std::array<float, kGraphDimension> values{};
+  const VectorData input{DenseVector{values.data()}};
+  SearchResult expected;
+  {
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+    ASSERT_EQ(0, index->search(input, query, &expected));
+    ASSERT_EQ(query->topk, expected.doc_list_.size());
+    ASSERT_EQ(0, index->close());
+  }
+
+  auto &payload = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_EQ(0, payload.init(4095));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  const bool background_running = Budget::pause_background(rss);
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(0));
+    if (background_running) Budget::resume_background(rss);
+  });
+  ASSERT_TRUE(Budget::configure_headroom(rss, kRssHeadroom));
+  ASSERT_EQ(kRssHeadroom, Budget::available(rss));
+
+  SearchResult actual;
+  ASSERT_EQ(0, index->search(input, query, &actual));
+  ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+  for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+    EXPECT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+    EXPECT_EQ(expected.doc_list_[i].score(), actual.doc_list_[i].score());
+  }
+  EXPECT_EQ(0u, payload.stats().page_used);
+  ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, PrimaryKeyFetchVectorFitsSmallRssBudget) {
+  if (GetParam() != StorageType::kMMAP) GTEST_SKIP();
+  constexpr uint32_t kWideDimension = 2048;
+  constexpr uint64_t kKey = 7;
+  constexpr size_t kRssHeadroom = 48UL << 10;
+  const auto path = (directory_ / "wide_vector.index").string();
+  const auto param = parameters(false, kWideDimension);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 317));
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  const bool background_running = Budget::pause_background(rss);
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(0));
+    if (background_running) Budget::resume_background(rss);
+  });
+  ASSERT_TRUE(Budget::configure_headroom(rss, kRssHeadroom));
+  ASSERT_EQ(kRssHeadroom, Budget::available(rss));
+
+  auto query = std::make_shared<DiskAnnQueryParam>();
+  query->topk = 1;
+  query->list_size = 1;
+  query->fetch_vector = true;
+  query->bf_pks = std::make_shared<std::vector<uint64_t>>(1, kKey);
+  const std::array<float, kWideDimension> values{};
+  const VectorData input{DenseVector{values.data()}};
+  const std::string expected(
+      reinterpret_cast<const char *>(rows.data() + kKey * kWideDimension),
+      kWideDimension * sizeof(float));
+  SearchResult result;
+  ASSERT_EQ(0, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(kKey, result.doc_list_.front().key());
+  EXPECT_EQ(expected, result.doc_list_.front().vector_string());
+
+  ASSERT_TRUE(Budget::configure_headroom(rss, 1024));
+  EXPECT_EQ(core::IndexError_NoMemory, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  EXPECT_EQ(kKey, result.doc_list_.front().key());
+  EXPECT_EQ(expected, result.doc_list_.front().vector_string());
+  ASSERT_EQ(0, index->close());
+  EXPECT_EQ(expected, result.doc_list_.front().vector_string());
 }
 
 TEST_P(DiskAnnReadBudgetTest, PrimaryKeySearchUsesCallerOutputBuffers) {
@@ -322,6 +432,54 @@ TEST_P(DiskAnnReadBudgetTest, MedoidReadPreservesNoMemoryAndCanRetry) {
   ASSERT_TRUE(rss.configure_process_rss_limit(kHighRss));
   ASSERT_EQ(0, index->open(path, options));
   ASSERT_EQ(0, index->close());
+}
+
+TEST_P(DiskAnnReadBudgetTest, FailedSearcherLoadReleasesOwnedReadMemory) {
+  if (GetParam() != StorageType::kMMAP) GTEST_SKIP();
+  const auto path = (directory_ / "searcher_startup.index").string();
+  const auto param = parameters(false);
+  std::vector<float> rows;
+  ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 77));
+
+  auto searcher = core::IndexFactory::CreateSearcher("DiskAnnSearcher");
+  auto storage = core::IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_NE(nullptr, searcher);
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, searcher->init(ailego::Params{}));
+  ASSERT_EQ(0, storage->init(ailego::Params{}));
+  ASSERT_EQ(0, storage->open(path, false));
+
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  const bool background_running = Budget::pause_background(rss);
+  const auto restore_budget = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(0));
+    if (background_running) Budget::resume_background(rss);
+  });
+  // Give the index enough space for its PQ codes and key tables, but not
+  // enough to admit the quantizer metadata.
+  constexpr size_t kMeasurementLimit = 128UL << 20;
+  constexpr size_t kReadAllowance = 64UL << 10;
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, kMeasurementLimit));
+  const size_t limit =
+      kMeasurementLimit - Budget::available(rss) + kReadAllowance;
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, limit));
+  ASSERT_EQ(kReadAllowance, Budget::available(rss));
+  bool reached_quantizer = false;
+  EXPECT_EQ(core::IndexError_NoMemory,
+            WithStartupFault(
+                "Read quantizer meta buffer failed",
+                [&] { reached_quantizer = true; },
+                [&] { return searcher->load(storage, nullptr); }));
+  ASSERT_TRUE(reached_quantizer);
+  // Refresh the fixed sample so only live backing counts against the limit.
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, limit));
+  EXPECT_EQ(kReadAllowance, Budget::available(rss));
+
+  ASSERT_TRUE(Budget::configure_fixed_rss(rss, kMeasurementLimit));
+  ASSERT_EQ(0, searcher->load(storage, nullptr));
+  EXPECT_EQ(kDocs, searcher->stats().loaded_count());
+  ASSERT_EQ(0, searcher->unload());
 }
 
 TEST_P(DiskAnnReadBudgetTest, OptionalWarmupLogFailureDoesNotFailOpen) {
@@ -499,6 +657,24 @@ TEST_P(DiskAnnReadBudgetTest, GraphEvaluatesFilterOncePerExpandedNode) {
     EXPECT_EQ(1u, doc.key() % 2);
   }
   EXPECT_EQ(1u, *std::max_element(visits.begin(), visits.end()));
+
+  // A one-entry frontier also keeps visit order independent of I/O completion.
+  query->topk = query->list_size = 1;
+  std::vector<uint64_t> expanded, expanded_with_filter;
+  query->filter->set([&](uint64_t id) {
+    expanded.push_back(id);
+    return false;
+  });
+  const VectorData input{DenseVector{rows.data()}};
+  ASSERT_EQ(0, index->search(input, query, &result));
+  ASSERT_EQ(1u, result.doc_list_.size());
+  query->filter->set([&](uint64_t id) {
+    expanded_with_filter.push_back(id);
+    return true;
+  });
+  ASSERT_EQ(0, index->search(input, query, &result));
+  EXPECT_TRUE(result.doc_list_.empty());
+  EXPECT_EQ(expanded, expanded_with_filter);
   ASSERT_EQ(0, index->close());
 }
 

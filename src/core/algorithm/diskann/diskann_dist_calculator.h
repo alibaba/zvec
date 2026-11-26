@@ -145,10 +145,8 @@ class DistCalculator {
 
   int quantized_dist(const diskann_id_t *ids, uint32_t n, float *dists) try {
     if (n == 0) return 0;
-    auto release = ailego::ScopeGuard::Make([&] {
-      resident_pq_batch_.release();
-      quant_code_blocks_.clear();
-    });
+    auto release =
+        ailego::ScopeGuard::Make([&] { resident_pq_batch_.release(); });
     quant_dp_list_.resize(n);
     for (uint32_t i = 0; i < n; ++i) {
       if (ids[i] >= entity_->doc_cnt()) return IndexError_InvalidFormat;
@@ -164,7 +162,7 @@ class DistCalculator {
                                   quant_code_size_, quant_dp_list_, true))) {
       const int status =
           ReadPagedQuantizedCodes(*paged_codes_, ids, n, quant_code_size_,
-                                  quant_code_blocks_, quant_dp_list_);
+                                  quant_code_scratch_, quant_dp_list_.data());
       if (status != 0) return status;
     }
     quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
@@ -298,7 +296,7 @@ class DistCalculator {
 
   DiskAnnReadVector<const void *> quant_dp_list_;
   DiskAnnReadVector<uint8_t> quant_query_scratch_;
-  DiskAnnReadVector<IndexStorage::MemoryBlock> quant_code_blocks_;
+  DiskAnnReadVector<uint8_t> quant_code_scratch_;
   IndexStorage::Segment::Pointer paged_codes_;
   ailego::VecBufferPool *pq_pool_{nullptr};
   ResidentPqBatch resident_pq_batch_;
