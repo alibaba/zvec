@@ -147,6 +147,43 @@ TEST_F(FtsQueryTest, NGramTokenizerEndToEnd) {
   ASSERT_EQ(query_result.value().size(), 1u);
 }
 
+TEST_F(FtsQueryTest, CodeFilterPhrasePositions) {
+  auto schema = CreateFtsSchema();
+  auto params = std::dynamic_pointer_cast<FtsIndexParams>(
+      schema->get_field("content")->index_params());
+  ASSERT_NE(params, nullptr);
+  params->set_filters({"code", "lowercase"});
+  CollectionOptions options;
+  options.read_only_ = false;
+  auto opened = Collection::CreateAndOpen(kTestPath, *schema, options);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  auto col = opened.value();
+  std::vector<Doc> docs{MakeDoc(0, "", "call getRPCRequest_time abc.xyz"),
+                        MakeDoc(1, "", "rpc other request time")};
+  auto inserted = col->insert(docs);
+  ASSERT_TRUE(inserted.has_value()) << inserted.error().message();
+
+  SearchQuery query;
+  query.target_.field_name_ = "content";
+  query.topk_ = 10;
+  auto check = [&](const std::string &text, bool should_match) {
+    SCOPED_TRACE(text);
+    FtsClause clause;
+    clause.query_string_ = text;
+    query.target_.clause_ = clause;
+    auto hits = col->query(query);
+    ASSERT_TRUE(hits.has_value()) << hits.error().message();
+    ASSERT_EQ(hits.value().size(), should_match ? 1u : 0u);
+    if (should_match) {
+      EXPECT_EQ(hits.value().front()->pk(), "pk_0");
+    }
+  };
+  check(R"("call get rpc request time abc xyz")", true);
+  check(R"("rpcRequest.time")", true);
+  check(R"("rpc time")", false);
+  check("requesttime", false);
+}
+
 TEST_F(FtsQueryTest, NGramConfigErrorIsReturnedByCreateCollection) {
   auto schema = CreateNGramFtsSchema();
   auto field = schema->get_field("content");

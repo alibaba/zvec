@@ -1246,7 +1246,8 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  * @param tokenizer_name Tokenizer pipeline name (NULL keeps current value).
  * Supported values are "standard", "ngram", "jieba", and "whitespace".
  * @param filters Token filter names (NULL keeps current value). Supported
- * values are "lowercase", "ascii_folding", and "stemmer".
+ * values are "code", "lowercase", "ascii_folding", and "stemmer". Place "code"
+ * first to split dotted names and ASCII identifiers before normalization.
  * @param extra_params Additional tokenizer/filter parameters (NULL keeps
  * current value). Must be empty or a JSON object string. Supported keys by
  * tokenizer/filter:

@@ -16,6 +16,7 @@
 #include <zvec/ailego/encoding/json/mod_json_plus.h>
 #include <zvec/ailego/logger/logger.h>
 #include "ascii_folding_token_filter.h"
+#include "code_token_filter.h"
 #include "jieba_tokenizer.h"
 #include "ngram_tokenizer.h"
 #include "standard_tokenizer.h"
@@ -130,7 +131,9 @@ Status TokenizerFactory::create_tokenizer(const std::string &tokenizer_name,
 }
 
 TokenFilterPtr TokenizerFactory::create_filter(const std::string &filter_name) {
-  if (filter_name == "lowercase") {
+  if (filter_name == "code") {
+    return std::make_shared<CodeTokenFilter>();
+  } else if (filter_name == "lowercase") {
     return std::make_shared<LowercaseTokenFilter>();
   } else if (filter_name == "ascii_folding") {
     return std::make_shared<AsciiFoldingTokenFilter>();
