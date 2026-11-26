@@ -144,7 +144,11 @@ TEST_P(QueryContextOomTest, DiskAnnIdQueriesDoNotAllocateVectorPayloads) {
   query->list_size = 32;
   auto keys = std::make_shared<std::vector<uint64_t>>(32);
   std::iota(keys->begin(), keys->end(), 240);
-  const auto *row = rows.data() + 256 * dimension;
+  // Keep every distance distinct: an integer query ties symmetric rows, whose
+  // order can change with asynchronous I/O completion order.
+  std::array<float, dimension> query_row;
+  query_row.fill(256.25F);
+  const auto *row = query_row.data();
   const ci::VectorData input{ci::DenseVector{row}};
   for (int mode = 0; mode < 3; ++mode) {
     SCOPED_TRACE(mode);
@@ -154,6 +158,10 @@ TEST_P(QueryContextOomTest, DiskAnnIdQueriesDoNotAllocateVectorPayloads) {
     ci::SearchResult expected;
     ASSERT_EQ(0, index->search(input, query, &expected));
     ASSERT_EQ(query->topk, expected.doc_list_.size());
+    for (size_t i = 1; i < expected.doc_list_.size(); ++i) {
+      ASSERT_LT(expected.doc_list_[i - 1].score(),
+                expected.doc_list_[i].score());
+    }
     query->fetch_vector = false;
     ci::SearchResult result;
     without_payload_allocation(
