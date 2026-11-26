@@ -157,7 +157,7 @@ so a declaration a public header only makes under a platform macro would make th
 list depend on where it was generated; those are dropped via
 `PLATFORM_SPECIFIC_INTERNALS` in the script, and a macOS regeneration is
 byte-identical to what Linux CI derives. The list is generated at the *engine*
-surface — all 98 public headers — even though the package installs 18, so
+surface — all 106 public headers — even though the package installs 18, so
 that in-tree and `add_subdirectory` consumers can still link the engine API out
 of `libzvec`; `--surface stable` is the tighter alternative if that ever stops
 being wanted. The standalone engine libraries (`libzvec_core`, `libzvec_ailego`)

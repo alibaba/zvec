@@ -40,7 +40,7 @@ served by them:
 `libzvec` whole-archives every component and links against a whitelist generated
 from these headers (`scripts/generate_export_whitelist.py`), so it exports what a
 consumer can name here and nothing else — no `zvec::sqlengine`, no `zvec::fts`,
-no `*Impl`. The whitelist is generated at the *engine* surface (all 98 headers)
+no `*Impl`. The whitelist is generated at the *engine* surface (all 106 headers)
 even though the package ships 18, so a source-tree consumer that sees the
 engine headers can still link the engine API out of `libzvec`; from a prebuilt
 package those extra exports are simply unreachable, because nothing there
@@ -52,12 +52,16 @@ shipping them too would publish two ways to call one implementation and twice
 the ABI to keep compatible. If you linked `-lzvec_core` or `-lzvec_ailego`, link
 `-lzvec` instead: same symbols, one library.
 
-`libzvec.a` installs, since `zvec/db/**` does. `libzvec_core.a`,
-`libzvec_ailego.a` and `libzvec_turbo.a` do not: an archive whose declaring
-headers are not installed is a library that cannot be called. The mobile SDK
-targets `zvec::static`, `zvec::core_static` and `zvec::ailego_static` are
-build-tree only and read headers from this directory rather than from an install
-tree, so they are unaffected.
+`libzvec.a` installs, since `zvec/db/**` does. It is the db-layer archive rather
+than a self-contained one: it holds zvec's own objects and expects the
+third-party dependencies (rocksdb, arrow, protobuf, ...) to be supplied by the
+build tree, so it serves in-tree and source-tree consumers. The prebuilt package
+strips every `lib/*.a` at staging time and ships shared libraries only.
+`libzvec_core.a`, `libzvec_ailego.a` and `libzvec_turbo.a` are not installed at
+all: an archive whose declaring headers are not installed is a library that
+cannot be called. The mobile SDK targets `zvec::static`, `zvec::core_static` and
+`zvec::ailego_static` are build-tree only and read headers from this directory
+rather than from an install tree, so they are unaffected.
 
 ## Stable public API
 
