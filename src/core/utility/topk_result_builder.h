@@ -61,6 +61,21 @@ class TopkResultBuilder {
 
   //! Construct a flat result list from the top-k heap.
   inline void topk_to_single_result(uint32_t idx) {
+    topk_to_single_result(idx, [&](IndexDocumentList &docs, HeapT &heap,
+                                   uint32_t size) {
+      docs.clear();
+      for (uint32_t i = 0; i < size; ++i) {
+        const auto &entry = heap[i];
+        const float score = derived().result_score(entry.second);
+        if (score > derived().threshold()) break;
+        derived().emplace_result_doc(docs, entry.first, score, entry.second);
+      }
+    });
+  }
+
+ protected:
+  template <typename Build>
+  void topk_to_single_result(uint32_t idx, Build build) {
     HeapT &heap = derived().topk_heap();
     if (ailego_unlikely(heap.size() == 0)) {
       return;
@@ -71,18 +86,10 @@ class TopkResultBuilder {
     uint32_t size =
         std::min(derived().topk(), static_cast<uint32_t>(heap.size()));
     heap.sort();
-    results[idx].clear();
-
-    for (uint32_t i = 0; i < size; ++i) {
-      float score = derived().result_score(heap[i].second);
-      if (score > derived().threshold()) {
-        break;
-      }
-      derived().emplace_result_doc(results[idx], heap[i].first, score,
-                                   heap[i].second);
-    }
+    build(results[idx], heap, size);
   }
 
+ public:
   //! Construct grouped result lists from the per-group top-k heaps.
   inline void topk_to_group_result(uint32_t idx) {
     auto &group_results = derived().mutable_group_results();

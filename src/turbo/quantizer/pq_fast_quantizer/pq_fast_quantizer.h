@@ -155,6 +155,19 @@ class PqFastQuantizer : public Quantizer,
   int dequantize(const void *in, const IndexQueryMeta &qmeta,
                  std::string *out) const override;
 
+  // IP kernels return a negated dot product for nearest-distance search.
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  void denormalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
+
   int serialize(std::string *out) const override;
 
   int deserialize(std::string &in) override;

@@ -128,6 +128,19 @@ class PqInt8Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   DistanceImpl sym_distance(const void *query,
                             const IndexQueryMeta &qmeta) const;
 
+  // IP kernels return a negated dot product for nearest-distance search.
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  void denormalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
+
   int serialize(std::string *out) const override;
 
   int deserialize(std::string &in) override;

@@ -2878,7 +2878,7 @@ class ConcurrentQueue {
 
       // Create the new block
       pr_blockIndexSize <<= 1;
-      auto newRawPtr = static_cast<char *>((Traits::malloc)(
+      auto newRawPtr = static_cast<char *>(allocate_lifetime(
           sizeof(BlockIndexHeader) + std::alignment_of<BlockIndexEntry>::value -
           1 + sizeof(BlockIndexEntry) * pr_blockIndexSize));
       if (newRawPtr == nullptr) {
@@ -3608,7 +3608,7 @@ class ConcurrentQueue {
       auto prev = blockIndex.load(std::memory_order_relaxed);
       size_t prevCapacity = prev == nullptr ? 0 : prev->capacity;
       auto entryCount = prev == nullptr ? nextBlockIndexCapacity : prevCapacity;
-      auto raw = static_cast<char *>((Traits::malloc)(
+      auto raw = static_cast<char *>(allocate_lifetime(
           sizeof(BlockIndexHeader) + std::alignment_of<BlockIndexEntry>::value -
           1 + sizeof(BlockIndexEntry) * entryCount +
           std::alignment_of<BlockIndexEntry *>::value - 1 +
@@ -3906,9 +3906,10 @@ class ConcurrentQueue {
       }
     }
 
-    return add_producer(
-        isExplicit ? static_cast<ProducerBase *>(create<ExplicitProducer>(this))
-                   : create<ImplicitProducer>(this));
+    return add_producer(isExplicit
+                            ? static_cast<ProducerBase *>(
+                                  create_producer<ExplicitProducer>(this))
+                            : create_producer<ImplicitProducer>(this));
   }
 
   ProducerBase *add_producer(ProducerBase *producer) {
@@ -4163,9 +4164,9 @@ class ConcurrentQueue {
             newCapacity <<= 1;
           }
           auto raw = static_cast<char *>(
-              (Traits::malloc)(sizeof(ImplicitProducerHash) +
-                               std::alignment_of<ImplicitProducerKVP>::value -
-                               1 + sizeof(ImplicitProducerKVP) * newCapacity));
+              allocate_lifetime(sizeof(ImplicitProducerHash) +
+                                std::alignment_of<ImplicitProducerKVP>::value -
+                                1 + sizeof(ImplicitProducerKVP) * newCapacity));
           if (raw == nullptr) {
             // Allocation failed
             implicitProducerHashCount.fetch_sub(1, std::memory_order_relaxed);
@@ -4296,14 +4297,33 @@ class ConcurrentQueue {
   // Utility functions
   //////////////////////////////////
 
-  template <typename TAlign>
+  // Producers, their indexes and hash tables remain owned until destruction.
+  // Other traits can continue using the same allocator for both lifetimes.
+  template <typename QTraits = Traits>
+  static auto allocate_lifetime(size_t size, int)
+      -> decltype(QTraits::malloc_lifetime(size)) {
+    return QTraits::malloc_lifetime(size);
+  }
+
+  static void *allocate_lifetime(size_t size, long) {
+    return (Traits::malloc)(size);
+  }
+
+  static void *allocate_lifetime(size_t size) {
+    return allocate_lifetime(size, 0);
+  }
+
+  template <typename TAlign, bool Lifetime = false>
   static inline void *aligned_malloc(size_t size) {
+    const auto allocate = [](size_t bytes) {
+      return Lifetime ? allocate_lifetime(bytes) : (Traits::malloc)(bytes);
+    };
     MOODYCAMEL_CONSTEXPR_IF(std::alignment_of<TAlign>::value <=
                             std::alignment_of<details::max_align_t>::value)
-    return (Traits::malloc)(size);
+    return allocate(size);
     else {
       size_t alignment = std::alignment_of<TAlign>::value;
-      void *raw = (Traits::malloc)(size + alignment - 1 + sizeof(void *));
+      void *raw = allocate(size + alignment - 1 + sizeof(void *));
       if (!raw) return nullptr;
       char *ptr = details::align_for<TAlign>(reinterpret_cast<char *>(raw) +
                                              sizeof(void *));
@@ -4346,8 +4366,8 @@ class ConcurrentQueue {
   }
 
   template <typename U, typename A1>
-  static inline U *create(A1 &&a1) {
-    void *p = aligned_malloc<U>(sizeof(U));
+  static inline U *create_producer(A1 &&a1) {
+    void *p = aligned_malloc<U, true>(sizeof(U));
     return p != nullptr ? new (p) U(std::forward<A1>(a1)) : nullptr;
   }
 

@@ -80,7 +80,7 @@ int IndexHelper::DeserializeFromStorage(IndexStorage *storage,
   size_t len = segment->data_size();
   IndexStorage::MemoryBlock block;
   if (segment->read(0, block, len) != len) {
-    return IndexError_ReadData;
+    return segment->read_error();
   }
   const void *data = block.data();
   if (crc != 0u && ailego::Crc32c::Hash(data, len, 0u) != crc) {

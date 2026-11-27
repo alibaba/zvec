@@ -25,6 +25,29 @@
 namespace zvec {
 namespace ailego {
 
+// Owns a private sibling directory so an incomplete create never appears at
+// its requested name. Publication must fail if another owner won that name.
+class ZVEC_AILEGO_API StagedPath {
+ public:
+  StagedPath() = default;
+  StagedPath(const StagedPath &) = delete;
+  StagedPath &operator=(const StagedPath &) = delete;
+  ~StagedPath();
+
+  static bool supported();
+  bool prepare(const std::string &destination);
+  bool publish();
+
+  const std::string &path() const {
+    return path_;
+  }
+
+ private:
+  std::string destination_;
+  std::string directory_;
+  std::string path_;
+};
+
 /*! File Helper Module
  */
 struct ZVEC_AILEGO_API FileHelper {

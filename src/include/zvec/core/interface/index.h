@@ -178,6 +178,10 @@ class ZVEC_CORE_API Index {
   }
 
  protected:
+  virtual bool supports_group_by() const {
+    return !is_group_by_unsupported_index(param_.index_type);
+  }
+
   int _sparse_fetch(const uint32_t doc_id,
                     VectorDataBuffer *vector_data_buffer);
   virtual int _dense_fetch(const uint32_t doc_id,
@@ -203,9 +207,9 @@ class ZVEC_CORE_API Index {
                             const BaseIndexQueryParam::Pointer &search_param,
                             core::IndexContext::Pointer &context,
                             std::vector<uint64_t> *candidate_keys = nullptr);
-  int _normalize_buffer_scores(const VectorData &query,
-                               const int64_t *output_ids, float *output_scores,
-                               size_t count);
+  template <typename Id>
+  int _normalize_buffer_scores(const VectorData &query, const Id *ids,
+                               float *scores, size_t count, bool process_rss);
   int _search_refine_internal_ids(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       int64_t *output_ids, float *output_scores);
@@ -252,10 +256,43 @@ class ZVEC_CORE_API Index {
   virtual int prepare_streamer_open(const StorageOptions & /*options*/) {
     return 0;
   }
+  virtual int open_streamer(const StorageOptions &options);
+  int finish_streamer_open(const StorageOptions &options);
 
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
+
+  class QueryContext {
+   public:
+    explicit QueryContext(Index &index);
+    ~QueryContext();
+    QueryContext(const QueryContext &) = delete;
+    QueryContext &operator=(const QueryContext &) = delete;
+
+    core::IndexContext::Pointer &get() {
+      return *context_;
+    }
+    int status() const {
+      return status_;
+    }
+    void keep_on_success(int status) {
+      reusable_ = status == 0;
+    }
+
+   private:
+    Index &index_;
+    core::IndexContext::Pointer diskann_;
+    core::IndexContext::Pointer *context_{&diskann_};
+    int status_{core::IndexError_Runtime};
+    bool reusable_{false};
+  };
+
+ private:
+  struct DiskAnnContextRegistry;
+  struct ThreadDiskAnnContexts;
+  static ThreadDiskAnnContexts &thread_diskann_contexts();
+  std::shared_ptr<DiskAnnContextRegistry> diskann_contexts_;
 
  protected:
   bool is_trained_{false};
@@ -356,6 +393,10 @@ class ZVEC_CORE_API IVFIndex : public Index {
   IVFIndex() = default;
 
  protected:
+  bool supports_group_by() const override {
+    return use_rabitq_;
+  }
+
   int create_and_init_converter_reformer(
       const QuantizerParam &param, const BaseIndexParam &index_param) override;
   int create_and_init_streamer(const BaseIndexParam &param) override;
@@ -384,8 +425,10 @@ class ZVEC_CORE_API IVFIndex : public Index {
   int generate_holder();
 
  private:
-  int load_streamer();
-  int restore_legacy_pipeline();
+  int load_streamer(const core::IndexStorage::Pointer &storage);
+  // Dedicated backend is used only to read existing legacy files.
+  bool legacy_rabitq_{false};
+  bool use_rabitq_{false};
 
   std::shared_ptr<zvec::turbo::Quantizer> ivf_quantizer_{};
 
@@ -440,7 +483,7 @@ class ZVEC_CORE_API HNSWIndex : public Index {
       const BaseIndexQueryParam::Pointer &search_param) override;
 
  private:
-  int prepare_streamer_open(const StorageOptions &options) override;
+  int open_streamer(const StorageOptions &options) override;
 
   HNSWIndexParam param_{};
   bool use_legacy_pipeline_{false};

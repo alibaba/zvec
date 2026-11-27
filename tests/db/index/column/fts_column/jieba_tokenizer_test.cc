@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <clocale>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -23,7 +24,9 @@
 #include <thread>
 #include <vector>
 #include <gtest/gtest.h>
+#include "ailego/pattern/scope_guard.h"
 #include "db/index/column/fts_column/tokenizer/jieba_embedded_dict.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 
 namespace {
 
@@ -132,6 +135,7 @@ TEST_F(JiebaEmbeddedTokenizerTest,
        ConcurrentFirstInitializationSharesDefaults) {
   constexpr size_t kThreadCount = 8;
   std::vector<EmbeddedJiebaDict> dictionaries(kThreadCount);
+  std::vector<std::shared_ptr<const cppjieba::DictTrie>> tries(kThreadCount);
   std::vector<EmbeddedJiebaHmmModel> models(kThreadCount);
   std::atomic<size_t> ready{0};
   std::atomic<bool> start{false};
@@ -143,11 +147,13 @@ TEST_F(JiebaEmbeddedTokenizerTest,
         std::this_thread::yield();
       }
       auto dict = zvec::fts::get_embedded_jieba_dict();
+      auto trie = zvec::fts::get_embedded_jieba_trie();
       auto model = zvec::fts::get_embedded_jieba_hmm_model();
-      if (!dict.has_value() || !model.has_value()) {
+      if (!dict || !trie || !model) {
         return;
       }
       dictionaries[i] = dict.value();
+      tries[i] = trie.value();
       models[i] = model.value();
     });
   }
@@ -160,9 +166,11 @@ TEST_F(JiebaEmbeddedTokenizerTest,
   }
 
   ASSERT_NE(dictionaries[0], nullptr);
+  ASSERT_NE(tries[0], nullptr);
   ASSERT_NE(models[0], nullptr);
   for (size_t i = 0; i < kThreadCount; ++i) {
     EXPECT_EQ(dictionaries[i].get(), dictionaries[0].get());
+    EXPECT_EQ(tries[i].get(), tries[0].get());
     EXPECT_EQ(models[i].get(), models[0].get());
   }
 }
@@ -181,6 +189,147 @@ TEST_F(JiebaEmbeddedTokenizerTest, DefaultWorksWithoutExternalDictDir) {
     EXPECT_EQ(tokens[i].position, i);
   }
   EXPECT_TRUE(tokenizer.tokenize("").empty());
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, HmmProbabilitiesIgnoreNumericLocale) {
+  const std::string saved_locale = std::setlocale(LC_NUMERIC, nullptr);
+  auto restore = zvec::ailego::ScopeGuard::Make(
+      [&]() { std::setlocale(LC_NUMERIC, saved_locale.c_str()); });
+  ASSERT_NE(std::setlocale(LC_NUMERIC, "C"), nullptr);
+  const auto trie = zvec::fts::get_embedded_jieba_trie();
+  ASSERT_TRUE(trie.has_value());
+  const auto check_model = [&]() {
+    // Load a fresh model through the same stream constructor as the embedded
+    // loader so this test is independent of the process-wide model cache.
+    std::ifstream stream(kDictDir + "/hmm_model.utf8");
+    ASSERT_TRUE(stream.good());
+    cppjieba::HMMModel model(stream);
+    EXPECT_DOUBLE_EQ(model.startProb[model.E], -3.14e+100);
+    EXPECT_DOUBLE_EQ(model.transProb[model.B][model.E], -0.510825623765990);
+    EXPECT_DOUBLE_EQ(model.emitProbB.at(U'耀'), -10.460283);
+    std::vector<std::string> tokens;
+    cppjieba::QuerySegment(trie->get(), &model).Cut("沈若萱", tokens);
+    EXPECT_EQ(tokens, (std::vector<std::string>{"沈若", "萱"}));
+  };
+  check_model();
+  for (const char *locale :
+       {"de_DE.UTF-8", "fr_FR.UTF-8", "German_Germany.1252"}) {
+    if (std::setlocale(LC_NUMERIC, locale) &&
+        std::string(std::localeconv()->decimal_point) == ",") {
+      check_model();
+      return;
+    }
+  }
+  GTEST_SKIP() << "No comma-decimal locale installed";
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, EmbeddedEntriesMatchCppjiebaTextLoader) {
+  std::ifstream input;
+  cppjieba::OpenInputFile(input, kDictDir + "/jieba.dict.utf8");
+  ASSERT_TRUE(input.good());
+  const auto reference = cppjieba::DictTrie::LoadDict(input);
+  const auto embedded = zvec::fts::get_embedded_jieba_dict();
+  ASSERT_TRUE(embedded.has_value());
+  const auto &actual = **embedded;
+  EXPECT_EQ(actual.freq_sum, reference.freq_sum);
+  EXPECT_DOUBLE_EQ(actual.min_weight, reference.min_weight);
+  EXPECT_DOUBLE_EQ(actual.median_weight, reference.median_weight);
+  EXPECT_DOUBLE_EQ(actual.max_weight, reference.max_weight);
+  ASSERT_EQ(actual.node_infos->size(), reference.node_infos->size());
+  for (size_t i = 0; i < reference.node_infos->size(); ++i) {
+    const auto &entry = (*actual.node_infos)[i];
+    const auto &expected = (*reference.node_infos)[i];
+    ASSERT_TRUE(std::equal(entry.word.begin(), entry.word.end(),
+                           expected.word.begin(), expected.word.end()))
+        << i;
+    ASSERT_EQ(entry.tag, expected.tag) << i;
+    ASSERT_DOUBLE_EQ(entry.weight, expected.weight) << i;
+  }
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PackedTrieMatchesCppjiebaLookup) {
+  const auto dict = zvec::fts::get_embedded_jieba_dict();
+  const auto packed = zvec::fts::get_embedded_jieba_trie();
+  ASSERT_TRUE(dict && packed);
+  const cppjieba::DictTrie reference(**dict);
+
+  // Both tries refer to the same DictUnits, including the winning entry for
+  // duplicate words. Compare every terminal and every intermediate prefix.
+  cppjieba::RuneStrArray runes;
+  for (const auto &unit : *(*dict)->node_infos) {
+    runes.clear();
+    for (auto rune : unit.word) {
+      runes.emplace_back(rune, 0, 0);
+      ASSERT_EQ((*packed)->Find(runes.begin(), runes.end()),
+                reference.Find(runes.begin(), runes.end()));
+    }
+  }
+
+  for (const std::string text :
+       {"", "南京市长江大桥abc，𠀀", "中华人民共和国"}) {
+    ASSERT_TRUE(cppjieba::DecodeUTF8RunesInString(text, runes));
+    ASSERT_EQ((*packed)->Find(runes.begin(), runes.end()),
+              reference.Find(runes.begin(), runes.end()));
+    for (size_t limit : {0, 1, 2, 3, 512}) {
+      std::vector<cppjieba::Dag> actual, expected;
+      (*packed)->Find(runes.begin(), runes.end(), actual, limit);
+      reference.Find(runes.begin(), runes.end(), expected, limit);
+      ASSERT_EQ(actual.size(), expected.size());
+      for (size_t i = 0; i < expected.size(); ++i) {
+        EXPECT_EQ(actual[i].runestr.rune, expected[i].runestr.rune);
+        EXPECT_EQ(actual[i].runestr.offset, expected[i].runestr.offset);
+        ASSERT_EQ(actual[i].nexts.size(), expected[i].nexts.size());
+        for (size_t j = 0; j < expected[i].nexts.size(); ++j) {
+          ASSERT_EQ(actual[i].nexts[j], expected[i].nexts[j]);
+        }
+      }
+    }
+  }
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PrepareDefersEmbeddedDictionary) {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  auto prepared = zvec::fts::TokenizerFactory::prepare(params);
+  ASSERT_TRUE(prepared.has_value());
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::deferred);
+
+  // A later environment change must not redirect the prepared tokenizer.
+  ASSERT_EQ(set_dict_env((temp_dir_ / "missing").string().c_str()), 0);
+  std::vector<std::thread> threads;
+  for (int i = 0; i < 8; ++i) {
+    threads.emplace_back([&]() {
+      const auto &pipeline = prepared->get();
+      ASSERT_TRUE(pipeline.has_value());
+      EXPECT_TRUE(contains_token((*pipeline)->process("中文分词技术"), "分词"));
+    });
+  }
+  for (auto &thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(prepared->wait_for(std::chrono::seconds(0)),
+            std::future_status::ready);
+}
+
+TEST_F(JiebaEmbeddedTokenizerTest, PrepareBindsExternalDictionaryImmediately) {
+  zvec::fts::FtsIndexParams params;
+  params.tokenizer_name = "jieba";
+  params.extra_params = R"({"cut_mode":"full"})";
+  ASSERT_EQ(set_dict_env(temp_dir_.string().c_str()), 0);
+  EXPECT_FALSE(zvec::fts::TokenizerFactory::prepare(params).has_value());
+
+  const std::string word = "星河咕噜引擎";
+  const auto path = write_user_dict("jieba.dict.utf8", word);
+  auto prepared = zvec::fts::TokenizerFactory::prepare(params);
+  ASSERT_TRUE(prepared.has_value());
+  std::error_code error;
+  ASSERT_TRUE(std::filesystem::remove(path, error)) << error.message();
+  const auto &pipeline = prepared->get();
+  ASSERT_TRUE(pipeline.has_value());
+  const auto tokens = (*pipeline)->process(word);
+  ASSERT_EQ(tokens.size(), 1u);
+  EXPECT_EQ(tokens.front().text, word);
 }
 
 TEST_F(JiebaEmbeddedTokenizerTest, AllModesMatchExternalDictionaryAndModel) {

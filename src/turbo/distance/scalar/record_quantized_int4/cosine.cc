@@ -14,6 +14,7 @@
 
 #include "scalar/record_quantized_int4/cosine.h"
 #include <cstdint>
+#include "common/record_metadata.h"
 #include "scalar/record_quantized_int4/common.h"
 
 // Tail layout for record-quantized INT4 cosine vectors:
@@ -41,10 +42,8 @@ void cosine_int4_distance(const void *a, const void *b, size_t dim,
   const size_t p = static_cast<size_t>(original_dim) >> 1;  // params offset
   float ip = internal::ip_int4_scalar(a, b, original_dim);
 
-  const float *a_tail =
-      reinterpret_cast<const float *>(reinterpret_cast<const uint8_t *>(a) + p);
-  const float *b_tail =
-      reinterpret_cast<const float *>(reinterpret_cast<const uint8_t *>(b) + p);
+  const record::Metadata a_tail(reinterpret_cast<const uint8_t *>(a) + p);
+  const record::Metadata b_tail(reinterpret_cast<const uint8_t *>(b) + p);
 
   float ma = a_tail[0];
   float mb = a_tail[1];

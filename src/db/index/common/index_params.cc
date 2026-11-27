@@ -82,6 +82,15 @@ Status VectorIndexParams::validate() const {
   if (auto s = quantizer_param_.validate(); !s.ok()) {
     return s;
   }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::IVF || type_ == IndexType::HNSW ||
+       type_ == IndexType::DISKANN) &&
+      !core_interface::IsValidRabitqClusterCount(
+          quantizer_param_.num_clusters())) {
+    return Status::InvalidArgument(
+        "RABITQ num_clusters must be in [1, 65536]; got ",
+        quantizer_param_.num_clusters());
+  }
   const auto storage_type = flat_data_type();
   if (storage_type != DataType::UNDEFINED &&
       storage_type != DataType::VECTOR_FP32 &&
@@ -134,6 +143,17 @@ Status VectorIndexParams::validate() const {
           MetricTypeCodeBook::AsString(metric_type_));
     }
   }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::HNSW || type_ == IndexType::DISKANN)) {
+    // Only dedicated RaBitQ indexes normalize zero to the default bit width.
+    if (quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9) {
+      return Status::InvalidArgument(
+          "RABITQ total_bits must be in [1, 9]; got ",
+          quantizer_param_.total_bits());
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
+  }
   return Status::OK();
 }
 
@@ -165,9 +185,16 @@ Status IVFIndexParams::validate() const {
     return s;
   }
   if (quantize_type_ == QuantizeType::RABITQ) {
-    return Status::InvalidArgument(
-        "IVF index does not support RABITQ quantization; use the dedicated "
-        "IVF_RABITQ index instead");
+    if (n_list_ <= 0 || n_iters_ <= 0 || quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9 ||
+        quantizer_param_.sample_count() < 0 || use_soar_ ||
+        quantizer_param_.enable_rotate()) {
+      return Status::InvalidArgument(
+          "Invalid IVF RABITQ parameters: n_list/n_iters must be positive, "
+          "total_bits in [1, 9], sample_count >= 0; SOAR and "
+          "enable_rotate are unsupported");
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
   }
   return Status::OK();
 }
@@ -222,7 +249,7 @@ static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
 }
 
 Status FtsIndexParams::validate() const {
-  auto pipeline = fts::TokenizerFactory::create(to_internal(*this));
+  auto pipeline = fts::TokenizerFactory::prepare(to_internal(*this));
   if (!pipeline.has_value()) {
     return Status::InvalidArgument("invalid FTS index params: ",
                                    pipeline.error().message());
@@ -237,8 +264,7 @@ Status FtsIndexParams::validate() const {
 namespace detail {
 struct FtsState {
   std::once_flag once;
-  std::shared_ptr<fts::TokenizerPipeline> pipeline;
-  bool created{false};
+  Result<fts::PreparedTokenizerPipeline> pipeline;
 };
 
 struct FtsPipelineHelper {
@@ -269,7 +295,7 @@ FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
       state_(std::move(other.state_)) {}
 
 FtsIndexParams::~FtsIndexParams() {
-  if (state_ && state_->created) {
+  if (state_ && state_->pipeline && state_->pipeline->valid()) {
     auto internal = to_internal(*this);
     fts::TokenizerPipelineManager::Instance().release(internal);
   }
@@ -281,7 +307,7 @@ FtsIndexParams::~FtsIndexParams() {
 
 namespace detail {
 
-Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+Result<fts::PreparedTokenizerPipeline> PrepareFtsPipeline(
     FtsIndexParams &params) {
   auto &state_uptr = FtsPipelineHelper::state(params);
   if (!state_uptr) {
@@ -293,16 +319,18 @@ Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
   auto &st = *state_uptr;
   std::call_once(st.once, [&]() {
     auto internal = to_internal(params);
-    st.pipeline = fts::TokenizerPipelineManager::Instance().acquire(internal);
-    if (st.pipeline) {
-      st.created = true;
-    }
+    st.pipeline = fts::TokenizerPipelineManager::Instance().prepare(internal);
   });
-  if (!st.pipeline) {
-    return tl::make_unexpected(
-        Status::InternalError("Failed to create tokenizer pipeline"));
-  }
   return st.pipeline;
+}
+
+Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+    FtsIndexParams &params) {
+  auto prepared = PrepareFtsPipeline(params);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  return prepared->get();
 }
 
 }  // namespace detail

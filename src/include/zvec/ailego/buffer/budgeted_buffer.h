@@ -15,6 +15,8 @@ namespace zvec::ailego {
 
 template <typename T>
 using BudgetedVector = std::vector<T, BudgetedAllocator<T>>;
+template <typename T>
+using OptionalBudgetedVector = std::vector<T, OptionalBudgetedAllocator<T>>;
 using BudgetedString =
     std::basic_string<char, std::char_traits<char>, BudgetedAllocator<char>>;
 
@@ -24,9 +26,11 @@ inline void ReserveStringCapacity(std::string &value, MemoryReservation &memory,
                                   size_t bytes) {
   if (bytes <= value.capacity()) return;
   if (bytes >= SIZE_MAX / 2) throw std::bad_alloc();
+  const size_t charge = (bytes + 1) * 2;
+  memory.require_replacement_capacity(charge);
   MemoryReservation replacement_memory;
   std::string replacement;
-  replacement_memory.add_for_allocation((bytes + 1) * 2,
+  replacement_memory.add_for_allocation(charge,
                                         [&] { replacement.reserve(bytes); });
   replacement.assign(value);
   const size_t actual = replacement.capacity() + 1;
@@ -44,9 +48,11 @@ inline void ReserveVectorCapacity(std::vector<T> &value,
                                   MemoryReservation &memory, size_t count) {
   if (count <= value.capacity()) return;
   if (count > SIZE_MAX / sizeof(T)) throw std::bad_alloc();
+  const size_t charge = count * sizeof(T);
+  memory.require_replacement_capacity(charge);
   MemoryReservation replacement_memory;
   std::vector<T> replacement;
-  replacement_memory.add_for_allocation(count * sizeof(T),
+  replacement_memory.add_for_allocation(charge,
                                         [&] { replacement.reserve(count); });
   const size_t actual = replacement.capacity() * sizeof(T);
   if (actual > replacement_memory.bytes())
@@ -133,23 +139,61 @@ class BudgetedAlignedBuffer {
       MemoryLimitPool::get_instance().release_retained_block(retained_base_);
     } else if (data_) {
       ::operator delete(data_, std::align_val_t{alignment_});
+      if (process_only_) {
+        MemoryLimitPool::get_instance().release_heap_process_backing(size_,
+                                                                     stamp_);
+      }
     }
   }
   void resize(size_t bytes, size_t alignment) {
-    if (bytes == size_ && alignment == alignment_) return;
+    resize_with_budget(bytes, alignment, false);
+  }
+
+  // File-backed readers may share the process limit with a separately
+  // sized page cache. Their private scratch does not occupy cache slots.
+  void resize_process_rss(size_t bytes, size_t alignment) {
+    resize_with_budget(bytes, alignment, true);
+  }
+
+ private:
+  void resize_with_budget(size_t bytes, size_t alignment, bool process_only) {
+    if (bytes == size_ && alignment == alignment_ &&
+        process_only_ == process_only)
+      return;
     if (alignment < alignof(void *) || (alignment & (alignment - 1)))
       throw std::bad_alloc();
     BudgetedAlignedBuffer replacement;
+    replacement.process_only_ = process_only;
     if (bytes) {
       auto &pool = MemoryLimitPool::get_instance();
+      if (process_only) {
+        if (!pool.try_reserve_process_backing(bytes)) throw std::bad_alloc();
+        try {
+          replacement.data_ =
+              ::operator new(bytes, std::align_val_t{alignment});
+        } catch (...) {
+          pool.finish_process_backing(bytes, false);
+          throw;
+        }
+        replacement.stamp_ = pool.finish_process_backing(bytes, true);
+        replacement.size_ = bytes;
+        replacement.alignment_ = alignment;
+        swap(replacement);
+        return;
+      }
+      const size_t held = retained_base_
+                              ? MemoryLimitPool::retained_block_size(
+                                    size_ + alignment_padding(alignment_))
+                              : memory_.bytes();
       if (bytes >= kRetainedThreshold && pool.capacity()) {
         // Retained blocks provide 64-byte alignment. Larger alignments need
         // room for an interior pointer; release the original base below.
-        const size_t padding =
-            alignment > MemoryLimitPool::kRetainedBlockHeaderBytes
-                ? alignment - 1
-                : 0;
+        const size_t padding = alignment_padding(alignment);
         if (bytes > std::numeric_limits<size_t>::max() - padding)
+          throw std::bad_alloc();
+        const size_t charge =
+            MemoryLimitPool::retained_block_size(bytes + padding);
+        if (!charge || (held && charge > pool.native_allocation_limit(held)))
           throw std::bad_alloc();
         replacement.retained_base_ =
             pool.acquire_retained_block(bytes + padding);
@@ -159,6 +203,8 @@ class BudgetedAlignedBuffer {
         replacement.data_ = reinterpret_cast<void *>(
             (address + alignment - 1) & ~(uintptr_t{alignment} - 1));
       } else {
+        if (held && bytes > pool.native_allocation_limit(held))
+          throw std::bad_alloc();
         replacement.memory_.add_for_allocation(bytes, [&] {
           replacement.data_ =
               ::operator new(bytes, std::align_val_t{alignment});
@@ -169,6 +215,8 @@ class BudgetedAlignedBuffer {
     }
     swap(replacement);
   }
+
+ public:
   void resize_array(size_t count, size_t width, size_t alignment) {
     if (width && count > std::numeric_limits<size_t>::max() / width)
       throw std::bad_alloc();
@@ -186,13 +234,22 @@ class BudgetedAlignedBuffer {
     std::swap(retained_base_, rhs.retained_base_);
     std::swap(size_, rhs.size_);
     std::swap(alignment_, rhs.alignment_);
+    std::swap(process_only_, rhs.process_only_);
+    std::swap(stamp_, rhs.stamp_);
   }
 
  private:
+  static size_t alignment_padding(size_t alignment) {
+    return alignment > MemoryLimitPool::kRetainedBlockHeaderBytes
+               ? alignment - 1
+               : 0;
+  }
   MemoryReservation memory_;
   void *data_{nullptr};
   void *retained_base_{nullptr};
   size_t size_{0};
+  bool process_only_{false};
+  ProcessRssBudget::MaterializationStamp stamp_{};
   size_t alignment_{alignof(void *)};
 };
 }  // namespace zvec::ailego

@@ -28,3 +28,38 @@ def require_diskann():
         or platform.machine().lower() not in ("x86_64", "amd64", "aarch64", "arm64")
     ):
         pytest.skip("DiskAnn is supported on 64-bit Linux/macOS/Windows (x86_64/ARM64)")
+
+
+@pytest.fixture(scope="session")
+def require_rabitq(tmp_path_factory):
+    import zvec
+
+    schema = zvec.CollectionSchema(
+        name="rabitq_probe",
+        vectors=[
+            zvec.VectorSchema(
+                "vec",
+                zvec.DataType.VECTOR_FP32,
+                64,
+                index_param=zvec.IVFIndexParam(
+                    quantize_type=zvec.QuantizeType.RABITQ, n_list=1
+                ),
+            )
+        ],
+    )
+    try:
+        collection = zvec.create_and_open(
+            path=str(tmp_path_factory.mktemp("rabitq_probe") / "collection"),
+            schema=schema,
+        )
+    except RuntimeError as exc:
+        if any(
+            reason in str(exc)
+            for reason in (
+                "RaBitQ is not supported on this platform",
+                "RabitQ requires AVX2/FMA, AVX512F/BW/DQ, or NEON to be supported",
+            )
+        ):
+            pytest.skip(str(exc))
+        raise
+    collection.close()

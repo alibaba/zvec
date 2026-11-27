@@ -15,6 +15,7 @@
 
 #include <utility>
 #include <zvec/core/framework/index_framework.h>
+#include "diskann_read_memory.h"
 
 namespace zvec {
 namespace core {
@@ -28,9 +29,11 @@ constexpr diskann_key_t kInvalidKey = static_cast<diskann_key_t>(-1);
 
 struct VectorInfo {
   float dist_;
+  diskann_id_t vector_slot_{kInvalidId};
   std::string vec_;
 
   VectorInfo() = default;
+  VectorInfo(float dist, diskann_id_t slot) : dist_{dist}, vector_slot_{slot} {}
   VectorInfo(float dist, const std::string &vec) : dist_{dist}, vec_{vec} {}
   VectorInfo(float dist, std::string &&vec)
       : dist_{dist}, vec_{std::move(vec)} {}
@@ -51,8 +54,10 @@ struct KeyValueVectorHeapComparer {
 
 /*! Key Value Vector Heap
  */
-using TopkHeap = ailego::Heap<std::pair<diskann_id_t, VectorInfo>,
-                              KeyValueVectorHeapComparer>;
+using TopkHeap =
+    ailego::Heap<std::pair<diskann_id_t, VectorInfo>,
+                 KeyValueVectorHeapComparer,
+                 DiskAnnReadVector<std::pair<diskann_id_t, VectorInfo>>>;
 
 struct DiskAnnMetaHeader {
  public:
@@ -172,6 +177,19 @@ class DiskAnnEntity {
 
   //! Get primary key of the node id
   virtual diskann_key_t get_key(diskann_id_t id) const = 0;
+
+  virtual int read_key(diskann_id_t id, diskann_key_t *key) const {
+    if (!key || id >= doc_cnt()) return IndexError_InvalidArgument;
+    *key = get_key(id);
+    return 0;
+  }
+
+  virtual int find_id(diskann_key_t key, diskann_id_t *id) const {
+    if (!id) return IndexError_InvalidArgument;
+    *id = get_id(key);
+    return 0;
+  }
+
 
  public:
   uint64_t max_node_size() const {

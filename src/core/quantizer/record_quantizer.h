@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cstring>
 #include <zvec/core/framework/index_meta.h>
 
 #pragma once
@@ -39,7 +40,8 @@ class RecordQuantizer {
       float sum = 0.0f;
       float squared_sum = 0.0f;
       int int8_sum = 0;
-      float *extras, scale, bias;
+      uint8_t *extras;
+      float scale, bias;
       if (type == IndexMeta::DataType::DT_INT8) {
         scale = 254 / std::max(max - min, epsilon);
         bias = -min * scale - 127;
@@ -50,7 +52,7 @@ class RecordQuantizer {
           (reinterpret_cast<int8_t *>(out))[i] = static_cast<int8_t>(v);
           int8_sum += (reinterpret_cast<int8_t *>(out))[i];
         }
-        extras = reinterpret_cast<float *>(static_cast<int8_t *>(out) + dim);
+        extras = static_cast<uint8_t *>(out) + dim;
       } else {
         scale = 15 / std::max(max - min, epsilon);
         bias = -min * scale - 8;
@@ -68,23 +70,25 @@ class RecordQuantizer {
               (static_cast_from_float_to_uint8(hi) << 4) |
               (static_cast_from_float_to_uint8(lo) & 0xF);
         }
-        extras =
-            reinterpret_cast<float *>(static_cast<uint8_t *>(out) + dim / 2);
+        extras = static_cast<uint8_t *>(out) + dim / 2;
       }
 
       // Save the feature quantization params for IndexMeasure
-      extras[0] = 1.0f / scale;
-      extras[1] = -bias / scale;
-      extras[2] = sum;
+      // Metadata follows packed codes and need not be float-aligned.
+      const float params[] = {1.0f / scale, -bias / scale, sum};
+      std::memcpy(extras, params, sizeof(params));
+      const int32_t code_sum = int8_sum;
 
       if (type == IndexMeta::DataType::DT_INT8) {
-        extras[3] = squared_sum;
-        reinterpret_cast<int32_t *>(extras + 4)[0] = int8_sum;
+        std::memcpy(extras + 3 * sizeof(float), &squared_sum,
+                    sizeof(squared_sum));
+        std::memcpy(extras + 4 * sizeof(float), &code_sum, sizeof(code_sum));
       } else {
         if (is_euclidean) {
-          extras[3] = squared_sum;
+          std::memcpy(extras + 3 * sizeof(float), &squared_sum,
+                      sizeof(squared_sum));
         } else {
-          reinterpret_cast<int *>(extras)[3] = int8_sum;
+          std::memcpy(extras + 3 * sizeof(float), &code_sum, sizeof(code_sum));
         }
       }
     }
@@ -93,8 +97,9 @@ class RecordQuantizer {
   static inline void unquantize_record(const void *vec, size_t origin_dim,
                                        IndexMeta::DataType type, float *out) {
     if (type == IndexMeta::DataType::DT_INT8) {
-      const float *extras = reinterpret_cast<const float *>(
-          static_cast<const int8_t *>(vec) + origin_dim);
+      float extras[2];
+      std::memcpy(extras, static_cast<const uint8_t *>(vec) + origin_dim,
+                  sizeof(extras));
 
       const int8_t *buf = reinterpret_cast<const int8_t *>(vec);
       for (size_t i = 0; i < origin_dim; ++i) {
@@ -102,8 +107,9 @@ class RecordQuantizer {
       }
 
     } else if (type == IndexMeta::DataType::DT_INT4) {
-      const float *extras = reinterpret_cast<const float *>(
-          static_cast<const uint8_t *>(vec) + origin_dim / 2);
+      float extras[2];
+      std::memcpy(extras, static_cast<const uint8_t *>(vec) + origin_dim / 2,
+                  sizeof(extras));
 
       const uint8_t *buf = reinterpret_cast<const uint8_t *>(vec);
 

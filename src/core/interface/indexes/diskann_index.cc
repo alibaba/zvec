@@ -104,6 +104,24 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
                             param_.list_size);
   proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM,
                             param_.pq_chunk_num);
+#if RABITQ_SUPPORTED
+  if (param_.quantizer_param &&
+      param_.quantizer_param->type == QuantizerType::kRabitq) {
+    if (param_.data_type != DataType::DT_FP32 ||
+        param_.quantizer_param->enable_rotate ||
+        (param_.metric_type != MetricType::kL2sq &&
+         param_.metric_type != MetricType::kInnerProduct &&
+         param_.metric_type != MetricType::kCosine))
+      return core::IndexError_Unsupported;
+    const auto *settings = dynamic_cast<const RabitqQuantizerParam *>(
+        param_.quantizer_param.get());
+    proxima_index_params_.set(core::PARAM_DISKANN_BUILDER_QUANTIZER_CLASS,
+                              "RabitqQuantizer");
+    proxima_index_params_.set(
+        core::PARAM_DISKANN_BUILDER_QUANTIZER_PARAMS,
+        (settings ? *settings : RabitqQuantizerParam{}).to_params());
+  }
+#endif
   builder_ = core::IndexFactory::CreateBuilder("DiskAnnBuilder");
   streamer_ = core::IndexFactory::CreateStreamer("DiskAnnStreamer");
 
@@ -136,22 +154,40 @@ int DiskAnnIndex::create_and_init_streamer(const BaseIndexParam &param) {
 }
 
 int DiskAnnIndex::open(const std::string &file_path,
-                       StorageOptions storage_options) {
+                       StorageOptions storage_options) try {
   if (storage_options.read_only && storage_options.create_new) {
     LOG_ERROR("Cannot create storage for a read-only index");
     return core::IndexError_Runtime;
   }
+#if !RABITQ_SUPPORTED
+  if (storage_options.create_new && param_.quantizer_param &&
+      param_.quantizer_param->type == QuantizerType::kRabitq) {
+    return core::IndexError_Unsupported;
+  }
+#endif
+  if (is_open_) return core::IndexError_NoReady;
+  if (storage_ && streamer_) {
+    const auto &meta = converter_ ? converter_->meta() : proxima_index_meta_;
+    // A completed build releases its converter. A new database needs the
+    // original input conversion and fresh builder/streamer state again.
+    const int ret = storage_options.create_new
+                        ? Index::init(param_)
+                        : streamer_->init(meta, proxima_index_params_);
+    if (ret != 0) return ret;
+  }
+  core::IndexStorage::Pointer storage;
   ailego::Params storage_params;
   file_path_ = file_path;
   is_read_only_ = storage_options.read_only;
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("FileReadStorage");
-      if (storage_ == nullptr) {
+      storage_params.set(core::FILE_READ_STORAGE_PROCESS_RSS_SCRATCH, true);
+      storage = core::IndexFactory::CreateStorage("FileReadStorage");
+      if (storage == nullptr) {
         LOG_ERROR("Failed to create FileReadStorage");
         return core::IndexError_Runtime;
       }
-      int ret = storage_->init(storage_params);
+      int ret = storage->init(storage_params);
       if (ret != 0) {
         LOG_ERROR("Failed to init FileReadStorage, path: %s, err: %s",
                   file_path_.c_str(), core::IndexError::What(ret));
@@ -161,13 +197,14 @@ int DiskAnnIndex::open(const std::string &file_path,
     }
     case StorageOptions::StorageType::kBufferPool: {
       storage_params.set(core::BUFFER_READ_STORAGE_WARMUP_MODE,
-                         core::BUFFER_READ_STORAGE_WARMUP_NONE);
-      storage_ = core::IndexFactory::CreateStorage("BufferReadStorage");
-      if (storage_ == nullptr) {
+                         core::BUFFER_READ_STORAGE_WARMUP_AUTO);
+      storage_params.set(core::BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH, true);
+      storage = core::IndexFactory::CreateStorage("BufferReadStorage");
+      if (storage == nullptr) {
         LOG_ERROR("Failed to create BufferReadStorage");
         return core::IndexError_Runtime;
       }
-      int ret = storage_->init(storage_params);
+      int ret = storage->init(storage_params);
       if (ret != 0) {
         LOG_ERROR("Failed to init BufferReadStorage, path: %s, err: %s",
                   file_path_.c_str(), core::IndexError::What(ret));
@@ -182,20 +219,31 @@ int DiskAnnIndex::open(const std::string &file_path,
   }
 
   if (!storage_options.create_new) {
-    int ret = storage_->open(file_path_, false);
+    int ret = storage->open(file_path_, false);
     if (ret != 0) {
       LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path_.c_str(),
                 core::IndexError::What(ret));
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
-    if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
+    if (!streamer_) return core::IndexError_Runtime;
+    ret = streamer_->open(storage);
+    if (ret != 0) {
       LOG_ERROR("Failed to open streamer, path: %s", file_path_.c_str());
-      return core::IndexError_Runtime;
+      if (ret == core::IndexError_Unsupported ||
+          ret == core::IndexError_Mismatch)
+        return ret;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
-    is_trained_ = true;
   }
+  storage_ = std::move(storage);
+  is_trained_ = !storage_options.create_new;
+  build_stage_ = BuildStage::kCollecting;
+  holder_.reset();
+  decltype(doc_cache_)().swap(doc_cache_);
   is_open_ = true;
   return 0;
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int DiskAnnIndex::generate_holder() {
@@ -308,7 +356,7 @@ int DiskAnnIndex::dump_and_open() {
 }
 
 int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
-                               VectorDataBuffer *vector_data_buffer) {
+                               VectorDataBuffer *vector_data_buffer) try {
   if (is_trained_) {
     return Index::_dense_fetch(doc_id, vector_data_buffer);
   } else {
@@ -322,6 +370,8 @@ int DiskAnnIndex::_dense_fetch(const uint32_t doc_id,
     vector_data_buffer->vector_buffer = std::move(dense_vector_buffer);
     return 0;
   }
+} catch (const std::bad_alloc &) {
+  return core::IndexError_NoMemory;
 }
 
 int DiskAnnIndex::_prepare_for_search(

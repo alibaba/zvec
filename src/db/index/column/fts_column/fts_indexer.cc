@@ -14,6 +14,7 @@
 
 #include "fts_indexer.h"
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/db/doc.h>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "fts_rocksdb_merge.h"
@@ -254,6 +255,21 @@ Status FtsIndexer::remove_field_indexer(const std::string &field_name) {
     }
   }
 
+  return Status::OK();
+}
+
+Status FtsIndexer::prepare_write(const Doc &doc) const {
+  if (doc.get_operator() == Operator::DELETE) {
+    return Status::OK();
+  }
+  for (const auto &[name, indexer] : indexers_) {
+    if (doc.has_value(name)) {
+      auto pipeline = indexer->write_pipeline();
+      if (!pipeline) {
+        return pipeline.error();
+      }
+    }
+  }
   return Status::OK();
 }
 
