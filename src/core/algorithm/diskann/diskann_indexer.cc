@@ -29,6 +29,7 @@
 #include <cstdlib>
 #endif
 #include <ailego/pattern/scope_guard.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
@@ -438,21 +439,24 @@ std::vector<int> DiskAnnIndexer::read_nodes(
   std::vector<AlignedRead> read_reqs;
   read_reqs.reserve(node_ids.size());
 
-  void *buf = nullptr;
   auto sector_num =
       node_per_sector_ > 0
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  DiskAnnUtil::alloc_aligned(
-      &buf, node_ids.size() * sector_num * DiskAnnUtil::kSectorSize,
-      DiskAnnUtil::kSectorSize);
-  if (buf == nullptr) {
+  const size_t sector_bytes =
+      static_cast<size_t>(sector_num) * DiskAnnUtil::kSectorSize;
+  ailego::BudgetedAlignedBuffer buffer;
+  try {
+    if (node_ids.size() > std::numeric_limits<size_t>::max() / sector_bytes)
+      throw std::bad_alloc();
+    buffer.resize_process_rss(node_ids.size() * sector_bytes,
+                              DiskAnnUtil::kSectorSize);
+  } catch (const std::bad_alloc &) {
     LOG_ERROR("read_nodes: failed to allocate aligned read buffer");
     std::fill(retval.begin(), retval.end(), IndexError_NoMemory);
     return retval;
   }
-  const std::unique_ptr<void, decltype(&DiskAnnUtil::free_aligned)> buffer(
-      buf, &DiskAnnUtil::free_aligned);
+  void *buf = buffer.data();
 
   for (size_t i = 0; i < node_ids.size(); ++i) {
     auto node_id = node_ids[i];

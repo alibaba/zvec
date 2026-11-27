@@ -44,7 +44,7 @@ TEST(DiskAnnReadCacheTest, RepeatedHitsSurviveOneTimeScans) {
   ASSERT_EQ(cache.capacity(), 16u);  // Exactly one replacement set.
   EXPECT_LE(cache.allocated_bytes(), budget);
   std::array<uint8_t, bytes> out{};
-  auto read = [](uint64_t offset, size_t length, void *dst) {
+  auto read = [=](uint64_t offset, size_t length, void *dst) {
     std::memset(dst, offset / bytes, length);
     return 0;
   };
@@ -68,7 +68,7 @@ TEST(DiskAnnReadCacheTest, RepeatedMissIsAdmittedWithoutCachingFirstScan) {
   DiskAnnReadCache cache(budget, bytes);
   ASSERT_EQ(cache.capacity(), 16u);
   std::array<uint8_t, bytes> out{};
-  auto read = [](uint64_t offset, size_t length, void *dst) {
+  auto read = [=](uint64_t offset, size_t length, void *dst) {
     std::memset(dst, offset / bytes, length);
     return 0;
   };
