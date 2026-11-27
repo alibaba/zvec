@@ -2754,6 +2754,60 @@ TEST_F(CollectionTest, Feature_DropIndex_Vector) {
   func("sparse_fp32");
 }
 
+TEST_F(CollectionTest, DroppedQuantizedIndexReopensWithBothVectorColumns) {
+  CollectionSchema schema("vectors");
+  auto quantized = std::make_shared<HnswIndexParams>(MetricType::IP, 16, 200,
+                                                     QuantizeType::FP16);
+  for (const auto *name : {"target", "other"}) {
+    ASSERT_TRUE(
+        schema
+            .add_field(std::make_shared<FieldSchema>(
+                name, DataType::VECTOR_FP32, uint32_t{2}, false, quantized))
+            .ok());
+  }
+  ASSERT_NO_FATAL_FAILURE(create(schema));
+  const std::vector<float> a{1, 0}, b{0, 1};
+  Doc first, second;
+  first.set_pk("first");
+  first.set("target", a);
+  first.set("other", b);
+  second.set_pk("second");
+  second.set("target", b);
+  second.set("other", a);
+  std::vector<Doc> docs{first, second};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 2));
+  ASSERT_TRUE(collection_->optimize().ok());
+
+  auto manager = VersionManager::Recovery(col_path);
+  ASSERT_TRUE(manager.has_value());
+  const auto version = manager.value()->get_current_version();
+  ASSERT_EQ(1u, version.persisted_segment_metas().size());
+  const auto &blocks =
+      version.persisted_segment_metas().front()->persisted_blocks();
+  for (auto type :
+       {BlockType::VECTOR_INDEX, BlockType::VECTOR_INDEX_QUANTIZE}) {
+    ASSERT_TRUE(
+        std::any_of(blocks.begin(), blocks.end(), [&](const auto &block) {
+          return block.type() == type && block.contain_column("target");
+        }));
+  }
+  ASSERT_TRUE(collection_->drop_index("target").ok());
+  ASSERT_NO_FATAL_FAILURE(reopen());
+
+  SearchQuery query;
+  query.topk_ = 1;
+  query.target_.set_vector(std::string(reinterpret_cast<const char *>(a.data()),
+                                       a.size() * sizeof(float)));
+  for (const auto *column : {"target", "other"}) {
+    query.target_.field_name_ = column;
+    auto hits = collection_->query(query);
+    ASSERT_TRUE(hits.has_value()) << hits.error().message();
+    ASSERT_EQ(1u, hits->size());
+    EXPECT_EQ(query.target_.field_name_ == "target" ? "first" : "second",
+              hits->front()->pk());
+  }
+}
+
 TEST_F(CollectionTest, Feature_DropIndex_Scalar) {
 #ifdef __ANDROID__
   GTEST_SKIP() << "Skipped on Android: emulator filesystem lacks hardlink "

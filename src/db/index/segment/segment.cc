@@ -1844,9 +1844,6 @@ Status SegmentImpl::drop_vector_index(
     return Status::OK();
   }
 
-  auto vector_index_params =
-      std::dynamic_pointer_cast<VectorIndexParams>(field->index_params());
-
   auto block_id = allocate_block_id();
 
   auto field_with_default_index = std::make_shared<FieldSchema>(*field);
@@ -1867,8 +1864,7 @@ Status SegmentImpl::drop_vector_index(
   CHECK_RETURN_STATUS(s);
 
   (*vector_indexers)[column] = new_vector_indexer;
-  new_segment_meta->remove_vector_persisted_block(
-      column, vector_index_params->quantize_type() != QuantizeType::UNDEFINED);
+  new_segment_meta->remove_vector_persisted_block(column);
 
   BlockMeta block;
   block.set_id(block_id);
