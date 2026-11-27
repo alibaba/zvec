@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <future>
 #include <iostream>
 #include <sstream>  // NOLINT(misc-include-cleaner): protects <sstream> from the private/public test macro below.
 #define private public
@@ -102,6 +103,61 @@ TEST_P(SegmentTest, General) {
 
   EXPECT_EQ(actual_ids, expected_ids)
       << "ID column values don't match expected order";
+}
+
+TEST_P(SegmentTest, TokenizerFailureBeforeWrite) {
+  schema_->add_field(
+      std::make_shared<FieldSchema>("content", DataType::STRING, true,
+                                    std::make_shared<FtsIndexParams>("jieba")));
+  auto segment = test::TestHelper::CreateSegmentWithDoc(
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 0);
+  ASSERT_NE(segment, nullptr);
+  auto column = segment->get_fts_indexer("content");
+  ASSERT_NE(column, nullptr);
+  auto fail_to_load = []() -> Result<fts::TokenizerPipelinePtr> {
+    return tl::make_unexpected(
+        Status::InternalError("injected tokenizer failure"));
+  };
+  column->tokenizer_pipeline_ =
+      std::async(std::launch::deferred, fail_to_load).share();
+
+  auto doc = test::TestHelper::CreateDoc(0, *schema_);
+  EXPECT_FALSE(segment->insert(doc).ok());
+  EXPECT_FALSE(segment->has_record());
+  EXPECT_FALSE(id_map_->has(doc.pk_ref()));
+
+  auto existing = test::TestHelper::CreateDoc(1, *schema_);
+  existing.set_null("content");
+  ASSERT_TRUE(segment->insert(existing).ok());
+  ASSERT_TRUE(segment->flush().ok());
+  const auto wal_path = FileHelper::MakeWalPath(
+      col_path_, segment->id(), segment->meta()->writing_forward_block()->id());
+  const auto old_id = existing.doc_id();
+  existing.set<std::string>("content", "replacement");
+  EXPECT_FALSE(segment->update(existing).ok());
+  EXPECT_FALSE(segment->upsert(existing).ok());
+  EXPECT_FALSE(FileHelper::FileExists(wal_path));
+  uint64_t mapped_id;
+  ASSERT_TRUE(id_map_->has(existing.pk_ref(), &mapped_id));
+  EXPECT_EQ(mapped_id, old_id);
+  EXPECT_FALSE(delete_store_->is_deleted(old_id));
+  EXPECT_EQ(segment->doc_count(), 1);
+
+  column.reset();
+  segment.reset();
+  auto version = version_manager_->get_current_version();
+  auto reopened =
+      Segment::Open(col_path_, *schema_, *version.writing_segment_meta(),
+                    id_map_, delete_store_, version_manager_, options_);
+  ASSERT_TRUE(reopened.has_value()) << reopened.error().message();
+  segment = std::move(*reopened);
+  auto stored = segment->fetch(old_id);
+  ASSERT_NE(stored, nullptr);
+  EXPECT_FALSE(stored->has_value("content"));
+  EXPECT_TRUE(segment->insert(doc).ok());
+  EXPECT_TRUE(segment->update(existing).ok());
+  EXPECT_TRUE(segment->upsert(existing).ok());
 }
 
 TEST_P(SegmentTest, InsertMoreData) {

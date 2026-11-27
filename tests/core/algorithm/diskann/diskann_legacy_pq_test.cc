@@ -461,7 +461,7 @@ TEST(DiskAnnLegacyPqTest, CosineNavigationAndMetricOverride) {
   EXPECT_LT(distances[0], distances[1]);
   float inverse_norms[2];
   ASSERT_TRUE(pq->cosine_inverse_norms(codes, 2, 1, inverse_norms));
-  dc.bind_quantizer(pq.get(), codes, 1, inverse_norms);
+  dc.bind_quantizer(pq.get(), codes, 1, nullptr, nullptr, inverse_norms);
   ASSERT_EQ(0, dc.quantize_query(query));
   dc.quantized_dist(ids, 2, distances);
   EXPECT_NEAR(1 - 2 / std::sqrt(5.0f), distances[0], 1e-6f);

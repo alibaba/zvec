@@ -25,6 +25,8 @@
 
 namespace zvec {
 
+class Doc;
+
 // Manages the per-segment FTS RocksDB instance and all FtsColumnIndexers.
 // Analogous to InvertedIndexer for scalar invert indexes.
 class FtsIndexer {
@@ -58,6 +60,9 @@ class FtsIndexer {
 
   // Remove a field's CFs and stat keys from the RocksDB.
   Status remove_field_indexer(const std::string &field_name);
+
+  // Resolve the pipelines this document needs before its write becomes durable.
+  Status prepare_write(const Doc &doc) const;
 
   // Insert a document's text into a specific field's indexer.
   Status insert(const std::string &field_name, uint32_t seg_doc_id,

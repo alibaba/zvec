@@ -356,6 +356,14 @@ class ProcessRssBudget {
     return finish_reservation_locked(bytes, allocated);
   }
 
+  // Settle an upper-bound reservation in one step once its actual backing
+  // is known. Unused credit is available in the same accounting update.
+  MaterializationStamp finish_reserved_backing(size_t reserved, size_t actual) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    assert(actual <= reserved);
+    return finish_reservation_locked(actual, true, reserved - actual);
+  }
+
   // A partial admission never exposed backing to the OS or a resident scan.
   void cancel_unattempted_reservation(size_t bytes) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -675,9 +683,11 @@ class ProcessRssBudget {
     }
   };
 
-  MaterializationStamp finish_reservation_locked(size_t bytes, bool allocated) {
-    assert(bytes <= pending_allocations_);
-    pending_allocations_ -= bytes;
+  MaterializationStamp finish_reservation_locked(size_t bytes, bool allocated,
+                                                 size_t unused = 0) {
+    assert(bytes <= pending_allocations_ &&
+           unused <= pending_allocations_ - bytes);
+    pending_allocations_ -= bytes + unused;
     if (allocated) {
       backing_ += bytes;
       // Keep the in-flight debit until a successful sample can observe it.
@@ -691,8 +701,9 @@ class ProcessRssBudget {
     } else {
       remember_resident_retirement(bytes);
     }
-    update_available(allocated ? BudgetUpdate::kAccounting
-                               : BudgetUpdate::kRelease);
+    if (unused) remember_resident_retirement(unused);
+    update_available(allocated && !unused ? BudgetUpdate::kAccounting
+                                          : BudgetUpdate::kRelease);
     if (!allocated || !limit()) return {};
     return {rss_epoch_, native_reader_ ? native_epoch_ : 0};
   }

@@ -207,9 +207,9 @@ class ZVEC_CORE_API Index {
                             const BaseIndexQueryParam::Pointer &search_param,
                             core::IndexContext::Pointer &context,
                             std::vector<uint64_t> *candidate_keys = nullptr);
-  int _normalize_buffer_scores(const VectorData &query,
-                               const int64_t *output_ids, float *output_scores,
-                               size_t count);
+  template <typename Id>
+  int _normalize_buffer_scores(const VectorData &query, const Id *ids,
+                               float *scores, size_t count, bool process_rss);
   int _search_refine_internal_ids(
       const VectorData &query, const BaseIndexQueryParam::Pointer &search_param,
       int64_t *output_ids, float *output_scores);
@@ -262,6 +262,37 @@ class ZVEC_CORE_API Index {
  protected:
   bool init_context();
   core::IndexContext::Pointer &acquire_context();
+
+  class QueryContext {
+   public:
+    explicit QueryContext(Index &index);
+    ~QueryContext();
+    QueryContext(const QueryContext &) = delete;
+    QueryContext &operator=(const QueryContext &) = delete;
+
+    core::IndexContext::Pointer &get() {
+      return *context_;
+    }
+    int status() const {
+      return status_;
+    }
+    void keep_on_success(int status) {
+      reusable_ = status == 0;
+    }
+
+   private:
+    Index &index_;
+    core::IndexContext::Pointer diskann_;
+    core::IndexContext::Pointer *context_{&diskann_};
+    int status_{core::IndexError_Runtime};
+    bool reusable_{false};
+  };
+
+ private:
+  struct DiskAnnContextRegistry;
+  struct ThreadDiskAnnContexts;
+  static ThreadDiskAnnContexts &thread_diskann_contexts();
+  std::shared_ptr<DiskAnnContextRegistry> diskann_contexts_;
 
  protected:
   bool is_trained_{false};

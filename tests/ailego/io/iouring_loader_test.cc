@@ -14,6 +14,7 @@
 
 #if (defined(__linux) || defined(__linux__)) && !defined(__ANDROID__)
 
+#include <fcntl.h>
 #include <unistd.h>
 #include <algorithm>
 #include <array>
@@ -24,9 +25,10 @@
 #include <ailego/io/iouring_loader.h>
 #include <ailego/pattern/scope_guard.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
 #include <zvec/ailego/io/file.h>
-#include "../buffer/pool_payload_budget.h"
 #include <gtest/gtest.h>
+#include "../buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace ailego {
@@ -101,6 +103,21 @@ namespace {
 constexpr size_t kBlockSize = 512;
 constexpr size_t kBlockCount = 4;
 
+class IoUringLoaderTest : public testing::Test {
+ protected:
+  void SetUp() override {
+    old_capacity_ = pool_.capacity();
+    ASSERT_EQ(0u, pool_.used());
+    ASSERT_EQ(0, pool_.init(16 * PoolPayloadBudget::page_buffer_size()));
+  }
+  void TearDown() override {
+    EXPECT_EQ(0u, pool_.used());
+    EXPECT_EQ(0, pool_.init(old_capacity_));
+  }
+  PoolPayloadBudget &pool_ = PoolPayloadBudget::get_instance();
+  size_t old_capacity_{0};
+};
+
 class TemporaryFile {
  public:
   TemporaryFile() : fd_(::mkstemp(path_)) {}
@@ -150,6 +167,41 @@ TEST(IoUringStagingTest, CompletedReadsReleaseRingOwnedStaging) {
   EXPECT_EQ(before, pool.external_used());
 }
 
+TEST(IoUringStagingTest, CancellationAfterPartialReapReleasesAsyncReadBacking) {
+  auto &pool = PoolPayloadBudget::get_instance();
+  const size_t old_capacity = pool.capacity();
+  ASSERT_EQ(0, pool.init(4 * 1024 * 1024));
+  const auto reset =
+      ScopeGuard::Make([&] { EXPECT_EQ(0, pool.init(old_capacity)); });
+  const size_t before = pool.external_used();
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  alignas(kBlockSize) std::array<char, 2 * kBlockSize> output{};
+  IoUringStagingTestPeer fake(file.fd(), /*duplicate=*/false);
+  fake.destinations = {output.data(), output.data() + kBlockSize};
+  const std::array<IoUringRead, 2> reads{{
+      {0, kBlockSize, fake.destinations[0]},
+      {kBlockSize, kBlockSize, fake.destinations[1]},
+  }};
+
+  ASSERT_EQ(0, fake.ring.submit_reads(file.fd(), reads.data(), reads.size()));
+  EXPECT_TRUE(fake.ring.has_pending_reads());
+  EXPECT_GT(pool.external_used(), before);
+  EXPECT_TRUE(std::all_of(output.begin(), output.end(),
+                          [](char value) { return value == 0; }));
+  uint32_t completed = 2;
+  ASSERT_EQ(1, fake.ring.get_completed_reads(1, &completed, 1));
+  EXPECT_EQ(0u, completed);
+  EXPECT_TRUE(fake.ring.has_pending_reads());
+  EXPECT_TRUE(std::all_of(output.begin(), output.begin() + kBlockSize,
+                          [](char value) { return value == 0x51; }));
+  fake.ring.cancel_reads();
+  EXPECT_FALSE(fake.ring.has_pending_reads());
+  EXPECT_TRUE(std::all_of(output.begin() + kBlockSize, output.end(),
+                          [](char value) { return value == 0; }));
+  EXPECT_EQ(before, pool.external_used());
+}
+
 TEST(IoUringStagingTest, AmbiguousWriteCompletionKeepsStagingCharged) {
   auto &pool = PoolPayloadBudget::get_instance();
   ASSERT_EQ(0, pool.init(4 * 1024 * 1024));
@@ -172,7 +224,7 @@ TEST(IoUringStagingTest, AmbiguousWriteCompletionKeepsStagingCharged) {
   EXPECT_EQ(before, pool.external_used());
 }
 
-TEST(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
+TEST_F(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
   IoUringRing ring;
   if (!ring.setup(/*entries=*/8)) {
     GTEST_SKIP() << "io_uring is unavailable";
@@ -194,16 +246,42 @@ TEST(IoUringLoaderTest, ReadsBatchAndZeroPadsExpectedShortRead) {
   requests.emplace_back(kBlockSize, kBlockSize,
                         static_cast<uint8_t *>(output) + kBlockSize, kTailSize);
 
-  ASSERT_EQ(ring.execute(file.fd(), requests), 0);
-  EXPECT_EQ(std::memcmp(output, source.data(), kBlockSize), 0);
-  const auto *tail = static_cast<const uint8_t *>(output) + kBlockSize;
-  EXPECT_EQ(std::memcmp(tail, source.data() + kBlockSize, kTailSize), 0);
-  EXPECT_TRUE(std::all_of(tail + kTailSize, tail + kBlockSize,
-                          [](uint8_t value) { return value == 0; }));
+  for (bool asynchronous : {false, true}) {
+    SCOPED_TRACE(asynchronous);
+    std::memset(output, 0xac, 2 * kBlockSize);
+    if (!asynchronous) {
+      ASSERT_EQ(0, ring.execute(file.fd(), requests));
+    } else {
+      ASSERT_EQ(0, ring.submit_reads(file.fd(), requests.data(), requests.size()));
+      std::array<bool, 2> seen{};
+      size_t total = 0;
+      while (total < requests.size()) {
+        std::array<uint32_t, 2> completed{};
+        const int count = ring.get_completed_reads(1, completed.data(), completed.size());
+        ASSERT_GT(count, 0);
+        for (int i = 0; i < count; ++i) {
+          const size_t id = completed[i];
+          ASSERT_LT(id, requests.size());
+          ASSERT_FALSE(seen[id]);
+          seen[id] = true;
+          const size_t bytes = id == 0 ? kBlockSize : kTailSize;
+          EXPECT_EQ(0, std::memcmp(static_cast<uint8_t *>(output) + id * kBlockSize,
+                                   source.data() + id * kBlockSize, bytes));
+        }
+        total += count;
+      }
+    }
+    EXPECT_EQ(0u, pool_.used());
+    EXPECT_EQ(std::memcmp(output, source.data(), kBlockSize), 0);
+    const auto *tail = static_cast<const uint8_t *>(output) + kBlockSize;
+    EXPECT_EQ(std::memcmp(tail, source.data() + kBlockSize, kTailSize), 0);
+    EXPECT_TRUE(std::all_of(tail + kTailSize, tail + kBlockSize,
+                            [](uint8_t value) { return value == 0; }));
+  }
   std::free(output);
 }
 
-TEST(IoUringLoaderTest, WritesScatteredBatch) {
+TEST_F(IoUringLoaderTest, WritesScatteredBatch) {
   IoUringRing ring;
   if (!ring.setup(/*entries=*/8)) {
     GTEST_SKIP() << "io_uring is unavailable";
@@ -224,6 +302,9 @@ TEST(IoUringLoaderTest, WritesScatteredBatch) {
                           source.data() + block * kBlockSize);
   }
   ASSERT_EQ(ring.execute_writes(file.fd(), requests), 0);
+  EXPECT_EQ(
+      BudgetedMappedBuffer::mapping_size(kBlockCount * kIoUringStagingAlign),
+      pool_.external_used());
 
   std::vector<uint8_t> output(source.size());
   ASSERT_EQ(::pread(file.fd(), output.data(), output.size(), 0),

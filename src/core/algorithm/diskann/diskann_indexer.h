@@ -64,13 +64,27 @@ class DiskAnnIndexer {
 
   diskann_key_t get_key(diskann_id_t id) const;
   diskann_id_t get_id(diskann_key_t key) const;
-
-  //! Copy element_size() bytes from src into a new vector value string
-  std::string make_vector_copy(const void *src) const {
-    return std::string(static_cast<const char *>(src), meta_.element_size());
+  int find_id(diskann_key_t key, diskann_id_t *id) const {
+    return entity_->find_id(key, id);
   }
 
-  std::vector<bool> read_nodes(
+  VectorInfo make_candidate_info(const DiskAnnContext *ctx, float score,
+                                 const void *src) const {
+    if (!ctx->fetch_vector()) return VectorInfo(score, kInvalidId);
+    return VectorInfo(score, std::string(static_cast<const char *>(src),
+                                         meta_.element_size()));
+  }
+
+  void emplace_candidate(DiskAnnContext *ctx, TopkHeap &heap, diskann_id_t id,
+                         float score, const void *src) const {
+    if (ctx->use_vector_candidates()) {
+      ctx->emplace_vector_candidate(id, score, src);
+    } else {
+      heap.emplace(id, make_candidate_info(ctx, score, src));
+    }
+  }
+
+  std::vector<int> read_nodes(
       const std::vector<diskann_id_t> &node_ids,
       std::vector<void *> &coord_buffers,
       std::vector<std::pair<uint32_t, diskann_id_t *>> &nbr_buffers);
@@ -101,6 +115,16 @@ class DiskAnnIndexer {
 
   DiskAnnEntity::Pointer entity_{};
   IndexStorage::Pointer storage_{};
+  bool buffer_backed_{false};
+
+  int is_filtered(DiskAnnContext *ctx, diskann_id_t id, bool *filtered) const {
+    *filtered = false;
+    if (!ctx->filter().is_valid()) return 0;
+    diskann_key_t key;
+    const int status = entity_->read_key(id, &key);
+    if (status == 0) *filtered = ctx->filter()(key);
+    return status;
+  }
 
   IndexMeta meta_;
 
@@ -126,6 +150,7 @@ class DiskAnnIndexer {
 
   turbo::Quantizer::Pointer quantizer_;
   const uint8_t *quant_codes_{nullptr};
+  IndexStorage::Segment::Pointer paged_quant_codes_;
 
   IOContext init_ctx_{};
 

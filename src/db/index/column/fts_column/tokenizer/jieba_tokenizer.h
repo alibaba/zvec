@@ -64,7 +64,14 @@ class JiebaTokenizer : public Tokenizer {
   JiebaTokenizer &operator=(JiebaTokenizer &&) = default;
 
  private:
+  friend class TokenizerFactory;
   enum class CutMode { kSearch, kMix, kFull, kHmm };
+
+  // Bind external files at configuration time. With only embedded resources,
+  // leave the segmenter uninitialized until the pipeline is first used.
+  Status configure(const ailego::JsonObject &config);
+  Status load_resources(const std::string &dict_dir,
+                        const std::string &user_dict_path);
 
   // Release segmenters first (they hold raw pointers into dict_trie_ /
   // hmm_model_), then release the underlying dict/model.
@@ -72,7 +79,7 @@ class JiebaTokenizer : public Tokenizer {
 
   // Declared before segmenters: reverse-order destruction keeps the raw
   // pointers held by segmenters valid until the segmenters die.
-  std::unique_ptr<cppjieba::DictTrie> dict_trie_;
+  std::shared_ptr<const cppjieba::DictTrie> dict_trie_;
   std::shared_ptr<const cppjieba::HMMModel> hmm_model_;
   std::unique_ptr<cppjieba::QuerySegment> query_seg_;
   std::unique_ptr<cppjieba::MixSegment> mix_seg_;

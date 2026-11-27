@@ -64,6 +64,14 @@ static Status check_jieba_file(const std::string &path, bool allow_empty) {
 }
 
 Status JiebaTokenizer::init(const ailego::JsonObject &config) {
+  auto status = configure(config);
+  if (!status.ok() || initialized_) {
+    return status;
+  }
+  return load_resources({}, {});
+}
+
+Status JiebaTokenizer::configure(const ailego::JsonObject &config) {
   reset();
 
   std::string user_dict_path =
@@ -84,10 +92,18 @@ Status JiebaTokenizer::init(const ailego::JsonObject &config) {
   }
 
   bool needs_dict = cut_mode_ != CutMode::kHmm;
-  bool needs_model = cut_mode_ != CutMode::kFull;
 
   std::string dict_dir = resolve_jieba_dict_dir(config);
+  if (dict_dir.empty() && (!needs_dict || user_dict_path.empty())) {
+    return Status::OK();
+  }
+  return load_resources(dict_dir, user_dict_path);
+}
 
+Status JiebaTokenizer::load_resources(const std::string &dict_dir,
+                                      const std::string &user_dict_path) {
+  bool needs_dict = cut_mode_ != CutMode::kHmm;
+  bool needs_model = cut_mode_ != CutMode::kFull;
   std::string dict_path = needs_dict ? dict_dir + "/jieba.dict.utf8" : "";
   std::string model_path = needs_model ? dict_dir + "/hmm_model.utf8" : "";
 
@@ -116,16 +132,22 @@ Status JiebaTokenizer::init(const ailego::JsonObject &config) {
 
   try {
     if (needs_dict) {
-      if (dict_dir.empty()) {
+      if (dict_dir.empty() && user_dict_path.empty()) {
+        auto trie = get_embedded_jieba_trie();
+        if (!trie) {
+          return trie.error();
+        }
+        dict_trie_ = *trie;
+      } else if (dict_dir.empty()) {
         auto dict = get_embedded_jieba_dict();
         if (!dict) {
           return dict.error();
         }
         dict_trie_ =
-            std::make_unique<cppjieba::DictTrie>(**dict, user_dict_path);
+            std::make_shared<const cppjieba::DictTrie>(**dict, user_dict_path);
       } else {
-        dict_trie_ =
-            std::make_unique<cppjieba::DictTrie>(dict_path, user_dict_path);
+        dict_trie_ = std::make_shared<const cppjieba::DictTrie>(dict_path,
+                                                                user_dict_path);
       }
     }
     if (needs_model) {
@@ -163,8 +185,7 @@ Status JiebaTokenizer::init(const ailego::JsonObject &config) {
   }
 
   initialized_ = true;
-  LOG_INFO("JiebaTokenizer init success. dict_dir[%s] cut_mode[%s]",
-           dict_dir.c_str(), mode_str.c_str());
+  LOG_INFO("JiebaTokenizer init success. dict_dir[%s]", dict_dir.c_str());
   return Status::OK();
 }
 

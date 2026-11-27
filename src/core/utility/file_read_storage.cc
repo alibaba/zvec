@@ -47,6 +47,7 @@ class FileReadStorage : public IndexStorage {
           data_crc_(segment.data_crc()),
           enable_direct_io_(container.enable_direct_io_),
           alone_file_handle_(container.alone_file_handle_),
+          process_rss_scratch_(container.process_rss_scratch_),
           file_ptr_(file_ptr) {
       if (alone_file_handle_) {
         file_path_ = container.file_path_;
@@ -60,6 +61,7 @@ class FileReadStorage : public IndexStorage {
           padding_size_(rhs.padding_size_),
           region_size_(rhs.region_size_),
           data_crc_(rhs.data_crc_),
+          process_rss_scratch_(rhs.process_rss_scratch_),
           file_ptr_(file_ptr),
           file_path_(rhs.file_path_) {}
 
@@ -110,7 +112,13 @@ class FileReadStorage : public IndexStorage {
       len = std::min(len, region_size_ - offset);
       if (len == 0) return 0;
       try {
-        data = MemoryBlock::AllocateOwned(len);
+        if (process_rss_scratch_) {
+          auto buffer = std::make_shared<ailego::BudgetedAlignedBuffer>();
+          buffer->resize_process_rss(len, AILEGO_CACHE_LINE_SIZE);
+          data = MemoryBlock::MakeSharedView(buffer->data(), buffer);
+        } else {
+          data = MemoryBlock::AllocateOwned(len);
+        }
       } catch (const std::bad_alloc &) {
         thread_read_error() = IndexError_NoMemory;
         return 0;
@@ -198,6 +206,7 @@ class FileReadStorage : public IndexStorage {
     uint32_t data_crc_{0u};
     bool enable_direct_io_{false};
     bool alone_file_handle_{false};
+    bool process_rss_scratch_{false};
     ailego::BudgetedAlignedBuffer buffer_{};
     std::shared_ptr<ailego::File> file_ptr_{};
     std::string file_path_{};
@@ -287,6 +296,7 @@ class FileReadStorage : public IndexStorage {
 
   //! Initialize container
   int init(const ailego::Params &params) override {
+    params.get(FILE_READ_STORAGE_PROCESS_RSS_SCRATCH, &process_rss_scratch_);
     params.get(FILE_READ_STORAGE_CHECKSUM_VALIDATION, &checksum_validation_);
     params.get(FILE_READ_STORAGE_ENABLE_DIRECT_IO, &enable_direct_io_);
     params.get(FILE_READ_STORAGE_ALONE_FILE_HANDLE, &alone_file_handle_);
@@ -340,7 +350,13 @@ class FileReadStorage : public IndexStorage {
       const size_t off = index_offset_ + offset;
       if (off >= end_offset) return size_t{0};
       len = std::min(len, end_offset - off);
-      if (len > scratch.size()) scratch.resize(len, AILEGO_CACHE_LINE_SIZE);
+      if (len > scratch.size()) {
+        if (process_rss_scratch_) {
+          scratch.resize_process_rss(len, AILEGO_CACHE_LINE_SIZE);
+        } else {
+          scratch.resize(len, AILEGO_CACHE_LINE_SIZE);
+        }
+      }
       *data = scratch.data();
       return file_ptr->read(off, scratch.data(), len);
     };
@@ -513,6 +529,7 @@ class FileReadStorage : public IndexStorage {
   bool checksum_validation_{false};
   bool enable_direct_io_{false};
   bool alone_file_handle_{false};
+  bool process_rss_scratch_{false};
   bool memory_locked_{false};
   bool memory_warmup_{false};
   bool memory_shared_{false};

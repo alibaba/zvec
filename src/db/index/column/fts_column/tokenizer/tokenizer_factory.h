@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <future>
 #include <memory>
 #include <string>
 #include <vector>
@@ -41,6 +42,10 @@ class TokenizerPipeline {
 };
 
 using TokenizerPipelinePtr = std::shared_ptr<TokenizerPipeline>;
+// get() performs deferred construction once on the calling thread, including
+// when readers and writers first use the same pipeline concurrently.
+using PreparedTokenizerPipeline =
+    std::shared_future<Result<TokenizerPipelinePtr>>;
 
 /*! Tokenizer factory
  *  Create TokenizerPipeline based on FtsIndexParams configuration.
@@ -55,6 +60,11 @@ class TokenizerFactory {
    *  \return        Tokenizer pipeline, or a detailed error status.
    */
   static Result<TokenizerPipelinePtr> create(const FtsIndexParams &params);
+
+  // Validate the configuration and bind external resources now. The embedded
+  // Jieba dictionary can wait until a caller actually needs the pipeline.
+  static Result<PreparedTokenizerPipeline> prepare(
+      const FtsIndexParams &params);
 
  private:
   static Status create_tokenizer(const std::string &tokenizer_name,

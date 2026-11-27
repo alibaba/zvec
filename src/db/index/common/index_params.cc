@@ -249,7 +249,7 @@ static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
 }
 
 Status FtsIndexParams::validate() const {
-  auto pipeline = fts::TokenizerFactory::create(to_internal(*this));
+  auto pipeline = fts::TokenizerFactory::prepare(to_internal(*this));
   if (!pipeline.has_value()) {
     return Status::InvalidArgument("invalid FTS index params: ",
                                    pipeline.error().message());
@@ -264,8 +264,7 @@ Status FtsIndexParams::validate() const {
 namespace detail {
 struct FtsState {
   std::once_flag once;
-  std::shared_ptr<fts::TokenizerPipeline> pipeline;
-  bool created{false};
+  Result<fts::PreparedTokenizerPipeline> pipeline;
 };
 
 struct FtsPipelineHelper {
@@ -296,7 +295,7 @@ FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
       state_(std::move(other.state_)) {}
 
 FtsIndexParams::~FtsIndexParams() {
-  if (state_ && state_->created) {
+  if (state_ && state_->pipeline && state_->pipeline->valid()) {
     auto internal = to_internal(*this);
     fts::TokenizerPipelineManager::Instance().release(internal);
   }
@@ -308,7 +307,7 @@ FtsIndexParams::~FtsIndexParams() {
 
 namespace detail {
 
-Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+Result<fts::PreparedTokenizerPipeline> PrepareFtsPipeline(
     FtsIndexParams &params) {
   auto &state_uptr = FtsPipelineHelper::state(params);
   if (!state_uptr) {
@@ -320,16 +319,18 @@ Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
   auto &st = *state_uptr;
   std::call_once(st.once, [&]() {
     auto internal = to_internal(params);
-    st.pipeline = fts::TokenizerPipelineManager::Instance().acquire(internal);
-    if (st.pipeline) {
-      st.created = true;
-    }
+    st.pipeline = fts::TokenizerPipelineManager::Instance().prepare(internal);
   });
-  if (!st.pipeline) {
-    return tl::make_unexpected(
-        Status::InternalError("Failed to create tokenizer pipeline"));
-  }
   return st.pipeline;
+}
+
+Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+    FtsIndexParams &params) {
+  auto prepared = PrepareFtsPipeline(params);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  return prepared->get();
 }
 
 }  // namespace detail

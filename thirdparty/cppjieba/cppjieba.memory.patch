@@ -1,8 +1,8 @@
 diff --git a/include/cppjieba/DictTrie.hpp b/include/cppjieba/DictTrie.hpp
-index e3e1a7e4..3e36c3c2 100644
+index e3e1a7e4..ad718ab5 100644
 --- a/include/cppjieba/DictTrie.hpp
 +++ b/include/cppjieba/DictTrie.hpp
-@@ -7,6 +7,7 @@
+@@ -7,12 +7,14 @@
  #include <cstdlib>
  #include <cmath>
  #include <deque>
@@ -10,7 +10,14 @@ index e3e1a7e4..3e36c3c2 100644
  #include <memory>
  #include <mutex>
  #include <set>
-@@ -34,10 +35,26 @@ class DictTrie {
+ #include <string>
+ #include <unordered_map>
+ #include <unordered_set>
++#include <utility>
+ #include "limonp/StringUtil.hpp"
+ #include "limonp/Logging.hpp"
+ #include "UnicodeFile.hpp"
+@@ -34,10 +36,42 @@ class DictTrie {
      WordWeightMax,
    }; // enum UserWordWeightOption
 
@@ -21,6 +28,22 @@ index e3e1a7e4..3e36c3c2 100644
 +    double max_weight;
 +    double median_weight;
 +  };
++
++  class ReadOnlyTrie {
++   public:
++    typedef RuneStrArray::const_iterator Iterator;
++    virtual ~ReadOnlyTrie() = default;
++    virtual const DictUnit* Find(Iterator begin, Iterator end) const = 0;
++    virtual void Find(Iterator begin, Iterator end, std::vector<Dag>& dags,
++                      size_t max_word_len) const = 0;
++  };
++
++  // Keep the backing dictionary alive for the lifetime of the lookup.
++  // Returning a const owner keeps the mutable dictionary API out of this path.
++  static std::shared_ptr<const DictTrie> CreateReadOnly(
++      const DictCacheEntry& cache, std::unique_ptr<const ReadOnlyTrie> lookup) {
++    return std::shared_ptr<const DictTrie>(new const DictTrie(std::move(lookup), cache));
++  }
 +
    DictTrie(const std::string& dict_path, const std::string& user_dict_paths = "", UserWordWeightOption user_word_weight_opt = WordWeightMedian) {
      Init(dict_path, user_dict_paths, user_word_weight_opt);
@@ -37,7 +60,28 @@ index e3e1a7e4..3e36c3c2 100644
    ~DictTrie() {
      delete trie_;
    }
-@@ -168,16 +185,12 @@ class DictTrie {
+@@ -73,6 +107,9 @@ class DictTrie {
+   }
+
+   const DictUnit* Find(RuneStrArray::const_iterator begin, RuneStrArray::const_iterator end) const {
++    if (read_only_trie_) {
++      return read_only_trie_->Find(begin, end);
++    }
+     return trie_->Find(begin, end);
+   }
+
+@@ -80,6 +117,10 @@ class DictTrie {
+         RuneStrArray::const_iterator end,
+         std::vector<struct Dag>&res,
+         size_t max_word_len = MAX_WORD_LENGTH) const {
++    if (read_only_trie_) {
++      read_only_trie_->Find(begin, end, res, max_word_len);
++      return;
++    }
+     trie_->Find(begin, end, res, max_word_len);
+   }
+
+@@ -168,16 +209,16 @@ class DictTrie {
 
 
   private:
@@ -48,6 +92,10 @@ index e3e1a7e4..3e36c3c2 100644
 -    double max_weight;
 -    double median_weight;
 -  };
++  DictTrie(std::unique_ptr<const ReadOnlyTrie> lookup, const DictCacheEntry& cache)
++    : trie_(NULL), read_only_trie_(std::move(lookup)) {
++    Init(cache, "", WordWeightMedian);
++  }
 
    void Init(const std::string& dict_path, const std::string& user_dict_paths, UserWordWeightOption user_word_weight_opt) {
 -    const DictCacheEntry& cache = GetDictCache(dict_path);
@@ -58,7 +106,17 @@ index e3e1a7e4..3e36c3c2 100644
      base_static_node_infos_ = cache.node_infos;
      freq_sum_ = cache.freq_sum;
      min_weight_ = cache.min_weight;
-@@ -236,14 +249,18 @@ class DictTrie {
+@@ -195,6 +236,9 @@ class DictTrie {
+         break;
+     }
+
++    if (read_only_trie_) {
++      return;
++    }
+     if (user_dict_paths.size()) {
+       LoadUserDict(user_dict_paths);
+     }
+@@ -236,14 +280,18 @@ class DictTrie {
    }
 
    static DictCacheEntry BuildDictCacheEntry(const std::string& filePath) {
@@ -80,19 +138,36 @@ index e3e1a7e4..3e36c3c2 100644
        limonp::Split(line, buf, " ");
        XCHECK(buf.size() == DICT_COLUMN_NUM) << "split result illegal, line:" << line;
        DictUnit node_info;
+@@ -309,6 +357,7 @@ class DictTrie {
+   std::vector<DictUnit> static_node_infos_;
+   std::deque<DictUnit> active_node_infos_; // must not be std::vector
+   Trie * trie_;
++  std::unique_ptr<const ReadOnlyTrie> read_only_trie_;
+
+   double freq_sum_;
+   double min_weight_;
 diff --git a/include/cppjieba/HMMModel.hpp b/include/cppjieba/HMMModel.hpp
-index 11524957..e181241d 100644
+index 11524957..1068cb16 100644
 --- a/include/cppjieba/HMMModel.hpp
 +++ b/include/cppjieba/HMMModel.hpp
-@@ -1,6 +1,7 @@
+@@ -1,6 +1,16 @@
  #ifndef CPPJIEBA_HMMMODEL_H
  #define CPPJIEBA_HMMMODEL_H
 
 +#include <istream>
++#include <locale.h>
++#include <stdlib.h>
++#include <locale>
++#include <memory>
++#include <sstream>
++#include <type_traits>
++#ifdef __APPLE__
++#include <xlocale.h>
++#endif
  #include "UnicodeFile.hpp"
  #include "limonp/StringUtil.hpp"
  #include "Trie.hpp"
-@@ -18,24 +19,22 @@ struct HMMModel {
+@@ -18,24 +28,22 @@ struct HMMModel {
    enum {B = 0, E = 1, M = 2, S = 3, STATUS_SUM = 4};
 
    HMMModel(const string& modelPath) {
@@ -125,7 +200,25 @@ index 11524957..e181241d 100644
      string line;
      vector<string> tmp;
      vector<string> tmp2;
-@@ -81,7 +80,7 @@ struct HMMModel {
+@@ -44,7 +52,7 @@ struct HMMModel {
+     Split(line, tmp, " ");
+     XCHECK(tmp.size() == STATUS_SUM);
+     for (size_t j = 0; j< tmp.size(); j++) {
+-      startProb[j] = atof(tmp[j].c_str());
++      startProb[j] = ParseProbability(tmp[j]);
+     }
+
+     //Load transProb
+@@ -53,7 +61,7 @@ struct HMMModel {
+       Split(line, tmp, " ");
+       XCHECK(tmp.size() == STATUS_SUM);
+       for (size_t j =0; j < STATUS_SUM; j++) {
+-        transProb[i][j] = atof(tmp[j].c_str());
++        transProb[i][j] = ParseProbability(tmp[j]);
+       }
+     }
+
+@@ -81,7 +89,7 @@ struct HMMModel {
      }
      return cit->second;
    }
@@ -134,12 +227,45 @@ index 11524957..e181241d 100644
      while (getline(ifile, line)) {
        Trim(line);
        if (line.empty()) {
-@@ -124,6 +123,20 @@ struct HMMModel {
+@@ -111,7 +119,7 @@ struct HMMModel {
+         XLOG(ERROR) << "TransCode failed.";
+         return false;
+       }
+-      mp[unicode[0]] = atof(tmp2[1].c_str());
++      mp[unicode[0]] = ParseProbability(tmp2[1]);
+     }
+     return true;
+   }
+@@ -124,6 +132,44 @@ struct HMMModel {
    EmitProbMap emitProbM;
    EmitProbMap emitProbS;
    vector<EmitProbMap* > emitProbVec;
 +
 + private:
++  // HMM files always use a decimal point, even in a comma-decimal locale.
++  static double ParseProbability(const string& text) {
++#ifdef _WIN32
++    using Locale = std::remove_pointer_t<_locale_t>;
++    static const std::unique_ptr<Locale, decltype(&_free_locale)> numericLocale(
++        _create_locale(LC_NUMERIC, "C"), &_free_locale);
++    if (numericLocale) {
++      return _strtod_l(text.c_str(), NULL, numericLocale.get());
++    }
++#else
++    using Locale = std::remove_pointer_t<locale_t>;
++    static const std::unique_ptr<Locale, decltype(&freelocale)> numericLocale(
++        newlocale(LC_NUMERIC_MASK, "C", NULL), &freelocale);
++    if (numericLocale) {
++      return strtod_l(text.c_str(), NULL, numericLocale.get());
++    }
++#endif
++    std::istringstream input(text);
++    input.imbue(std::locale::classic());
++    double value = 0;
++    input >> value;
++    return value;
++  }
++
 +  void Init() {
 +    memset(startProb, 0, sizeof(startProb));
 +    memset(transProb, 0, sizeof(transProb));

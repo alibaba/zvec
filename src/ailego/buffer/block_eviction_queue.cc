@@ -1540,7 +1540,11 @@ size_t BlockEvictionQueue::cleanup_dead_entries(size_t max_attempts) {
 bool BlockEvictionQueue::add_single_block(const BlockType &block,
                                           int queue_index) {
   if (queue_index < 0 || queue_index >= static_cast<int>(kQueueCount)) {
-    LOG_ERROR("invalid eviction priority: %d", queue_index);
+    try {
+      LOG_ERROR("invalid eviction priority: %d", queue_index);
+    } catch (...) {
+      // A diagnostic must not interrupt the caller's queue recovery.
+    }
     return false;
   }
   BlockType queued = block;
@@ -1552,7 +1556,8 @@ bool BlockEvictionQueue::add_single_block(const BlockType &block,
   if (!ok) {
     approximate_queue_sizes_[queue_index].fetch_sub(1,
                                                     std::memory_order_relaxed);
-    LOG_DEBUG("Eviction queue enqueue rejected under allocation pressure.");
+    // Queue admission failed under memory pressure. Return that failure
+    // without allocating again to log it.
     return false;
   }
   return true;
@@ -1833,7 +1838,11 @@ MemoryLimitPool::PageAllocation MemoryLimitPool::acquire_slab_buffer(
   AlignedSlabMapping mapping = reserve_aligned_slab(page_size);
   if (mapping.base == nullptr) {
     release_fixed(page_size, &metadata_used_size_, Backing::kPending);
-    LOG_ERROR("MemoryLimitPool: failed to reserve an aligned slab");
+    try {
+      LOG_ERROR("MemoryLimitPool: failed to reserve an aligned slab");
+    } catch (...) {
+      // The caller must still cancel its payload reservation.
+    }
     return {nullptr, true};
   }
   ReclaimableSlab *slab = new (mapping.base) ReclaimableSlab(
@@ -2384,6 +2393,16 @@ bool MemoryLimitPool::try_acquire_buffer(size_t buffer_size, char *&buffer,
     return false;
   }
 
+  bool backing_reserved = false;
+  bool attempted_backing = true;
+  const auto rollback = ScopeGuard::Make([&] {
+    if (buffer) return;
+    if (backing_reserved) {
+      cancel_buffer_reservation(buffer_size, attempted_backing);
+    } else {
+      release_buffer(nullptr, buffer_size);
+    }
+  });
   if (cacheable) {
     buffer = pop_reusable_buffer(pick_shard(), buffer_size);
     if (buffer) {
@@ -2397,21 +2416,19 @@ bool MemoryLimitPool::try_acquire_buffer(size_t buffer_size, char *&buffer,
     // size, all currently visible free buffers were already checked above.
     trim_free_buffers(buffer_size);
     if (!try_reserve_committed(buffer_size, Backing::kPending)) {
-      release_buffer(nullptr, buffer_size);
       high_watermark_hits_.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
   }
+  backing_reserved = true;
   const auto allocation =
       cacheable ? acquire_slab_buffer()
                 : PageAllocation{static_cast<char *>(ailego_aligned_malloc(
                                      buffer_size, kMinimumPageBytes)),
                                  true};
+  attempted_backing = allocation.attempted_backing;
   buffer = allocation.buffer;
-  if (!buffer) {
-    cancel_buffer_reservation(buffer_size, allocation.attempted_backing);
-    return false;
-  }
+  if (!buffer) return false;
   if (!cacheable) process_rss_.finish_reservation(buffer_size, true);
   alloc_from_slab_.fetch_add(1, std::memory_order_relaxed);
   return true;

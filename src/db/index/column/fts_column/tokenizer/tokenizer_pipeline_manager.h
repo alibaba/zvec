@@ -60,6 +60,9 @@ class TokenizerPipelineManager
    */
   TokenizerPipelinePtr acquire(const FtsIndexParams &params);
 
+  // Acquire the same cache entry without forcing its deferred initialization.
+  Result<PreparedTokenizerPipeline> prepare(const FtsIndexParams &params);
+
   /*!
    * Release a previously acquired pipeline identified by its FtsIndexParams.
    * Decrements the reference count; when it reaches zero the entry is
@@ -77,7 +80,7 @@ class TokenizerPipelineManager
  private:
   //! Internal map entry
   struct Entry {
-    TokenizerPipelinePtr pipeline;
+    PreparedTokenizerPipeline pipeline;
     int ref_count{0};
   };
 

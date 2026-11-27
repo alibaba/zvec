@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/core/framework/index_context.h>
 #include "utility/topk_result_builder.h"
 #include "diskann_dist_calculator.h"
@@ -62,7 +63,8 @@ class DiskAnnContext : public IndexContext,
   //! Create a lightweight context for reading vectors by id.
   static Pointer create_fetch_context(const IndexMeta &meta,
                                       const IndexMetric::Pointer &measure,
-                                      const DiskAnnEntity::Pointer &entity);
+                                      const DiskAnnEntity::Pointer &entity,
+                                      int *status = nullptr);
 
  public:
   //! Init
@@ -75,14 +77,37 @@ class DiskAnnContext : public IndexContext,
                      const DiskAnnEntity::Pointer &entity, uint32_t magic_num,
                      const turbo::Quantizer::Pointer &data_quantizer = nullptr);
 
+  class SearchResults {
+   public:
+    explicit SearchResults(DiskAnnContext &context);
+    ~SearchResults();
+    SearchResults(const SearchResults &) = delete;
+    SearchResults &operator=(const SearchResults &) = delete;
+
+    void commit();
+
+   private:
+    friend class DiskAnnContext;
+    DiskAnnContext &context_;
+    std::vector<IndexDocumentList> results_;
+    std::vector<IndexGroupDocumentList> group_results_;
+    bool committed_{false};
+  };
+
+  void swap_results(DiskAnnContext &other) noexcept {
+    results_.swap(other.results_);
+    group_results_.swap(other.group_results_);
+  }
+
   //! Retrieve search result
   const IndexDocumentList &result() const override {
-    return results_[0];
+    return result(0);
   }
 
   //! Retrieve search result
   const IndexDocumentList &result(size_t idx) const override {
-    return results_[idx];
+    static const IndexDocumentList empty;
+    return idx < results_.size() ? results_[idx] : empty;
   }
 
   //! Retrieve result object for output
@@ -93,12 +118,13 @@ class DiskAnnContext : public IndexContext,
 
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result() const override {
-    return group_results_[0];
+    return group_result(0);
   }
 
   //! Retrieve search group result with index
   const IndexGroupDocumentList &group_result(size_t idx) const override {
-    return group_results_[idx];
+    static const IndexGroupDocumentList empty;
+    return idx < group_results_.size() ? group_results_[idx] : empty;
   }
 
   IndexGroupDocumentList *mutable_group_result() override {
@@ -143,7 +169,8 @@ class DiskAnnContext : public IndexContext,
   //! Set topk of search result
   void set_topk(uint32_t val) override {
     topk_ = val;
-    topk_heap_.limit(val);
+    topk_heap_.clear();
+    topk_heap_.limit_on_demand(val);
   }
 
   void set_list_size(uint32_t list_size) {
@@ -152,6 +179,10 @@ class DiskAnnContext : public IndexContext,
 
   void set_fetch_vector(bool v) override {
     fetch_vector_ = v;
+  }
+
+  bool fetch_vector() const override {
+    return fetch_vector_;
   }
 
   //! Get topk
@@ -186,12 +217,14 @@ class DiskAnnContext : public IndexContext,
     return coord_buffer_;
   }
 
+  int ensure_sector_buffer(size_t sectors);
+
   inline void *sector_buffer() {
-    return sector_buffer_;
+    return sector_buffer_.data();
   }
 
   inline size_t sector_buffer_size() const {
-    return sector_buffer_size_;
+    return sector_buffer_.size();
   }
 
   inline IOContext &io_ctx() {
@@ -204,43 +237,39 @@ class DiskAnnContext : public IndexContext,
 
   inline void resize_results(size_t size) {
     if (group_by_search()) {
-      group_results_.resize(size);
+      mutable_group_results().resize(size);
     } else {
-      results_.resize(size);
+      mutable_results().resize(size);
     }
   }
 
   inline bool error() const {
-    return has_error_;
+    return error_code_ != 0;
   }
 
   inline void set_error(bool err) {
-    has_error_ = err;
+    error_code_ = err ? IndexError_Runtime : 0;
+  }
+
+  int error_code() const {
+    return error_code_;
+  }
+
+  void set_error_code(int status) {
+    error_code_ = status;
   }
 
   inline void clear() {
-    for (auto &it : results_) {
-      it.clear();
-    }
-    for (auto &it : group_results_) {
-      it.clear();
-    }
-
-    best_list_nodes_.clear();
-    expanded_nodes_.clear();
-    visit_filter_.clear();
-    group_topk_heaps_.clear();
-    has_error_ = false;
+    clear_scratch();
+    for (auto &it : results_) it.clear();
+    for (auto &it : group_results_) it.clear();
   }
 
   //! Preserve query-time options when replacing an incompatible pooled
-  //! context. Search scratch space and previous results are intentionally not
-  //! copied.
+  //! context. Search scratch space is always owned by the original context.
   void copy_query_options_from(const DiskAnnContext &rhs) {
     copy_common_query_options_from(rhs);
-    topk_ = rhs.topk_;
-    topk_heap_.clear();
-    topk_heap_.limit(topk_);
+    set_topk(rhs.topk_);
     group_num_ = rhs.group_num_;
     group_topk_ = rhs.group_topk_;
     group_topk_heaps_.clear();
@@ -271,6 +300,10 @@ class DiskAnnContext : public IndexContext,
 
   VisitFilter &visit_filter() {
     return visit_filter_;
+  }
+
+  DiskAnnSearchVisitFilter &search_visit_filter() {
+    return search_visit_filter_;
   }
 
   //! Reset context
@@ -306,17 +339,23 @@ class DiskAnnContext : public IndexContext,
     group_num_ = group_num;
     group_topk_ = group_topk;
 
-    topk_ = group_topk_ * group_num_;
-
-    topk_heap_.limit(topk_);
+    set_topk(group_topk_ * group_num_);
 
     group_topk_heaps_.clear();
   }
 
-  // topk_to_result / topk_to_single_result / topk_to_group_result are provided
-  // by TopkResultBuilder via the hooks below (result_score,
-  // emplace_result_doc).
-  using TopkResultBuilder<DiskAnnContext, TopkHeap>::topk_to_result;
+  bool use_vector_candidates() const {
+    return fetch_vector_ && !group_by_search();
+  }
+
+  void topk_to_result(uint32_t idx);
+  void emplace_vector_candidate(diskann_id_t id, float score, const void *src);
+  void release_candidates() {
+    if (candidate_vectors_.empty()) return;
+    topk_heap_.clear();
+    candidate_vectors_.clear();
+    candidate_slots_used_ = 0;
+  }
 
   void set_to_result(uint32_t idx, const std::vector<diskann_id_t> &result_ids,
                      const std::vector<float> &result_dists) {
@@ -327,18 +366,22 @@ class DiskAnnContext : public IndexContext,
     uint32_t size = result_ids.size();
 
     for (uint32_t i = 0; i < size; ++i) {
-      results_[idx].emplace_back(result_ids[i], result_dists[i], 0);
+      mutable_results()[idx].emplace_back(result_ids[i], result_dists[i], 0);
     }
   }
 
  private:
+  void clear_scratch(bool discard_slots = false);
+  void release_result_scratch(bool discard_slots = false);
+  void prepare_vector_candidates();
+
   //! Hooks required by TopkResultBuilder.
   std::vector<IndexDocumentList> &mutable_results() {
-    return results_;
+    return staged_results_ ? staged_results_->results_ : results_;
   }
 
   std::vector<IndexGroupDocumentList> &mutable_group_results() {
-    return group_results_;
+    return staged_results_ ? staged_results_->group_results_ : group_results_;
   }
 
   float result_score(const VectorInfo &info) const {
@@ -347,10 +390,16 @@ class DiskAnnContext : public IndexContext,
 
   void emplace_result_doc(IndexDocumentList &docs, diskann_id_t id, float score,
                           const VectorInfo &info) {
+    diskann_key_t key;
+    const int status = entity_->read_key(id, &key);
+    if (status != 0) {
+      set_error_code(status);
+      return;
+    }
     if (fetch_vector_) {
-      docs.emplace_back(entity_->get_key(id), score, id, info.vec_);
+      docs.emplace_back(key, score, id, info.vec_);
     } else {
-      docs.emplace_back(entity_->get_key(id), score, id);
+      docs.emplace_back(key, score, id);
     }
   }
 
@@ -372,6 +421,12 @@ class DiskAnnContext : public IndexContext,
   uint32_t element_rotated_size_{0};
   uint32_t list_size_{0};
 
+  struct VectorCandidate {
+    DiskAnnReadReservation memory;
+    std::string bytes;
+  };
+  DiskAnnReadVector<VectorCandidate> candidate_vectors_;
+  diskann_id_t candidate_slots_used_{0};
   TopkHeap topk_heap_{};
 
   uint32_t group_topk_{0};
@@ -384,21 +439,22 @@ class DiskAnnContext : public IndexContext,
   void *query_{nullptr};
   void *query_rotated_{nullptr};
   void *coord_buffer_{nullptr};
-  void *sector_buffer_{nullptr};
-  size_t sector_buffer_size_{0};
+  ailego::BudgetedAlignedBuffer query_workspace_;
+  ailego::BudgetedAlignedBuffer sector_buffer_;
 
   std::vector<IndexDocumentList> results_{};
   std::vector<IndexGroupDocumentList> group_results_{};
+  SearchResults *staged_results_{nullptr};
 
   bool fetch_vector_{false};
-  bool has_error_{false};
+  int error_code_{0};
 
   NeighborPriorityQueue best_list_nodes_;
   std::vector<Neighbor> expanded_nodes_;
   std::vector<float> occlude_factor_;
 
   VisitFilter visit_filter_{};
-  uint32_t filter_mode_{VisitFilter::ByteMap};
+  DiskAnnSearchVisitFilter search_visit_filter_;
   float negative_probility_{DiskAnnEntity::kDefaultBFNegativeProbility};
 };
 

@@ -21,6 +21,7 @@
 #include <cstring>
 #include <iterator>
 #include <thread>
+#include <utility>
 #include <ailego/pattern/defer.h>
 #include <ailego/pattern/scope_guard.h>
 #include <ailego/utility/memory_helper.h>
@@ -713,12 +714,12 @@ char *VectorPageTable::publish_claimed_block(block_id_t block_id, char *buffer,
   assert(buffer != nullptr);
   Entry &entry = entry_at(block_id);
   if (entry.ref_count.load(std::memory_order_acquire) != kLoadingRefCount) {
+    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     LOG_ERROR(
         "publish_claimed_block: block_id=%zu is not owned by a loader, "
         "state=%d",
         static_cast<size_t>(block_id),
         entry.ref_count.load(std::memory_order_relaxed));
-    MemoryLimitPool::get_instance().release_buffer(buffer, kVectorPageSize);
     return nullptr;
   }
 
@@ -2190,15 +2191,17 @@ VecBufferPool::ReadPageClaim VecBufferPool::claim_read_page(block_id_t id,
   const auto claim = page_table_.try_claim_block_load(id);
   if (claim != VectorPageTable::LoadClaimResult::kClaimed)
     return ReadPageClaim::kJoin;
+  bool claimed = false;
+  const auto rollback = ScopeGuard::Make([&] {
+    if (!claimed) cancel_read_page(id, std::exchange(buffer, nullptr));
+  });
   auto &memory = MemoryLimitPool::get_instance();
   if (!memory.try_acquire_buffer(kVectorPageSize, buffer)) {
     BlockEvictionQueue::get_instance().batch_recycle(1);
     (void)memory.try_acquire_buffer(kVectorPageSize, buffer);
   }
-  if (!buffer) {
-    (void)page_table_.cancel_block_load(id);
-    return ReadPageClaim::kBypass;
-  }
+  if (!buffer) return ReadPageClaim::kBypass;
+  claimed = true;
   miss_count_.fetch_add(1, std::memory_order_relaxed);
   return ReadPageClaim::kClaimed;
 }
@@ -2214,10 +2217,7 @@ void VecBufferPool::complete_read_page(block_id_t id, char *buffer,
   std::memcpy(buffer, data, kVectorPageSize);
   char *page =
       page_table_.publish_claimed_block(id, buffer, id * kVectorPageSize);
-  if (page)
-    page_table_.release_block(id);
-  else
-    cancel_read_page(id, buffer);
+  if (page) page_table_.release_block(id);
 }
 
 bool VecBufferPool::acquire_pages_impl(const block_id_t *page_ids, size_t count,
@@ -2227,20 +2227,20 @@ bool VecBufferPool::acquire_pages_impl(const block_id_t *page_ids, size_t count,
   if (!page_ids || !pages) return false;
 
   std::fill_n(pages, count, nullptr);
+  bool acquired_all = false;
+  const auto release_on_failure = ScopeGuard::Make([&] {
+    if (acquired_all) return;
+    for (size_t i = 0; i < count; ++i) {
+      if (std::exchange(pages[i], nullptr))
+        page_table_.release_block(page_ids[i]);
+    }
+  });
   std::array<block_id_t, kBlockingAioBatchSize> miss_batch{};
   size_t miss_count = 0;
 
   // Pin hits before I/O so eviction cannot reclaim them before delivery.
   for (size_t i = 0; i < count; ++i) {
-    if (page_ids[i] >= page_table_.entry_num()) {
-      for (size_t j = 0; j < i; ++j) {
-        if (pages[j]) {
-          page_table_.release_block(page_ids[j]);
-          pages[j] = nullptr;
-        }
-      }
-      return false;
-    }
+    if (page_ids[i] >= page_table_.entry_num()) return false;
     pages[i] = try_acquire_buffer(page_ids[i]);
     if (!pages[i]) {
       miss_batch[miss_count++] = page_ids[i];
@@ -2265,16 +2265,9 @@ bool VecBufferPool::acquire_pages_impl(const block_id_t *page_ids, size_t count,
     // leave the page in kLoadingRefCount while scanning the global queue.
     pages[i] = acquire_buffer(page_ids[i], retry, /*record_reuse=*/false,
                               allocation_failed);
-    if (!pages[i]) {
-      for (size_t j = 0; j < count; ++j) {
-        if (pages[j]) {
-          page_table_.release_block(page_ids[j]);
-          pages[j] = nullptr;
-        }
-      }
-      return false;
-    }
+    if (!pages[i]) return false;
   }
+  acquired_all = true;
   return true;
 }
 
@@ -3409,14 +3402,24 @@ VecBufferPool::PrepareResult VecBufferPool::prepare_pages_if_fits(
           VectorPageTable::LoadClaimResult::kClaimed)
         continue;
       char *buffer = nullptr;
-      if (!budget.try_acquire_buffer(kVectorPageSize, buffer)) {
-        (void)page_table_.cancel_block_load(id);
+      bool owns_claim = true;
+      const auto rollback = ScopeGuard::Make([&] {
+        if (owns_claim) cancel_read_page(id, buffer);
+      });
+      bool acquired = false;
+      try {
+        acquired = budget.try_acquire_buffer(kVectorPageSize, buffer);
+      } catch (const std::bad_alloc &) {
+        // Optional preparation can fall back to foreground reads.
+      }
+      if (!acquired) {
         result.status = PrepareStatus::kPressure;
         break;
       }
       std::memcpy(buffer, scratch.data() + (id - first) * kVectorPageSize,
                   kVectorPageSize);
       page_table_.promote_evict_priority(id, priority);
+      owns_claim = false;
       if (!page_table_.publish_claimed_block(id, buffer,
                                              id * kVectorPageSize)) {
         // publish_claimed_block takes ownership, including on failure.
@@ -3859,6 +3862,18 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
 
     auto &pool = MemoryLimitPool::get_instance();
     std::array<char *, kDarwinReadBatch> buffers{};
+    std::array<bool, kDarwinReadBatch> owned_claims{};
+    std::fill_n(owned_claims.begin(), load_count, true);
+    auto abandon_claim = [&](size_t i) {
+      owned_claims[i] = false;
+      cancel_read_page(load_pages[i], std::exchange(buffers[i], nullptr));
+    };
+    const auto cleanup = ScopeGuard::Make([&] {
+      for (size_t i = 0; i < load_count; ++i) {
+        if (owned_claims[i]) abandon_claim(i);
+      }
+    });
+
     size_t allocated =
         pool.batch_acquire_buffers(kVectorPageSize, buffers.data(), load_count);
     while (allocated < load_count) {
@@ -3870,8 +3885,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       allocated += acquired;
       if (acquired == 0) break;
     }
-    for (size_t i = allocated; i < load_count; ++i)
-      page_table_.cancel_block_load(load_pages[i]);
+    for (size_t i = allocated; i < load_count; ++i) abandon_claim(i);
     bool batch_ok = allocated == load_count;
     std::array<struct aiocb, kDarwinReadBatch> requests{};
     size_t submitted = 0;
@@ -3905,8 +3919,7 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       const size_t offset = load_pages[i] * kVectorPageSize;
       const size_t expected = std::min(kVectorPageSize, file_size_ - offset);
       if (!read_ok[i]) {
-        pool.release_buffer(buffers[i], kVectorPageSize);
-        page_table_.cancel_block_load(load_pages[i]);
+        abandon_claim(i);
         batch_ok = false;
         continue;
       }
@@ -3914,8 +3927,9 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
         std::memset(buffers[i] + expected, 0, kVectorPageSize - expected);
       miss_count_.fetch_add(1, std::memory_order_relaxed);
       page_table_.promote_evict_priority(load_pages[i], priority);
-      if (page_table_.publish_claimed_block(load_pages[i], buffers[i],
-                                            offset)) {
+      owned_claims[i] = false;
+      if (page_table_.publish_claimed_block(
+              load_pages[i], std::exchange(buffers[i], nullptr), offset)) {
         page_table_.release_block(load_pages[i]);
       } else {
         batch_ok = false;
@@ -3979,13 +3993,12 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       owned_claims[i] = false;
       return page_table_.cancel_block_load(load_pages[i]);
     };
+    std::array<char *, kBlockingAioBatchSize> buffers{};
     auto claim_cleanup = ScopeGuard::Make([&] {
       for (size_t i = 0; i < load_count; ++i) {
-        if (owned_claims[i]) (void)cancel_claim(i);
+        if (owned_claims[i]) cancel_read_page(load_pages[i], buffers[i]);
       }
     });
-
-    std::array<char *, kBlockingAioBatchSize> buffers{};
     size_t allocated = MemoryLimitPool::get_instance().batch_acquire_buffers(
         kVectorPageSize, buffers.data(), load_count);
 
@@ -4137,17 +4150,15 @@ bool VecBufferPool::load_pages_aio(const block_id_t *page_ids, size_t count,
       const block_id_t pid = load_pages[i];
       miss_count_.fetch_add(1, std::memory_order_relaxed);
       page_table_.promote_evict_priority(pid, priority);
-      char *installed = page_table_.publish_claimed_block(
-          pid, buffers[i], pid * kVectorPageSize);
-      // Publication consumes the claim even if it rejects the buffer. It
-      // must never leave cleanup responsible for a later loader's claim.
+      // Publication consumes both the claim and the buffer.
       owned_claims[i] = false;
+      char *installed = page_table_.publish_claimed_block(
+          pid, std::exchange(buffers[i], nullptr), pid * kVectorPageSize);
       if (installed != nullptr) {
         page_table_.release_block(pid);
       } else {
         batch_ok = false;
       }
-      buffers[i] = nullptr;
     }
     if (!batch_ok) return false;
   }

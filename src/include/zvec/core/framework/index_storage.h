@@ -874,6 +874,11 @@ class IndexStorage : public IndexModule {
   virtual int publish_creation() {
     return 0;
   }
+
+  //! Let a reader prepare its read-only working set when explicitly selected.
+  virtual bool automatic_warmup_enabled() const {
+    return false;
+  }
 };
 
 }  // namespace core

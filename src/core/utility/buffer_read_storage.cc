@@ -130,7 +130,7 @@ class BufferReadStorage : public IndexStorage {
    public:
     //! Constructor
     Segment(const std::shared_ptr<ailego::VecBufferPoolHandle> &handle,
-            bool cache_enabled, size_t index_offset,
+            bool cache_enabled, bool process_rss_scratch, size_t index_offset,
             const IndexUnpacker::SegmentMeta &segment)
         : data_offset_(index_offset + segment.data_offset()),
           data_size_(segment.data_size()),
@@ -138,7 +138,8 @@ class BufferReadStorage : public IndexStorage {
           region_size_(segment.data_size() + segment.padding_size()),
           data_crc_(segment.data_crc()),
           handle_(handle),
-          cache_enabled_(cache_enabled) {}
+          cache_enabled_(cache_enabled),
+          process_rss_scratch_(process_rss_scratch) {}
 
     //! Constructor (clone)
     Segment(const Segment &rhs)
@@ -148,7 +149,8 @@ class BufferReadStorage : public IndexStorage {
           region_size_(rhs.region_size_),
           data_crc_(rhs.data_crc_),
           handle_(rhs.handle_),
-          cache_enabled_(rhs.cache_enabled_) {}
+          cache_enabled_(rhs.cache_enabled_),
+          process_rss_scratch_(rhs.process_rss_scratch_) {}
 
     //! All workers borrow scratch owned by this segment. Remove this thread
     //! registry entry too, unless its TLS teardown has already started.
@@ -553,6 +555,11 @@ class BufferReadStorage : public IndexStorage {
       }
       size_t alloc_size = (len + (kAlign - 1UL)) & ~(kAlign - 1UL);
       auto allocate = [&]() -> MemoryBlock {
+        if (process_rss_scratch_) {
+          auto buffer = std::make_shared<ailego::BudgetedAlignedBuffer>();
+          buffer->resize_process_rss(alloc_size, kAlign);
+          return MemoryBlock::MakeSharedView(buffer->data(), buffer);
+        }
         if (alloc_size >= 2 * ailego::kVectorPageSize) {
           // Large cold posting reads must not leave refunded malloc arenas
           // behind. Copies retain this mapping until the final reader releases
@@ -566,7 +573,7 @@ class BufferReadStorage : public IndexStorage {
         return MemoryBlock::AllocateOwned(alloc_size, kAlign);
       };
       MemoryBlock owned =
-          cache_enabled_
+          cache_enabled_ && !process_rss_scratch_
               ? read_scratch_.acquire(alloc_size, kAlign,
                                       alloc_size < 2 * ailego::kVectorPageSize,
                                       allocate)
@@ -605,6 +612,7 @@ class BufferReadStorage : public IndexStorage {
             ailego::BudgetedAllocator<ScratchOwner>{})};
     std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
     bool cache_enabled_{false};
+    bool process_rss_scratch_{false};
   };
 
   //! Destructor
@@ -616,8 +624,10 @@ class BufferReadStorage : public IndexStorage {
     params.get(BUFFER_READ_STORAGE_HEADER_OFFSET, &header_offset_);
     params.get(BUFFER_READ_STORAGE_FOOTER_OFFSET, &footer_offset_);
     params.get(BUFFER_READ_STORAGE_WARMUP_MODE, &warmup_mode_);
+    params.get(BUFFER_READ_STORAGE_PROCESS_RSS_SCRATCH, &process_rss_scratch_);
     if (warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_NONE &&
-        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL) {
+        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL &&
+        warmup_mode_ != BUFFER_READ_STORAGE_WARMUP_AUTO) {
       LOG_ERROR("Invalid BufferReadStorage warmup mode: %s",
                 warmup_mode_.c_str());
       return IndexError_InvalidArgument;
@@ -677,7 +687,8 @@ class BufferReadStorage : public IndexStorage {
 
       // IndexUnpacker requires a stable pointer until its next callback.
       ailego::BudgetedAlignedBuffer scratch;
-      auto read_data = [&candidate_handle, &scratch, candidate_index_offset,
+      auto read_data = [this, &candidate_handle, &scratch,
+                        candidate_index_offset,
                         container_size](size_t offset, const void **data,
                                         size_t len) -> size_t {
         if (offset > container_size) {
@@ -686,7 +697,13 @@ class BufferReadStorage : public IndexStorage {
         } else {
           len = std::min(len, container_size - offset);
         }
-        if (scratch.size() < len) scratch.resize(len, AILEGO_CACHE_LINE_SIZE);
+        if (scratch.size() < len) {
+          if (process_rss_scratch_) {
+            scratch.resize_process_rss(len, AILEGO_CACHE_LINE_SIZE);
+          } else {
+            scratch.resize(len, AILEGO_CACHE_LINE_SIZE);
+          }
+        }
         *data = scratch.data();
         if (len == 0) {
           return 0;
@@ -786,7 +803,8 @@ class BufferReadStorage : public IndexStorage {
       return {};
     }
     return std::make_shared<BufferReadStorage::Segment>(
-        handle_, cache_enabled_, index_offset_, it->second);
+        handle_, cache_enabled_, process_rss_scratch_, index_offset_,
+        it->second);
   }
 
   std::map<std::string, IndexStorage::Segment::Pointer> get_all()
@@ -796,7 +814,8 @@ class BufferReadStorage : public IndexStorage {
       for (const auto &it : segments_) {
         result.emplace(it.first,
                        std::make_shared<BufferReadStorage::Segment>(
-                           handle_, cache_enabled_, index_offset_, it.second));
+                           handle_, cache_enabled_, process_rss_scratch_,
+                           index_offset_, it.second));
       }
     }
     return result;
@@ -821,6 +840,10 @@ class BufferReadStorage : public IndexStorage {
     return buffer_pool_;
   }
 
+  bool automatic_warmup_enabled() const override {
+    return warmup_mode_ == BUFFER_READ_STORAGE_WARMUP_AUTO;
+  }
+
   //! Path of the opened index file (diagnostics / backend consistency).
   std::string file_path() const override {
     return file_path_;
@@ -839,6 +862,7 @@ class BufferReadStorage : public IndexStorage {
   std::shared_ptr<ailego::VecBufferPool> buffer_pool_{nullptr};
   std::shared_ptr<ailego::VecBufferPoolHandle> handle_{nullptr};
   bool cache_enabled_{false};
+  bool process_rss_scratch_{false};
 };
 
 INDEX_FACTORY_REGISTER_STORAGE(BufferReadStorage);
