@@ -1159,9 +1159,8 @@ TEST(IndexInterface, IvfBufferPoolSearchAfterOpenThreadExits) {
 
 #if DISKANN_SUPPORTED
 TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
-  // The pool now admits read workspaces as well as cached pages. Keep the
-  // original cache thresholds and exercise both a codebook that fits the
-  // bypass budget and one that correctly exhausts the same total budget.
+  // DiskANN owns its read workspace separately from the page cache. Both
+  // dimensions must remain readable even when cache admission is impossible.
   for (const uint32_t kDimension : {1u, 64u}) {
     SCOPED_TRACE(kDimension);
     constexpr uint32_t kDocCount = 512;
@@ -1260,25 +1259,6 @@ TEST(IndexInterface, DiskAnnBufferPoolSearchAcrossBudgets) {
       ASSERT_NE(nullptr, index);
       const StorageOptions read_options{
           StorageOptions::StorageType::kBufferPool, false, true};
-      const bool workspace_cannot_fit =
-          budget < 4096 || (kDimension == 64 && budget != kFullBudget);
-      if (workspace_cannot_fit) {
-        // The minimum aligned read is 4 KiB. The 64D codebook needs over
-        // 64 KiB even with no cached pages. Neither can exceed the shared
-        // limit. Failure must release backing before retry on the same Index.
-        ASSERT_EQ(zvec::core::IndexError_NoMemory,
-                  index->open(index_name, read_options));
-        ASSERT_EQ(0u, memory_pool.used());
-        ASSERT_EQ(0, memory_pool.init(kFullBudget));
-        ASSERT_EQ(0, index->open(index_name, read_options));
-        Result actual;
-        ASSERT_NO_FATAL_FAILURE(query(index, 0, &actual));
-        EXPECT_EQ(baseline[0], actual);
-        ASSERT_EQ(0, index->close());
-        index.reset();
-        EXPECT_EQ(0u, memory_pool.used());
-        continue;
-      }
       ASSERT_EQ(0, index->open(index_name, read_options));
       const bool cache_enabled = budget >= metadata_bytes + page_size;
       EXPECT_EQ(cache_enabled ? metadata_bytes : 0u,

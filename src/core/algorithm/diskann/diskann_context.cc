@@ -16,6 +16,7 @@
 #include <chrono>
 #include <new>
 #include "diskann_params.h"
+#include "diskann_result_payloads.h"
 #include "diskann_util.h"
 
 namespace zvec {
@@ -29,20 +30,182 @@ DiskAnnContext::DiskAnnContext(const IndexMeta &meta,
       dc_(entity.get(), meta, measure, data_quantizer),
       entity_{entity} {}
 
+DiskAnnContext::SearchResults::SearchResults(DiskAnnContext &context)
+    : context_(context) {
+  context_.clear_scratch();
+  context_.staged_results_ = this;
+}
+
+DiskAnnContext::SearchResults::~SearchResults() {
+  context_.staged_results_ = nullptr;
+  if (committed_) {
+    context_.release_result_scratch();
+  } else {
+    context_.clear_scratch(/*discard_slots=*/true);
+  }
+}
+
+void DiskAnnContext::SearchResults::commit() {
+  const auto publish = [](auto &current, auto &staged) {
+    // Grow before publishing any document. Swap individual lists so a caller
+    // that holds result(i) across searches can still use that reference.
+    current.resize(staged.size());
+    for (size_t i = 0; i < staged.size(); ++i) current[i].swap(staged[i]);
+  };
+  if (context_.group_by_search()) {
+    publish(context_.group_results_, group_results_);
+    for (auto &result : context_.results_) result.clear();
+  } else {
+    publish(context_.results_, results_);
+    for (auto &result : context_.group_results_) result.clear();
+  }
+  committed_ = true;
+}
+
+void DiskAnnContext::clear_scratch(bool discard_slots) {
+  const size_t capacity = candidate_vectors_.capacity();
+  release_result_scratch(
+      discard_slots ||
+      (capacity &&
+       (capacity / 2 > topk_ ||
+        ailego::MemoryLimitPool::get_instance().under_process_rss_pressure())));
+  best_list_nodes_.clear();
+  expanded_nodes_.clear();
+  visit_filter_.clear();
+  error_code_ = 0;
+}
+
+void DiskAnnContext::release_result_scratch(bool discard_slots) {
+  release_candidates();
+  topk_heap_.clear();
+  // Keep small allocations for reuse when the context returns to the pool.
+  constexpr size_t kRetainedEntries = 256;
+  auto &entries = topk_heap_.mutable_container();
+  if (entries.capacity() > kRetainedEntries) {
+    std::decay_t<decltype(entries)>{}.swap(entries);
+  }
+  if (discard_slots || candidate_vectors_.capacity() > kRetainedEntries) {
+    decltype(candidate_vectors_){}.swap(candidate_vectors_);
+  }
+  group_topk_heaps_.clear();
+}
+
+void DiskAnnContext::prepare_vector_candidates() {
+  // Prepay at most one sector of small result vectors. Under RSS pressure,
+  // or if the batch does not fit, allocate each slot only when needed.
+  const size_t bytes_per_slot = size_t{element_size_} + 1;
+  const size_t count =
+      std::min<size_t>(topk_, DiskAnnUtil::kSectorSize / bytes_per_slot);
+  auto &pool = ailego::MemoryLimitPool::get_instance();
+  if (count < 2 || element_size_ <= std::string{}.capacity() ||
+      pool.under_process_rss_pressure())
+    return;
+
+  const size_t maximum = 2 * count * bytes_per_slot;
+  if (!pool.try_reserve_process_backing(maximum)) return;
+  size_t bytes = 0;
+  try {
+    candidate_vectors_.resize(count);
+    for (auto &candidate : candidate_vectors_) {
+      candidate.bytes.resize(element_size_);
+      const size_t allocated = candidate.bytes.capacity() + 1;
+      if (allocated > maximum - bytes) throw std::bad_alloc();
+      bytes += allocated;
+    }
+  } catch (const std::bad_alloc &) {
+    candidate_vectors_.clear();
+    pool.finish_process_backing(maximum, false);
+    return;
+  }
+  const auto stamp = pool.finish_reserved_process_backing(maximum, bytes);
+  for (auto &candidate : candidate_vectors_) {
+    candidate.memory.adopt(candidate.bytes.capacity() + 1, stamp);
+  }
+}
+
+void DiskAnnContext::emplace_vector_candidate(diskann_id_t id, float score,
+                                              const void *src) {
+  if (topk_heap_.full() && !(score < topk_heap_.front().second.dist_)) return;
+  diskann_id_t slot =
+      topk_heap_.full() ? topk_heap_.front().second.vector_slot_ : kInvalidId;
+  if (slot == kInvalidId) {
+    if (candidate_vectors_.empty()) prepare_vector_candidates();
+    slot = candidate_slots_used_;
+    if (slot == candidate_vectors_.size()) {
+      auto &candidate = candidate_vectors_.emplace_back();
+      candidate.memory.resize(candidate.bytes, element_size_);
+    }
+    ++candidate_slots_used_;
+  }
+  std::memcpy(candidate_vectors_[slot].bytes.data(), src, element_size_);
+  topk_heap_.emplace(id, VectorInfo(score, slot));
+}
+
+void DiskAnnContext::topk_to_result(uint32_t idx) {
+  using Builder = TopkResultBuilder<DiskAnnContext, TopkHeap>;
+  if (!use_vector_candidates()) {
+    Builder::topk_to_result(idx);
+    return;
+  }
+  auto release = ailego::ScopeGuard::Make([&] { release_candidates(); });
+  candidate_vectors_.resize(candidate_slots_used_);
+  Builder::topk_to_single_result(
+      idx, [&](IndexDocumentList &docs, TopkHeap &heap, uint32_t size) {
+        uint32_t accepted = 0;
+        while (accepted < size && !(heap[accepted].second.dist_ > threshold()))
+          ++accepted;
+        DiskAnnResultPayloads batch(accepted);
+        IndexDocumentList result;
+        result.reserve(accepted);
+        for (uint32_t i = 0; i < accepted; ++i) {
+          const auto &entry = heap[i];
+          diskann_key_t key;
+          const int ret = entity_->read_key(entry.first, &key);
+          if (ret != 0) {
+            set_error_code(ret);
+            return;
+          }
+          auto &candidate = candidate_vectors_[entry.second.vector_slot_];
+          auto payload = std::allocate_shared<std::string>(
+              DiskAnnResultPayloads::Allocator<std::string>{},
+              std::move(candidate.bytes));
+          batch.attach_vector(std::move(candidate.memory));
+          result.emplace_back(key, entry.second.dist_, entry.first,
+                              std::move(payload));
+        }
+        batch.commit();
+        docs.swap(result);
+      });
+}
+
 DiskAnnContext::Pointer DiskAnnContext::create_fetch_context(
     const IndexMeta &meta, const IndexMetric::Pointer &measure,
-    const DiskAnnEntity::Pointer &entity) {
+    const DiskAnnEntity::Pointer &entity, int *status) try {
   if (!measure || !entity) {
+    if (status) *status = IndexError_InvalidArgument;
     return nullptr;
   }
+  auto candidate = std::make_unique<DiskAnnContext>(meta, measure, entity);
+  const int ret = candidate->init(kFetchContext, entity->max_degree(),
+                                  entity->pq_chunk_num(), meta.element_size());
+  if (status) *status = ret;
+  if (ret != 0) return nullptr;
+  return candidate;
+} catch (const std::bad_alloc &) {
+  if (status) *status = IndexError_NoMemory;
+  return nullptr;
+}
 
-  Pointer context(new (std::nothrow) DiskAnnContext(meta, measure, entity));
-  if (!context ||
-      context->init(kFetchContext, entity->max_degree(), entity->pq_chunk_num(),
-                    meta.element_size()) != 0) {
-    return nullptr;
+int DiskAnnContext::ensure_sector_buffer(size_t sectors) try {
+  if (sectors == 0 || sectors > DiskAnnUtil::kMaxSectorReadNum)
+    return IndexError_InvalidArgument;
+  const size_t bytes = sectors * DiskAnnUtil::kSectorSize;
+  if (bytes > sector_buffer_.size()) {
+    sector_buffer_.resize_process_rss(bytes, DiskAnnUtil::kSectorSize);
   }
-  return context;
+  return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 int DiskAnnContext::resize_fetch_sector_buffer(
@@ -64,29 +227,12 @@ int DiskAnnContext::resize_fetch_sector_buffer(
     return IndexError_InvalidArgument;
   }
 
-  const size_t required_size =
-      static_cast<size_t>(sector_num_per_node) * DiskAnnUtil::kSectorSize;
-  if (sector_buffer_ != nullptr && sector_buffer_size_ == required_size) {
-    return 0;
-  }
-
-  void *replacement = nullptr;
-  DiskAnnUtil::alloc_aligned(&replacement, required_size,
-                             DiskAnnUtil::kSectorSize);
-  if (!replacement) {
-    LOG_ERROR("Failed to allocate DiskAnn fetch buffer");
-    return IndexError_NoMemory;
-  }
-
-  DiskAnnUtil::free_aligned(sector_buffer_);
-  sector_buffer_ = replacement;
-  sector_buffer_size_ = required_size;
-  return 0;
+  return ensure_sector_buffer(static_cast<size_t>(sector_num_per_node));
 }
 
 int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
                          uint32_t pq_chunk_num, uint32_t element_size,
-                         bool setup_io_context) {
+                         bool setup_io_context) try {
   if (!entity_ || element_size == 0) {
     LOG_ERROR("Invalid DiskAnn context parameters");
     return IndexError_InvalidArgument;
@@ -95,7 +241,17 @@ int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
   element_size_ = element_size;
   pq_chunk_num_ = pq_chunk_num;
 
-  if (type != kFetchContext) {
+  if (type == kSearcherContext) {
+    const size_t stride =
+        DiskAnnUtil::round_up(static_cast<size_t>(element_size_), 256);
+    if (stride > (std::numeric_limits<size_t>::max)() / 3)
+      return IndexError_InvalidLength;
+    query_workspace_.resize_process_rss(3 * stride, 256);
+    auto *buffer = static_cast<char *>(query_workspace_.data());
+    query_ = buffer;
+    query_rotated_ = buffer + stride;
+    coord_buffer_ = buffer + 2 * stride;
+  } else if (type != kFetchContext) {
     DiskAnnUtil::alloc_aligned((void **)&query_, element_size_, 32);
     DiskAnnUtil::alloc_aligned((void **)&query_rotated_, element_size_, 32);
     if (!query_ || !query_rotated_) {
@@ -110,7 +266,7 @@ int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
       ret = visit_filter_.init(VisitFilter::ByteMap, entity_->doc_cnt(),
                                entity_->doc_cnt(), negative_probility_);
       if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
+        LOG_ERROR("Create build visit filter failed");
         return ret;
       }
       break;
@@ -121,22 +277,7 @@ int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
         return IndexError_InvalidArgument;
       }
 
-      ret = visit_filter_.init(filter_mode_, entity_->doc_cnt(),
-                               entity_->doc_cnt(), negative_probility_);
-      if (ret != 0) {
-        LOG_ERROR("Create filter failed,  mode %d", filter_mode_);
-        return ret;
-      }
-
-      DiskAnnUtil::alloc_aligned((void **)&coord_buffer_, element_size_, 256);
-      sector_buffer_size_ = static_cast<size_t>(DiskAnnUtil::kMaxSectorReadNum *
-                                                DiskAnnUtil::kSectorSize);
-      DiskAnnUtil::alloc_aligned((void **)&sector_buffer_, sector_buffer_size_,
-                                 DiskAnnUtil::kSectorSize);
-      if (!coord_buffer_ || !sector_buffer_) {
-        LOG_ERROR("Failed to allocate DiskAnn search buffers");
-        return IndexError_NoMemory;
-      }
+      search_visit_filter_.init(entity_->doc_cnt());
 
       if (setup_io_context) {
         ret = setup_io_ctx(io_ctx_);
@@ -168,6 +309,8 @@ int DiskAnnContext::init(ContextType type, uint32_t /*graph_degree*/,
   }
 
   return 0;
+} catch (const std::bad_alloc &) {
+  return IndexError_NoMemory;
 }
 
 DiskAnnContext::~DiskAnnContext() {
@@ -179,10 +322,10 @@ DiskAnnContext::~DiskAnnContext() {
   }
 
   visit_filter_.destroy();
-  DiskAnnUtil::free_aligned(query_);
-  DiskAnnUtil::free_aligned(query_rotated_);
-  DiskAnnUtil::free_aligned(coord_buffer_);
-  DiskAnnUtil::free_aligned(sector_buffer_);
+  if (type_ != kSearcherContext) {
+    DiskAnnUtil::free_aligned(query_);
+    DiskAnnUtil::free_aligned(query_rotated_);
+  }
 }
 
 int DiskAnnContext::update(const ailego::Params &params) {

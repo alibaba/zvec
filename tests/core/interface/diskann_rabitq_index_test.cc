@@ -71,7 +71,7 @@ TEST(DiskAnnRabitq, CandidateDistanceReceivesQueryLayout) {
   ASSERT_EQ(0, calculator.quantize_query(query));
   const core::diskann_id_t ids[] = {0, 1};
   float distances[2];
-  calculator.quantized_dist(ids, 2, distances);
+  ASSERT_EQ(0, calculator.quantized_dist(ids, 2, distances));
   EXPECT_FLOAT_EQ(0, distances[0]);
   EXPECT_FLOAT_EQ(8, distances[1]);
 }

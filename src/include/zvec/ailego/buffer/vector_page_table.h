@@ -721,6 +721,7 @@ class ZVEC_AILEGO_API VecBufferPool {
   // A claimed buffer is charged and not visible until complete_read_page().
   enum class ReadPageClaim { kClaimed, kJoin, kBypass };
   ReadPageClaim claim_read_page(block_id_t page_id, char *&buffer);
+  // Completes the load and consumes the claimed buffer.
   void complete_read_page(block_id_t page_id, char *buffer, const char *data);
   void cancel_read_page(block_id_t page_id, char *buffer);
 

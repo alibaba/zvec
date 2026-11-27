@@ -45,19 +45,8 @@ class BudgetedAllocator {
     return ptr && (reinterpret_cast<const Header *>(ptr) - 1)->charged != 0;
   }
   T *allocate(size_t n) {
-    if (n > max_size()) throw std::bad_alloc();
-    // Count T slots even when T itself is a pointer.
-    // NOLINTNEXTLINE(bugprone-sizeof-expression)
-    const size_t bytes = sizeof(Header) + n * sizeof(T);
-    auto &pool = MemoryLimitPool::get_instance();
-    const size_t charge = pool.capacity() ? bytes : 0;
-    using Pending = MemoryLimitPool::PendingAllocation;
-    Pending pending(pool, Pending::Kind::kWorkspace);
-    if (!pending.reserve(charge)) throw std::bad_alloc();
-    void *raw = ::operator new(bytes, std::align_val_t{alignof(Header)});
-    const auto creation = pending.commit();
-    auto *header = new (raw) Header{charge, creation};
-    return reinterpret_cast<T *>(header + 1);
+    return allocate_with_policy(
+        n, MemoryLimitPool::PendingAllocation::Kind::kWorkspace);
   }
   void deallocate(T *ptr, size_t) noexcept {
     if (!ptr) return;
@@ -77,6 +66,44 @@ class BudgetedAllocator {
   template <typename U>
   bool operator!=(const BudgetedAllocator<U> &) const {
     return false;
+  }
+
+ protected:
+  T *allocate_with_policy(size_t n,
+                          MemoryLimitPool::PendingAllocation::Kind kind) {
+    if (n > max_size()) throw std::bad_alloc();
+    // Count T slots even when T itself is a pointer.
+    // NOLINTNEXTLINE(bugprone-sizeof-expression)
+    const size_t bytes = sizeof(Header) + n * sizeof(T);
+    auto &pool = MemoryLimitPool::get_instance();
+    const size_t charge = pool.capacity() ? bytes : 0;
+    using Pending = MemoryLimitPool::PendingAllocation;
+    Pending pending(pool, kind);
+    if (!pending.reserve(charge)) throw std::bad_alloc();
+    void *raw = ::operator new(bytes, std::align_val_t{alignof(Header)});
+    const auto creation = pending.commit();
+    auto *header = new (raw) Header{charge, creation};
+    return reinterpret_cast<T *>(header + 1);
+  }
+};
+
+// Used when a synchronous path can proceed with already admitted buffers.
+template <typename T>
+class OptionalBudgetedAllocator : public BudgetedAllocator<T> {
+ public:
+  template <typename U>
+  // The allocator protocol requires this exact spelling.
+  // NOLINTNEXTLINE(readability-identifier-naming)
+  struct rebind {
+    using other = OptionalBudgetedAllocator<U>;
+  };
+
+  OptionalBudgetedAllocator() = default;
+  template <typename U>
+  OptionalBudgetedAllocator(const OptionalBudgetedAllocator<U> &) {}
+  T *allocate(size_t n) {
+    return this->allocate_with_policy(
+        n, MemoryLimitPool::PendingAllocation::Kind::kLockedExternal);
   }
 };
 }  // namespace zvec::ailego

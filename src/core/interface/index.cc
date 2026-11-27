@@ -16,7 +16,9 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <new>
+#include <thread>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -229,6 +231,66 @@ bool Index::init_context() {
 core::IndexContext::Pointer &Index::acquire_context() {
   init_context();
   return context_list[context_index_];
+}
+
+// An idle DiskANN context belongs to its index and thread. Active contexts
+// are owned by individual calls, including calls made from a query callback.
+struct Index::DiskAnnContextRegistry {
+  std::mutex mutex;
+  std::map<std::thread::id, core::IndexContext::Pointer> idle;
+};
+
+struct Index::ThreadDiskAnnContexts {
+  std::weak_ptr<DiskAnnContextRegistry> latest;
+
+  void release(const std::shared_ptr<DiskAnnContextRegistry> &registry) {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    registry->idle.erase(std::this_thread::get_id());
+  }
+
+  ~ThreadDiskAnnContexts() {
+    if (auto owner = latest.lock()) release(owner);
+  }
+};
+
+Index::ThreadDiskAnnContexts &Index::thread_diskann_contexts() {
+  thread_local ThreadDiskAnnContexts cache;
+  return cache;
+}
+
+Index::QueryContext::QueryContext(Index &index) : index_(index) {
+  const auto &registry = index_.diskann_contexts_;
+  if (!registry) {
+    context_ = &index_.acquire_context();
+    status_ = *context_ ? 0 : core::IndexError_Runtime;
+    return;
+  }
+  auto &cache = Index::thread_diskann_contexts();
+  if (auto previous = cache.latest.lock(); previous && previous != registry) {
+    cache.release(previous);
+  }
+  cache.latest = registry;
+  {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto slot = registry->idle.find(std::this_thread::get_id());
+    if (slot != registry->idle.end()) diskann_ = std::move(slot->second);
+  }
+  status_ =
+      diskann_ ? 0 : index_.streamer_->create_context_with_status(diskann_);
+}
+
+Index::QueryContext::~QueryContext() {
+  const auto &registry = index_.diskann_contexts_;
+  if (!reusable_ || !diskann_ || !registry ||
+      Index::thread_diskann_contexts().latest.lock() != registry)
+    return;
+  try {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto &slot = registry->idle[std::this_thread::get_id()];
+    if (!slot) slot = std::move(diskann_);
+  } catch (const std::bad_alloc &) {
+    // Reuse is optional. The result has already succeeded.
+  }
 }
 
 int Index::train() {
@@ -508,6 +570,13 @@ int Index::init(const BaseIndexParam &param) {
     }
   }
   param_ = param;  // will lose the original type info
+  if (param.index_type == IndexType::kDiskAnn && !diskann_contexts_) {
+    try {
+      diskann_contexts_ = std::make_shared<DiskAnnContextRegistry>();
+    } catch (const std::bad_alloc &) {
+      return core::IndexError_NoMemory;
+    }
+  }
 
   is_sparse_ = param.is_sparse;
   is_huge_page_ = param.is_huge_page;
@@ -730,6 +799,10 @@ int Index::close() {
     context_list[context_index_].reset();
     context_index_ = std::numeric_limits<size_t>::max();
   }
+  if (diskann_contexts_) {
+    std::lock_guard<std::mutex> lock(diskann_contexts_->mutex);
+    diskann_contexts_->idle.clear();
+  }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
     return core::IndexError_Runtime;
@@ -823,7 +896,7 @@ int Index::search_with_source(
 
 int Index::search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
-                  SearchResult *result) {
+                  SearchResult *result) try {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -840,16 +913,21 @@ int Index::search(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (!is_trained_ && this->train() != 0) {
-    LOG_ERROR("Failed to train index");
-    return core::IndexError_Runtime;
+  if (!is_trained_) {
+    const int status = this->train();
+    if (status != 0) {
+      LOG_ERROR("Failed to train index");
+      return status == core::IndexError_NoMemory ? status
+                                                 : core::IndexError_Runtime;
+    }
   }
 
-  auto &context = acquire_context();
-  if (!context) {
-    LOG_ERROR("Failed to acquire context");
-    return core::IndexError_Runtime;
-  }
+  QueryContext acquired(*this);
+  auto &context = acquired.get();
+  if (acquired.status() != 0 || !context) return acquired.status();
+  SearchResult diskann_result;
+  SearchResult *output = result;
+  if (diskann_contexts_) result = &diskann_result;
 
   int prepare_ret = _prepare_for_search(vector_data, search_param, context);
   if (prepare_ret != 0) {
@@ -905,13 +983,13 @@ int Index::search(const VectorData &vector_data,
       // cross this boundary, not document/vector materialization or
       // normalization.
       std::vector<std::vector<uint64_t>> keys(1);
-      if (_execute_dense_search(query, query_meta, search_param, context,
-                                &keys[0]) != 0) {
+      ret = _execute_dense_search(query, query_meta, search_param, context,
+                                  &keys[0]);
+      if (ret != 0) {
         LOG_ERROR("Failed to search");
-        if (context) {
-          context->reset();
-        }
-        return core::IndexError_Runtime;
+        if (context) context->reset();
+        return ret == core::IndexError_NoMemory ? ret
+                                                : core::IndexError_Runtime;
       }
       result->reverted_vector_list_.clear();
       ret = reference_index->_refine_dense_candidates(vector_data, search_param,
@@ -931,7 +1009,12 @@ int Index::search(const VectorData &vector_data,
   if (context) {
     context->reset();
   }
+  if (diskann_contexts_ && ret == 0) *output = std::move(diskann_result);
+  acquired.keep_on_success(ret);
   return ret;
+} catch (const std::bad_alloc &) {
+  if (!diskann_contexts_) throw;
+  return core::IndexError_NoMemory;
 }
 
 
@@ -941,7 +1024,7 @@ int Index::_dense_fetch(const uint32_t doc_id,
   int ret = streamer_->get_vector_by_id(doc_id, vector_block);
   if (ret != 0) {
     LOG_ERROR("Failed to fetch vector, doc_id: %u", doc_id);
-    return core::IndexError_Runtime;
+    return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
   }
   const void *vector = vector_block.data();
 
@@ -1152,24 +1235,27 @@ int Index::_execute_dense_search(
     std::vector<uint64_t> *candidate_keys) {
   if (candidate_keys) candidate_keys->clear();
   if (search_param->bf_pks != nullptr) {
-    if (streamer_->search_bf_by_p_keys_impl(
-            vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
-            new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_bf_by_p_keys_impl(
+        vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
+        new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search_bf_by_p_keys_impl vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   } else if (search_param->is_linear) {
-    if (streamer_->search_bf_impl(vector, new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_bf_impl(vector, new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   } else if (candidate_keys) {
     return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
                                              context);
   } else {
-    if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_impl(vector, new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   }
 
@@ -1241,6 +1327,13 @@ int Index::_collect_dense_result(
     const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
     core::IndexContext::Pointer &context) {
   const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
+  const auto result_vector =
+      [](const core::IndexDocument &doc) -> const void * {
+    if (const void *vector = doc.vector()) return vector;
+    // DiskANN owns fetched bytes in a string payload rather than a raw view.
+    const auto &bytes = doc.vector_string();
+    return bytes.empty() ? nullptr : bytes.data();
+  };
 
   // Retrieve group_by results if applicable
   bool has_group_by =
@@ -1296,6 +1389,10 @@ int Index::_collect_dense_result(
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
+        if (!vec) {
+          revert_err = core::IndexError_ReadData;
+          return;
+        }
         std::string reverted_vector;
         if (turbo_quantizer_->dequantize(vec, streamer_vector_meta_,
                                          &reverted_vector) != 0) {
@@ -1308,7 +1405,7 @@ int Index::_collect_dense_result(
       auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
         out.reserve(docs.size());
         for (auto &doc : docs) {
-          revert_one(doc.vector(), &out);
+          revert_one(result_vector(doc), &out);
         }
       };
       if (has_group_by) {
@@ -1348,6 +1445,10 @@ int Index::_collect_dense_result(
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
+        if (!vec) {
+          revert_err = core::IndexError_ReadData;
+          return;
+        }
         std::string reverted_vector;
         reverted_vector.resize(input_vector_meta_.dimension() *
                                input_vector_meta_.unit_size());
@@ -1361,7 +1462,7 @@ int Index::_collect_dense_result(
       auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
         out.reserve(docs.size());
         for (auto &doc : docs) {
-          revert_one(doc.vector(), &out);
+          revert_one(result_vector(doc), &out);
         }
       };
       if (has_group_by) {

@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <vector>
 #include <ailego/io/iouring_def.h>
 #include <zvec/ailego/buffer/process_rss_budget.h>
@@ -140,6 +141,14 @@ class IoUringRing {
     return execute(fd, read_reqs.data(), read_reqs.size());
   }
 
+  // One bounded batch may remain in flight while the caller computes.
+  // Requests are copied and the kernel only sees charged ring-owned staging.
+  // Destinations must remain alive until completion or cancel_reads().
+  int submit_reads(int fd, const IoUringRead *reads, size_t count);
+  int get_completed_reads(size_t minimum, uint32_t *indices, size_t capacity);
+  void cancel_reads();
+  bool has_pending_reads() const;
+
   // Execute a batch of aligned writes via io_uring. The call blocks until all
   // accepted requests have completed, but the requests execute concurrently
   // in the kernel. A quarantined write can still modify the file after return.
@@ -156,6 +165,10 @@ class IoUringRing {
   bool release_staging();
   int execute_impl(int fd, const IoUringRead *read_reqs,
                    const IoUringWrite *write_reqs, size_t count);
+  struct AsyncReads;
+  std::unique_ptr<AsyncReads> async_reads_;
+  int reap_reads(size_t minimum, uint32_t *indices, size_t capacity,
+                 bool deliver);
   int enter(unsigned submit, unsigned minimum, unsigned flags);
   int (*enter_override_)(int, unsigned, unsigned, unsigned){nullptr};
 

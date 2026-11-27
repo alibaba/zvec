@@ -222,7 +222,7 @@ class Heap : private TBase {
     limit_ = std::max<size_t>(max, 1u);
     // Small limits still allocate once up front: growing from empty
     // reallocates on almost every push, which dominates dense batch scans.
-    if (limit_ <= 16) TBase::reserve(limit_);
+    if (max && limit_ <= 16) TBase::reserve(limit_);
   }
 
   //! Unlimit the size of heap

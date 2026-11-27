@@ -239,13 +239,22 @@ class NeighborPriorityQueue {
     }
   }
 
-  Neighbor closest_unexpanded() {
-    data_[cur_].expanded = true;
-    size_t pre = cur_;
-    while (cur_ < size_ && data_[cur_].expanded) {
-      cur_++;
+  const Neighbor &peek_closest_unexpanded() const {
+    return data_[cur_];
+  }
+
+  Neighbor closest_unexpanded(bool retain_expanded = true) {
+    auto result = data_[cur_];
+    result.expanded = true;
+    if (retain_expanded) {
+      data_[cur_].expanded = true;
+    } else {
+      std::memmove(&data_[cur_], &data_[cur_ + 1],
+                   (size_ - cur_ - 1) * sizeof(Neighbor));
+      --size_;
     }
-    return data_[pre];
+    while (cur_ < size_ && data_[cur_].expanded) ++cur_;
+    return result;
   }
 
   bool has_unexpanded_node() const {
