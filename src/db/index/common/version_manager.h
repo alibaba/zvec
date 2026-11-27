@@ -14,6 +14,7 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -33,7 +34,21 @@ class Version {
 
   static Status Load(const std::string &path, Version *version);
 
-  static Status Save(const std::string &path, const Version &version);
+  //! Publishes `version` at `path` atomically: the manifest is written and
+  //! synced under a temporary name, then renamed into place and the
+  //! directory is synced. On error, `*uncertain` (when given) tells whether
+  //! the rename already happened: if so, only the directory sync failed and
+  //! the new manifest may or may not survive a crash. It is left in place.
+  static Status Save(const std::string &path, const Version &version,
+                     bool *uncertain = nullptr);
+
+  //! Checks the invariants every collection manifest satisfies: a schema,
+  //! a writing segment, unique segment ids, and a next_segment_id above
+  //! every referenced segment id. Since Save() always writes a non-zero
+  //! next_segment_id as the last top-level field, this detects truncation of
+  //! that canonical encoding at any length. It is not a general corruption
+  //! check.
+  Status validate() const;
 
  public:
   void set_schema(const CollectionSchema &schema) {
@@ -181,7 +196,12 @@ class VersionManager {
  public:
   using Ptr = std::shared_ptr<VersionManager>;
 
-  static Result<VersionManager::Ptr> Recovery(const std::string &path);
+  //! Loads the newest manifest in `path`. With `validate`, it must also
+  //! pass Version::validate(). There is no fallback to an older generation:
+  //! its WAL may already be gone, so it can lack acknowledged writes.
+  //! Leftover `manifest.<id>.tmp` files are ignored. Never modifies `path`.
+  static Result<VersionManager::Ptr> Recovery(const std::string &path,
+                                              bool validate = false);
 
   static Result<VersionManager::Ptr> Create(const std::string &path,
                                             const Version &initial_version);
@@ -202,7 +222,36 @@ class VersionManager {
 
   Status remove_persisted_segment_meta(SegmentID id);
 
+  //! Publishes the current version as a new manifest generation and then
+  //! removes older generations. On a failure before the rename, the
+  //! manifests on disk are unchanged and a later flush() retries. If only the
+  //! directory sync failed, the outcome is unknown: the manifest is kept,
+  //! the manager is fenced and every later flush() fails until reopen.
   Status flush();
+
+  //! Syncs the manifest loaded by Recovery() and its directory. A writable
+  //! open calls this before modifying anything: that manifest may have been
+  //! published by a process whose own directory sync failed or never ran.
+  Status sync_current_manifest();
+
+  //! True after a publish whose durability could not be confirmed. The
+  //! collection must not retire anything the new manifest may reference, and
+  //! must refuse writes until it is reopened.
+  bool fenced() const {
+    return fenced_.load();
+  }
+
+  //! Test-only fault injection. When set, it is called at each sync and each
+  //! close of a manifest file or of its directory; a non-zero result fails
+  //! that step with this errno value. A close still closes the descriptor.
+  enum class SyncStep {
+    kFileSync,
+    kFileClose,
+    kDirectorySync,
+    kDirectoryClose
+  };
+  using SyncFaultForTest = int (*)(SyncStep step);
+  static void SetSyncFaultForTest(SyncFaultForTest fault);
 
   void set_id_map_path_suffix(uint32_t suffix) {
     std::lock_guard lock(mtx_);
@@ -235,6 +284,8 @@ class VersionManager {
   mutable std::mutex mtx_;
 
   uint64_t version_id_ = 0;
+  std::string loaded_manifest_path_;
+  std::atomic<bool> fenced_{false};
 };
 
 }  // namespace zvec
