@@ -16,6 +16,7 @@
 #pragma once
 
 
+#include <new>
 #include <roaring/roaring.h>
 #include "db/common/constants.h"
 #include "db/index/column/common/index_results.h"
@@ -46,7 +47,7 @@ class InvertedSearchResult
 
 
   const IndexFilter::Ptr make_filter() const {
-    return bitmap_ ? std::make_shared<Filter>(shared_from_this()) : nullptr;
+    return bitmap() ? std::make_shared<Filter>(shared_from_this()) : nullptr;
   }
 
 
@@ -68,20 +69,14 @@ class InvertedSearchResult
 
 
   bool contains(uint32_t id) const {
-    if (bitmap_) {
-      return roaring_bitmap_contains(bitmap_, id);
-    } else {
-      return false;
-    }
+    const auto *data = bitmap();
+    return data && roaring_bitmap_contains(data, id);
   }
 
 
   size_t count() const override {
-    if (bitmap_) {
-      return roaring_bitmap_get_cardinality(bitmap_);
-    } else {
-      return 0;
-    }
+    const auto *data = bitmap();
+    return data ? roaring_bitmap_get_cardinality(data) : 0;
   }
 
 
@@ -90,8 +85,8 @@ class InvertedSearchResult
     explicit InvertedIndexIterator(
         std::shared_ptr<const InvertedSearchResult> result)
         : result_(result) {
-      if (result_->bitmap_) {
-        iter_ = roaring_create_iterator(result_->bitmap_);
+      if (const auto *data = result_->bitmap()) {
+        iter_ = roaring_create_iterator(data);
       }
     }
 
@@ -142,12 +137,13 @@ class InvertedSearchResult
       LOG_ERROR("Failed to extract ids: ids pointer is null");
       return;
     }
-    if (!bitmap_) {
+    const auto *data = bitmap();
+    if (!data) {
       return;
     }
 
     ids->reserve(static_cast<size_t>(count()));
-    roaring_uint32_iterator_t *iter = roaring_create_iterator(bitmap_);
+    roaring_uint32_iterator_t *iter = roaring_create_iterator(data);
     while (iter->has_value) {
       ids->push_back(iter->current_value);
       roaring_advance_uint32_iterator(iter);
@@ -162,21 +158,29 @@ class InvertedSearchResult
   }
 
 
+  void set_shared_bitmap(std::shared_ptr<const roaring_bitmap_t> bitmap) {
+    destroy_bitmap();
+    shared_bitmap_ = std::move(bitmap);
+  }
+
+
   void destroy_bitmap() {
     if (bitmap_) {
       roaring_bitmap_free(bitmap_);
       bitmap_ = nullptr;
     }
+    shared_bitmap_.reset();
   }
 
 
   // Set-algebra op; 'and' is a C++ keyword so the method keeps an upper name.
   // NOLINTNEXTLINE(readability-identifier-naming)
   void AND(const InvertedSearchResult &other) {
-    if (!bitmap_ || !other.bitmap_) {
+    const auto *right = other.bitmap();
+    if (!bitmap() || !right) {
       destroy_bitmap();
-    } else {
-      roaring_bitmap_and_inplace(bitmap_, other.bitmap_);
+    } else if (this != &other) {
+      roaring_bitmap_and_inplace(mutable_bitmap(), right);
     }
   }
 
@@ -184,19 +188,36 @@ class InvertedSearchResult
   // Set-algebra op; 'or' is a C++ keyword so the method keeps an upper name.
   // NOLINTNEXTLINE(readability-identifier-naming)
   void OR(const InvertedSearchResult &other) {
-    if (!other.bitmap_) {
+    const auto *right = other.bitmap();
+    if (!right || this == &other) {
       return;
     }
-    if (!bitmap_) {
-      bitmap_ = roaring_bitmap_copy(other.bitmap_);
+    if (!bitmap()) {
+      bitmap_ = roaring_bitmap_copy(right);
       return;
     }
-    roaring_bitmap_or_inplace(bitmap_, other.bitmap_);
+    roaring_bitmap_or_inplace(mutable_bitmap(), right);
   }
 
 
  private:
+  const roaring_bitmap_t *bitmap() const {
+    return shared_bitmap_ ? shared_bitmap_.get() : bitmap_;
+  }
+
+  roaring_bitmap_t *mutable_bitmap() {
+    if (shared_bitmap_) {
+      auto *copy = roaring_bitmap_copy(shared_bitmap_.get());
+      if (!copy) {
+        throw std::bad_alloc();
+      }
+      set_and_own_bitmap(copy);
+    }
+    return bitmap_;
+  }
+
   roaring_bitmap_t *bitmap_{nullptr};
+  std::shared_ptr<const roaring_bitmap_t> shared_bitmap_;
 };
 
 

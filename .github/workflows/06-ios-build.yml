@@ -211,6 +211,13 @@ jobs:
               RETRY_REASON=""
               if grep -q "unknown to FrontBoard" "$LOG_FILE"; then
                 RETRY_REASON="FrontBoard has not registered ${TEST_NAME} yet"
+              elif [ "$LAUNCH_EXIT" -eq 17 ] && [ "$SUMMARY_FOUND" -eq 0 ] && \
+                   grep -Fq 'Unable to establish FIFO at ' "$LOG_FILE" && \
+                   grep -Fq 'domain=NSPOSIXErrorDomain, code=17' "$LOG_FILE" && \
+                   ! grep -Eq '^\[  FAILED  \]' "$LOG_FILE"; then
+                # simctl can encounter a stale console FIFO before starting the app.
+                # A fresh launch retries the transport; a passing test is still required.
+                RETRY_REASON="simctl could not create the console FIFO for ${TEST_NAME}"
               elif [ "$LAUNCH_EXIT" -eq 3 ] && [ "$SUMMARY_FOUND" -eq 1 ] && \
                    grep -Fq 'domain=FBSOpenApplicationServiceErrorDomain, code=3' "$LOG_FILE" && \
                    grep -Fq 'The process did launch, but has since exited or crashed.' "$LOG_FILE" && \

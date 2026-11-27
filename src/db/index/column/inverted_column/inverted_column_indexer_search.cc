@@ -206,24 +206,11 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_not_contain(
 }
 
 
-Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
+Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt_raw(
     const std::string &term, bool include_eq) const {
   if (field_.element_data_type() == DataType::BOOL) {
     LOG_ERROR("Bool type is not supported for range query");
     return tl::make_unexpected(Status::InternalError());
-  }
-
-  // For range queries that match most values, it's more efficient to compute
-  // the result by getting the complement and flipping bits.
-  if (range_covers_most_values(term, CompareOp::LT)) {
-    auto ret = get_bitmap_gt(term, !include_eq);
-    if (ret) {
-      ret = flip_bitmap(ret.value());
-    } else {
-      LOG_ERROR("Failed to retrieve range bitmap for term[%s] from %s",
-                term.c_str(), id().c_str());
-    }
-    return ret;
   }
 
   Status s = Status::OK();
@@ -318,24 +305,11 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_lt(
 }
 
 
-Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt(
+Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_gt_raw(
     const std::string &term, bool include_eq) const {
   if (field_.element_data_type() == DataType::BOOL) {
     LOG_ERROR("Bool type is not supported for range query");
     return tl::make_unexpected(Status::InternalError());
-  }
-
-  // For range queries that match most values, it's more efficient to compute
-  // the result by getting the complement and flipping bits.
-  if (range_covers_most_values(term, CompareOp::GT)) {
-    auto ret = get_bitmap_lt(term, !include_eq);
-    if (ret) {
-      ret = flip_bitmap(ret.value());
-    } else {
-      LOG_ERROR("Failed to retrieve range bitmap for term[%s] from %s",
-                term.c_str(), id().c_str());
-    }
-    return ret;
   }
 
   Status s = Status::OK();
@@ -689,14 +663,9 @@ Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_suffix(
 }
 
 
-Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_null() const {
-  return null_bitmap_.copy();
-}
-
-
 Result<roaring_bitmap_t *> InvertedColumnIndexer::get_bitmap_non_null() const {
   if (sealed_) {
-    roaring_bitmap_t *bitmap = null_bitmap_.copy();
+    roaring_bitmap_t *bitmap = null_bitmap_->copy();
     roaring_bitmap_flip_inplace(bitmap, 0, max_id_ + 1);
     return bitmap;
   } else {
@@ -887,16 +856,15 @@ InvertedSearchResult::Ptr InvertedColumnIndexer::search_array_len(
 
 
 InvertedSearchResult::Ptr InvertedColumnIndexer::search_null() const {
-  auto search_res = std::make_shared<InvertedSearchResult>();
-  auto bitmap_res = get_bitmap_null();
-  if (bitmap_res) {
-    search_res->set_and_own_bitmap(bitmap_res.value());
-    return search_res;
+  auto result = std::make_shared<InvertedSearchResult>();
+  if (sealed_) {
+    // The aliased owner keeps the sealed bitmap alive after the column closes.
+    result->set_shared_bitmap(std::shared_ptr<const roaring_bitmap_t>(
+        null_bitmap_, null_bitmap_->bitmap()));
   } else {
-    LOG_ERROR("%s: failed to search, code[%d]", id().c_str(),
-              static_cast<int>(bitmap_res.error().code()));
-    return nullptr;
+    result->set_and_own_bitmap(null_bitmap_->copy());
   }
+  return result;
 }
 
 
@@ -952,8 +920,8 @@ inline Status InvertedColumnIndexer::estimate_range_ratio(
 }
 
 
-inline bool InvertedColumnIndexer::range_covers_most_values(
-    const std::string &term, CompareOp op) const {
+bool InvertedColumnIndexer::range_covers_most_values(const std::string &term,
+                                                     CompareOp op) const {
   constexpr float HIGH_SELECTIVITY_THRESHOLD = 0.7;
 
   // Estimation is only available for sealed indexes as they have the cumulative
@@ -974,13 +942,13 @@ inline bool InvertedColumnIndexer::range_covers_most_values(
 }
 
 
-inline roaring_bitmap_t *InvertedColumnIndexer::flip_bitmap(
+roaring_bitmap_t *InvertedColumnIndexer::flip_bitmap(
     roaring_bitmap_t *bitmap) const {
   roaring_bitmap_t *ret;
   if (ret = bitmap; ret == nullptr) {
-    ret = null_bitmap_.copy();
+    ret = null_bitmap_->copy();
   } else {
-    roaring_bitmap_or_inplace(ret, null_bitmap_.bitmap());
+    roaring_bitmap_or_inplace(ret, null_bitmap_->bitmap());
   }
   roaring_bitmap_flip_inplace(ret, 0, max_id_ + 1);
   return ret;

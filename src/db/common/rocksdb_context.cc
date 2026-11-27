@@ -537,15 +537,21 @@ void RocksdbContext::delete_cf_handles() {
 }
 
 
-Status RocksdbContext::compact() {
+Status RocksdbContext::compact(
+    const std::unordered_set<std::string> &force_bottommost_for) {
   std::lock_guard<std::mutex> lock(mutex_);
 
   for (auto cf : cf_handles_) {
-    auto s = db_->CompactRange(compact_range_opts_, cf, nullptr, nullptr);
+    const auto &name = cf->GetName();
+    auto options = compact_range_opts_;
+    if (force_bottommost_for.count(name) != 0) {
+      options.bottommost_level_compaction =
+          rocksdb::BottommostLevelCompaction::kForceOptimized;
+    }
+    auto s = db_->CompactRange(options, cf, nullptr, nullptr);
     if (!s.ok()) {
       LOG_ERROR("Failed to compact cf[%s] in RocksDB[%s], code[%d], reason[%s]",
-                cf->GetName().c_str(), db_path_.c_str(), s.code(),
-                s.ToString().c_str());
+                name.c_str(), db_path_.c_str(), s.code(), s.ToString().c_str());
     }
   }
   auto s = db_->CompactRange(compact_range_opts_, nullptr, nullptr);

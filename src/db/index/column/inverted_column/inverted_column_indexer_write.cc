@@ -13,6 +13,7 @@
 // limitations under the License.
 
 
+#include <new>
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/encoding/json.h>
 #include "inverted_codec.h"
@@ -184,7 +185,7 @@ Status InvertedColumnIndexer::insert_null(uint32_t id) {
   if (read_only_) {
     return Status::PermissionDenied();
   }
-  null_bitmap_.add(id);
+  null_bitmap_->add(id);
   update_max_id(id);
   return Status::OK();
 }
@@ -196,8 +197,8 @@ Status InvertedColumnIndexer::flush_special_values() {
   }
 
   std::string value;
-  if (null_bitmap_.cardinality() != 0) {
-    if (!null_bitmap_.serialize(&value).ok()) {
+  if (null_bitmap_->cardinality() != 0) {
+    if (!null_bitmap_->serialize(&value).ok()) {
       LOG_ERROR("Failed to serialize null bitmap");
       return Status::InternalError();
     }
@@ -443,23 +444,65 @@ Status InvertedColumnIndexer::seal() {
     return status;
   }
 
+  std::unique_ptr<InvertedRangeCache> cache;
+  std::string seal_value = "sealed";
+  size_t stored_prefixes = 0;
   if (enable_range_optimization_) {
     status = generate_statistical_indexes();
     if (!status.ok()) {
       LOG_ERROR("Failed to generate statistical indexes in %s", id().c_str());
       return status;
     }
+    try {
+      cache = InvertedRangeCache::Build(ctx_, cf_ranges_, cf_terms_,
+                                        max_id_.load(), null_bitmap_->bitmap());
+      if (!cache) {
+        seal_value = InvertedRangeCache::kNoCacheSealValue;
+      } else if (auto stored = cache->store(ctx_, field_.name(), seal_value);
+                 stored.ok()) {
+        stored_prefixes = cache->prefixes.size();
+      } else {
+        LOG_WARN("Could not persist range prefixes for %s: %s", id().c_str(),
+                 stored.ToString().c_str());
+      }
+    } catch (const std::bad_alloc &) {
+      LOG_WARN("Could not prepare range prefixes for %s: insufficient memory",
+               id().c_str());
+    }
   }
 
-  auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), "sealed");
-  if (rs.ok()) {
-    sealed_ = true;
-    read_only_ = true;
-    return Status::OK();
-  } else {
+  // The legacy marker allows a reopen to rebuild the cache when storing it
+  // failed. A cache marker is written only after all its records are present.
+  auto rs = ctx_.db_->Put(ctx_.write_opts_, key_sealed(), seal_value);
+  if (!rs.ok()) {
     LOG_ERROR("Failed to seal %s", id().c_str());
     return Status::InternalError();
   }
+  sealed_ = true;
+  read_only_ = true;
+  range_cache_ = std::move(cache);
+  if (range_cache_) {
+    range_cache_ready_.store(true, std::memory_order_release);
+  }
+
+  if (enable_range_optimization_ &&
+      stored_prefixes < InvertedRangeCache::kQuantiles - 1) {
+    try {
+      rocksdb::WriteBatch batch;
+      auto cleanup =
+          InvertedRangeCache::Delete(batch, field_.name(), stored_prefixes);
+      if (cleanup.ok()) cleanup = ctx_.db_->Write(ctx_.write_opts_, &batch);
+      if (!cleanup.ok()) {
+        LOG_WARN("Could not remove unused range prefixes for %s: %s",
+                 id().c_str(), cleanup.ToString().c_str());
+      }
+    } catch (const std::bad_alloc &) {
+      LOG_WARN(
+          "Could not remove unused range prefixes for %s: insufficient memory",
+          id().c_str());
+    }
+  }
+  return Status::OK();
 }
 
 

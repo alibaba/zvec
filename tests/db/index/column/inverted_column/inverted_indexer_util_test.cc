@@ -15,6 +15,10 @@
 
 #include <fstream>
 #include <gtest/gtest.h>
+#include <rocksdb/metadata.h>
+#include <rocksdb/table_properties.h>
+#include <rocksdb/utilities/stackable_db.h>
+#include <ailego/pattern/defer.h>
 #include "tests/test_util.h"
 #define private public
 #define protected public
@@ -113,6 +117,115 @@ TEST(InvertedIndexerOpenTest, PreservesRocksdbFailureDetails) {
 TEST_F(InvertedIndexTest, COLLECTION_NAME) {
   ASSERT_TRUE(indexer_);
   ASSERT_EQ(indexer_->collection(), collection_name);
+}
+
+
+namespace {
+
+class FailTermCompactionOnce : public rocksdb::StackableDB {
+ public:
+  FailTermCompactionOnce(rocksdb::DB *db, rocksdb::ColumnFamilyHandle *terms)
+      : StackableDB(std::shared_ptr<rocksdb::DB>(db, [](rocksdb::DB *) {})),
+        terms_(terms) {}
+
+  rocksdb::Status CompactRange(const rocksdb::CompactRangeOptions &options,
+                               rocksdb::ColumnFamilyHandle *cf,
+                               const rocksdb::Slice *begin,
+                               const rocksdb::Slice *end) override {
+    if (cf == terms_) {
+      EXPECT_EQ(options.bottommost_level_compaction,
+                rocksdb::BottommostLevelCompaction::kForceOptimized);
+      if (fail_) {
+        fail_ = false;
+        return rocksdb::Status::IOError("injected TERMS compaction failure");
+      }
+    }
+    return StackableDB::CompactRange(options, cf, begin, end);
+  }
+
+ private:
+  rocksdb::ColumnFamilyHandle *const terms_;
+  bool fail_{true};
+};
+
+}  // namespace
+
+
+TEST(InvertedIndexerSealTest,
+     SealsWhenTermCompactionFailsAndCanMaterializeLater) {
+  const std::string path = "./inverted_indexer_seal_materialize/";
+  zvec::test_util::RemoveTestPath(path);
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestPath(path); });
+
+  const FieldSchema field{"value", DataType::INT32, true,
+                          std::make_shared<InvertIndexParams>(true, false)};
+  auto index = InvertedIndexer::CreateAndOpen(collection_name, path, true,
+                                              {field}, false);
+  ASSERT_NE(index, nullptr);
+  auto column = (*index)[field.name()];
+  ASSERT_NE(column, nullptr);
+  constexpr int32_t kDocuments = 2048;
+  for (int32_t value = 0; value < kDocuments; ++value) {
+    ASSERT_TRUE(
+        column
+            ->insert(value, std::string(reinterpret_cast<const char *>(&value),
+                                        sizeof(value)))
+            .ok());
+  }
+
+  auto &ctx = index->rocksdb_context_;
+  auto *terms = ctx.get_cf(field.name() + INVERT_SUFFIX_TERMS);
+  ASSERT_NE(terms, nullptr);
+  ASSERT_TRUE(index->flush().ok());
+  // A single nonoverlapping SST can move below L0 without rewriting its values.
+  ASSERT_TRUE(
+      ctx.db_->CompactRange(ctx.compact_range_opts_, terms, nullptr, nullptr)
+          .ok());
+  rocksdb::ColumnFamilyMetaData metadata;
+  ctx.db_->GetColumnFamilyMetaData(terms, &metadata);
+  ASSERT_FALSE(metadata.levels.empty());
+  ASSERT_TRUE(metadata.levels.front().files.empty());
+  const auto pending_merges = [&]() {
+    rocksdb::TablePropertiesCollection properties;
+    EXPECT_TRUE(ctx.db_->GetPropertiesOfAllTables(terms, &properties).ok());
+    uint64_t count = 0;
+    for (const auto &entry : properties) {
+      count += entry.second->num_merge_operands;
+    }
+    return count;
+  };
+  ASSERT_EQ(pending_merges(), kDocuments);
+
+  {
+    auto original = std::move(ctx.db_);
+    ctx.db_ = std::make_unique<FailTermCompactionOnce>(original.get(), terms);
+    AILEGO_DEFER([&]() { ctx.db_ = std::move(original); });
+    ASSERT_TRUE(index->seal().ok());
+    EXPECT_TRUE(column->is_sealed());
+    EXPECT_EQ(pending_merges(), kDocuments);
+    ASSERT_TRUE(index->seal().ok());
+    EXPECT_EQ(pending_merges(), 0);
+  }
+
+  column.reset();
+  index.reset();
+  index = InvertedIndexer::CreateAndOpen(collection_name, path, false, {field},
+                                         true);
+  ASSERT_NE(index, nullptr);
+  column = (*index)[field.name()];
+  ASSERT_NE(column, nullptr);
+  const int32_t threshold = kDocuments / 2;
+  const auto result =
+      column->search(std::string(reinterpret_cast<const char *>(&threshold),
+                                 sizeof(threshold)),
+                     CompareOp::LT);
+  ASSERT_NE(result, nullptr);
+  std::vector<uint32_t> ids;
+  result->extract_ids(&ids);
+  ASSERT_EQ(ids.size(), threshold);
+  for (size_t i = 0; i < ids.size(); ++i) {
+    EXPECT_EQ(ids[i], i);
+  }
 }
 
 

@@ -125,13 +125,18 @@ Status InvertedIndexer::create_snapshot(const std::string &snapshot_dir) {
 
 
 Status InvertedIndexer::seal() {
+  std::unordered_set<std::string> terms_columns;
+  terms_columns.reserve(indexers_.size());
   Status s;
-  for (const auto &[_, indexer] : indexers_) {
+  for (const auto &[name, indexer] : indexers_) {
+    // Allow subsequent calls to materialize TERMS for already sealed columns.
+    terms_columns.insert(name + INVERT_SUFFIX_TERMS);
     if (indexer->is_sealed()) {
       continue;
     }
-    if (s = indexer->seal(); !s.ok()) {
-      LOG_ERROR("Failed to seal %s", indexer->id().c_str());
+    if (auto status = indexer->seal(); !status.ok()) {
+      LOG_ERROR("Failed to seal %s: %s", indexer->id().c_str(),
+                status.message().c_str());
     }
   }
 
@@ -140,7 +145,8 @@ Status InvertedIndexer::seal() {
     return s;
   }
 
-  if (s = rocksdb_context_.compact(); s.ok()) {
+  // SSTs moved to the bottommost level can still hold Merge operands.
+  if (s = rocksdb_context_.compact(terms_columns); s.ok()) {
     LOG_INFO("Sealed %s", id().c_str());
   } else {
     LOG_ERROR("Failed to compact %s during sealing", id().c_str());

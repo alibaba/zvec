@@ -15,13 +15,15 @@
 
 #pragma once
 
-
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <roaring/roaring.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
 #include "db/common/constants.h"
+#include "inverted_bitmap_view.h"
 
 
 namespace zvec {
@@ -46,6 +48,20 @@ namespace zvec {
  */
 class InvertedIndexCodec {
  public:
+  class MergeScratch {
+   public:
+    MergeScratch() = default;
+    ~MergeScratch() {
+      zvec_inverted_bitmap_view_clear(&view_);
+    }
+    MergeScratch(const MergeScratch &) = delete;
+    MergeScratch &operator=(const MergeScratch &) = delete;
+
+   private:
+    friend class InvertedIndexCodec;
+    zvec_inverted_bitmap_view view_{};
+  };
+
   static std::string Encode(const std::string &term, DataType type) {
     switch (type) {
       case DataType::INT32:
@@ -231,99 +247,106 @@ class InvertedIndexCodec {
       return Status::InternalError();
     }
     for (size_t i = 1; i < size; i += sizeof(uint32_t)) {
-      roaring_bitmap_add(*bitmap,
-                         *reinterpret_cast<const uint32_t *>(data + i));
+      uint32_t doc_id;
+      std::memcpy(&doc_id, data + i, sizeof(doc_id));
+      roaring_bitmap_add(*bitmap, doc_id);
     }
     return Status::OK();
   }
 
 
   static Status merge_or(const char *data, size_t size, bool lazy,
-                         roaring_bitmap_t *bitmap) {
-    if (!data || size == 0) {
-      LOG_ERROR("Input data is invalid");
-      return Status::InvalidArgument();
-    }
+                         roaring_bitmap_t *bitmap,
+                         MergeScratch *scratch = nullptr) {
+    return merge_posting(data, size, lazy, MergeOp::Or, bitmap, scratch);
+  }
 
-    unsigned char header = data[0];
-    if (header > INVERT_ID_LIST_SIZE_THRESHOLD) {
-      LOG_ERROR("Invalid header found in inverted data");
-      return Status::InternalError();
-    }
 
-    if (header == 0) {  // This is a bitmap
-      auto bitmap_other = roaring_bitmap_portable_deserialize_frozen(data + 1);
-      if (!bitmap_other) {
-        LOG_ERROR("Failed to deserialize bitmap");
-        return Status::InternalError();
-      }
-      if (lazy) {
-        roaring_bitmap_lazy_or_inplace(bitmap, bitmap_other, true);
-      } else {
-        roaring_bitmap_or_inplace(bitmap, bitmap_other);
-      }
-      roaring_bitmap_free(bitmap_other);
-      return Status::OK();
-    }
-
-    // This is a id list
-    if ((size - 1) != header * sizeof(uint32_t)) {
-      LOG_ERROR("Failed to deserialize docid_list");
-      return Status::InternalError();
-    }
-    auto doc_list = reinterpret_cast<const uint32_t *>(data + 1);
-    for (size_t i = 0; i < header; ++i) {
-      roaring_bitmap_add(bitmap, doc_list[i]);
-    }
-    return Status::OK();
+  static Status merge_andnot(const char *data, size_t size,
+                             roaring_bitmap_t *bitmap,
+                             MergeScratch *scratch = nullptr) {
+    return merge_posting(data, size, false, MergeOp::AndNot, bitmap, scratch);
   }
 
 
   static Status merge_and(const char *data, size_t size,
-                          roaring_bitmap_t *bitmap) {
+                          roaring_bitmap_t *bitmap,
+                          MergeScratch *scratch = nullptr) {
+    return merge_posting(data, size, false, MergeOp::And, bitmap, scratch);
+  }
+
+
+ private:
+  enum class MergeOp { Or, And, AndNot };
+
+  static uint32_t read_doc_id(const char *data, size_t index) {
+    uint32_t doc_id;
+    std::memcpy(&doc_id, data + 1 + index * sizeof(doc_id), sizeof(doc_id));
+    return doc_id;
+  }
+
+  static Status merge_posting(const char *data, size_t size, bool lazy,
+                              MergeOp op, roaring_bitmap_t *bitmap,
+                              MergeScratch *scratch) {
     if (!data || size == 0) {
       LOG_ERROR("Input data is invalid");
       return Status::InvalidArgument();
     }
-
-    unsigned char header = data[0];
+    const auto header = static_cast<unsigned char>(data[0]);
     if (header > INVERT_ID_LIST_SIZE_THRESHOLD) {
       LOG_ERROR("Invalid header found in inverted data");
       return Status::InternalError();
     }
-
-    if (header == 0) {  // This is a bitmap
-      auto bitmap_other = roaring_bitmap_portable_deserialize_frozen(data + 1);
-      if (!bitmap_other) {
+    if (header == 0) {
+      if (op != MergeOp::And &&
+          zvec_inverted_bitmap_try_merge_dense(bitmap, data + 1, size - 1,
+                                               op == MergeOp::AndNot, lazy)) {
+        return Status::OK();
+      }
+      MergeScratch local_scratch;
+      auto *posting = zvec_inverted_bitmap_view_load(
+          scratch ? &scratch->view_ : &local_scratch.view_, data + 1, size - 1);
+      if (!posting) {
         LOG_ERROR("Failed to deserialize bitmap");
         return Status::InternalError();
       }
-      roaring_bitmap_and_inplace(bitmap, bitmap_other);
-      roaring_bitmap_free(bitmap_other);
+      if (op == MergeOp::AndNot) {
+        roaring_bitmap_andnot_inplace(bitmap, posting);
+      } else if (op == MergeOp::And) {
+        roaring_bitmap_and_inplace(bitmap, posting);
+      } else if (lazy) {
+        roaring_bitmap_lazy_or_inplace(bitmap, posting, true);
+      } else {
+        roaring_bitmap_or_inplace(bitmap, posting);
+      }
       return Status::OK();
     }
-
-    // This is a id list
-    if ((size - 1) != header * sizeof(uint32_t)) {
+    if (size - 1 != header * sizeof(uint32_t)) {
       LOG_ERROR("Failed to deserialize docid_list");
       return Status::InternalError();
     }
-    auto doc_list = reinterpret_cast<const uint32_t *>(data + 1);
-    uint32_t tmp = 0;
-    for (size_t i = 0; i < header; ++i) {
-      tmp |= roaring_bitmap_contains(bitmap, doc_list[i]) << i;
-    }
-    roaring_bitmap_clear(bitmap);
-    for (size_t i = 0; i < header; ++i) {
-      if (tmp & (1 << i)) {
-        roaring_bitmap_add(bitmap, doc_list[i]);
+    if (op == MergeOp::And) {
+      uint32_t matches = 0;
+      for (size_t i = 0; i < header; ++i)
+        if (roaring_bitmap_contains(bitmap, read_doc_id(data, i)))
+          matches |= uint32_t{1} << i;
+      roaring_bitmap_clear(bitmap);
+      for (size_t i = 0; i < header; ++i)
+        if (matches & (uint32_t{1} << i))
+          roaring_bitmap_add(bitmap, read_doc_id(data, i));
+    } else {
+      for (size_t i = 0; i < header; ++i) {
+        const auto doc_id = read_doc_id(data, i);
+        if (op == MergeOp::AndNot)
+          roaring_bitmap_remove(bitmap, doc_id);
+        else
+          roaring_bitmap_add(bitmap, doc_id);
       }
     }
     return Status::OK();
   }
 
 
- private:
   static void convert_to_big_endian(char *in, size_t size) {
     static const bool isBigEndianSystem = []() {
       int i = 0x1243;
