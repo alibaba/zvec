@@ -443,7 +443,8 @@ are returned as None.
       .def(
           "_debug_hnsw_storage_mode",
           [](const Collection &self, const std::string &column_name) {
-            const auto result = self.debug_get_hnsw_storage_mode(column_name);
+            const auto result =
+                internal::debug_get_hnsw_storage_mode(self, column_name);
             return unwrap_expected(result);
           },
           py::arg("column_name"),

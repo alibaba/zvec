@@ -19,6 +19,7 @@
 #include <cstring>
 #include <type_traits>
 #include <vector>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/type_helper.h>
 #include <zvec/turbo/turbo.h>
 #include "common/interleaved_matrix.h"

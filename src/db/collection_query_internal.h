@@ -15,6 +15,7 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <zvec/db/collection.h>
 
 namespace zvec {
@@ -43,6 +44,13 @@ Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
 
 Result<QueryResultSnapshot> query_result_snapshot(const Collection &collection,
                                                   const MultiQuery &query);
+
+// Debug-only: storage mode string ("mmap" / "buffer_pool" / "contiguous") of
+// the HNSW index on the given vector column.  Returns an error when the column
+// does not exist, has no index, or the index is not HNSW.  Introspection and
+// tests only; deliberately kept off the stable Collection interface.
+Result<std::string> debug_get_hnsw_storage_mode(const Collection &collection,
+                                                const std::string &column_name);
 
 }  // namespace internal
 }  // namespace zvec

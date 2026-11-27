@@ -22,7 +22,7 @@
 #include <zvec/ailego/encoding/json.h>
 #include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_framework.h>
-#include <zvec/core/interface/constants.h>
+#include <zvec/detail/index_defaults.h>
 #include <zvec/export.h>
 
 namespace zvec::core_interface {

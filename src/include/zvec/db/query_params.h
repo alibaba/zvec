@@ -15,8 +15,8 @@
 
 #include <memory>
 #include <string>
-#include <zvec/core/interface/constants.h>
 #include <zvec/db/type.h>
+#include <zvec/detail/index_defaults.h>
 #include <zvec/export.h>
 
 namespace zvec {

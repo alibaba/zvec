@@ -17,18 +17,34 @@
 #include <sstream>
 #include <string>
 #include <vector>
-#include <zvec/core/interface/constants.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
+#include <zvec/detail/index_defaults.h>
 #include <zvec/export.h>
-#include "zvec/core/framework/index_provider.h"
-#include "zvec/core/framework/index_reformer.h"
 
 namespace zvec {
+
+namespace core {
+// Opaque engine type.  HnswIndexParams holds a shared_ptr to it as a build-only
+// source of raw vectors, so this header forward declares it instead of pulling
+// in zvec/core/framework/index_provider.h: shared_ptr supports declaration,
+// copy and destruction of an incomplete pointee, which keeps zvec/core/** out
+// of the stable closure.  The engine's core::IndexProvider::Pointer alias is
+// exactly std::shared_ptr<IndexProvider>, so spelling it out here is the same
+// type and engine callers are unaffected.
+struct IndexProvider;
+}  // namespace core
 
 namespace detail {
 struct FtsState;
 struct FtsPipelineHelper;
+// Opaque runtime state for HNSW-RaBitQ.  It holds engine objects
+// (core::IndexProvider / core::IndexReformer) that are produced while training
+// a quantizer and consumed while building the index, so they are deliberately
+// kept out of this public header.  Defined in
+// src/db/index/common/hnsw_rabitq_params_internal.h.
+struct HnswRabitqRuntime;
+struct HnswRabitqRuntimeAccess;
 }  // namespace detail
 
 /*
@@ -422,15 +438,15 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
   }
 
   // Build-only provider: shared while training/building, never persisted.
-  const core::IndexProvider::Pointer &raw_vector_provider() const {
+  const std::shared_ptr<core::IndexProvider> &raw_vector_provider() const {
     return raw_vector_provider_;
   }
-  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+  void set_raw_vector_provider(std::shared_ptr<core::IndexProvider> provider) {
     raw_vector_provider_ = std::move(provider);
   }
 
  protected:
-  core::IndexProvider::Pointer raw_vector_provider_;
+  std::shared_ptr<core::IndexProvider> raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena
@@ -467,8 +483,7 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
     auto obj = std::make_shared<HnswRabitqIndexParams>(
         metric_type_, total_bits_, num_clusters_, m_, ef_construction_,
         sample_count_);
-    obj->set_rabitq_reformer(rabitq_reformer_);
-    obj->set_raw_vector_provider(raw_vector_provider_);
+    obj->runtime_ = runtime_;
     return obj;
   }
 
@@ -510,21 +525,6 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
     return ef_construction_;
   }
 
-  void set_raw_vector_provider(
-      core::IndexProvider::Pointer raw_vector_provider) {
-    raw_vector_provider_ = std::move(raw_vector_provider);
-  }
-
-  void set_rabitq_reformer(core::IndexReformer::Pointer rabitq_reformer) {
-    rabitq_reformer_ = std::move(rabitq_reformer);
-  }
-  core::IndexReformer::Pointer rabitq_reformer() const {
-    return rabitq_reformer_;
-  }
-  core::IndexProvider::Pointer raw_vector_provider() const {
-    return raw_vector_provider_;
-  }
-
   void set_total_bits(int total_bits) {
     total_bits_ = total_bits;
   }
@@ -552,8 +552,13 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
   int sample_count_;
   int m_;
   int ef_construction_;
-  core::IndexProvider::Pointer raw_vector_provider_;
-  core::IndexReformer::Pointer rabitq_reformer_;
+  // Shared so that clones keep referring to the same trained engine objects,
+  // exactly like the previous pair of shared_ptr members did.  Incomplete here
+  // on purpose: shared_ptr supports declaration, copy and destruction of an
+  // incomplete pointee, so this header stays free of core/framework includes.
+  std::shared_ptr<detail::HnswRabitqRuntime> runtime_;
+
+  friend struct detail::HnswRabitqRuntimeAccess;
 };
 
 class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
