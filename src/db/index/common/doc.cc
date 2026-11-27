@@ -22,6 +22,7 @@
 #include <zvec/db/query.h>
 #include "db/common/constants.h"
 #include "db/common/utils.h"
+#include "db/index/common/doc_wire.h"
 #include "db/index/common/identifier_validation.h"
 #include "db/index/common/type_helper.h"
 
@@ -692,7 +693,140 @@ std::vector<uint8_t> Doc::serialize() const {
   return buffer;
 }
 
-Doc::Ptr Doc::deserialize(const uint8_t *data, size_t /*size*/) {
+namespace {
+// Validate all variable ranges before the value decoder allocates arrays or
+// follows a field length. The pass touches framing, not numeric vector data.
+class DocWireCheck {
+ public:
+  explicit DocWireCheck(std::string_view bytes) : bytes_(bytes) {}
+
+  bool complete() {
+    uint32_t fields;
+    if (!array(1) || !skip(sizeof(float) + sizeof(uint64_t)) ||
+        bytes_.size() < sizeof(Operator)) {
+      return false;
+    }
+    // The legacy format writes the operator in native byte order.
+    Operator op;
+    std::memcpy(&op, bytes_.data(), sizeof(op));
+    bytes_.remove_prefix(sizeof(op));
+    if (op > Operator::DELETE || !count(&fields)) {
+      return false;
+    }
+    for (uint32_t i = 0; i < fields; ++i) {
+      if (!array(1) || bytes_.empty()) {
+        return false;
+      }
+      const auto tag = static_cast<uint8_t>(bytes_.front());
+      bytes_.remove_prefix(1);
+      if (!value(tag)) {
+        return false;
+      }
+    }
+    return bytes_.empty();
+  }
+
+ private:
+  bool skip(size_t size) {
+    if (size > bytes_.size()) {
+      return false;
+    }
+    bytes_.remove_prefix(size);
+    return true;
+  }
+
+  bool count(uint32_t *out) {
+    if (bytes_.size() < sizeof(*out)) {
+      return false;
+    }
+    auto ptr = reinterpret_cast<const uint8_t *>(bytes_.data());
+    *out = read_value_from_buffer<uint32_t>(ptr);
+    return skip(sizeof(*out));
+  }
+
+  bool array(size_t width) {
+    uint32_t length;
+    return count(&length) && length <= bytes_.size() / width &&
+           skip(width * length);
+  }
+
+  bool booleans(size_t length) {
+    if (length > bytes_.size()) {
+      return false;
+    }
+    for (const char byte : bytes_.substr(0, length)) {
+      if (byte != 0 && byte != 1) {
+        return false;
+      }
+    }
+    return skip(length);
+  }
+
+  bool value(uint8_t type) {
+    switch (type) {
+      case TYPE_EMPTY:
+        return true;
+      case TYPE_BOOL:
+        return booleans(1);
+      case TYPE_INT32:
+      case TYPE_UINT32:
+      case TYPE_FLOAT:
+        return skip(4);
+      case TYPE_INT64:
+      case TYPE_UINT64:
+      case TYPE_DOUBLE:
+        return skip(8);
+      case TYPE_STRING:
+      case TYPE_VECTOR_INT8:
+        return array(1);
+      case TYPE_VECTOR_FLOAT16:
+      case TYPE_VECTOR_INT16:
+        return array(2);
+      case TYPE_VECTOR_UINT32:
+      case TYPE_VECTOR_INT32:
+      case TYPE_VECTOR_FLOAT:
+        return array(4);
+      case TYPE_VECTOR_UINT64:
+      case TYPE_VECTOR_INT64:
+      case TYPE_VECTOR_DOUBLE:
+        return array(8);
+      case TYPE_VECTOR_PAIR_INT_FLOAT:
+        return array(4) && array(4);
+      case TYPE_VECTOR_PAIR_INT_FLOAT16:
+        return array(4) && array(2);
+      case TYPE_VECTOR_BOOL: {
+        uint32_t length;
+        return count(&length) && booleans(length);
+      }
+      case TYPE_VECTOR_STRING: {
+        uint32_t length;
+        if (!count(&length)) {
+          return false;
+        }
+        for (uint32_t i = 0; i < length; ++i) {
+          if (!array(1)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      default:
+        return false;
+    }
+  }
+  std::string_view bytes_;
+};
+}  // namespace
+
+bool is_valid_serialized_doc(std::string_view bytes) {
+  return DocWireCheck(bytes).complete();
+}
+
+Doc::Ptr Doc::deserialize(const uint8_t *data, size_t size) {
+  if (!data ||
+      !is_valid_serialized_doc({reinterpret_cast<const char *>(data), size})) {
+    return nullptr;
+  }
   const uint8_t *ptr = data;
   Doc::Ptr doc = std::make_shared<Doc>();
 

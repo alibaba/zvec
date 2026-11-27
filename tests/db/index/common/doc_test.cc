@@ -39,6 +39,20 @@ class DocDetailedTest : public ::testing::Test {
   Doc::Ptr test_doc_;
 };
 
+TEST_F(DocDetailedTest, SerializedPayloadRequiresCompleteFields) {
+  test_doc_->set("words", std::vector<std::string>{"one", "", "two"});
+  test_doc_->set("flags", std::vector<bool>{true, false});
+  auto bytes = test_doc_->serialize();
+  for (size_t cut = 0; cut < bytes.size(); ++cut) {
+    EXPECT_EQ(nullptr, Doc::deserialize(bytes.data(), cut)) << "size " << cut;
+  }
+  auto decoded = Doc::deserialize(bytes);
+  ASSERT_NE(nullptr, decoded);
+  EXPECT_EQ(*test_doc_, *decoded);
+  bytes.push_back(0);
+  EXPECT_EQ(nullptr, Doc::deserialize(bytes));
+}
+
 // Test serialization and deserialization of basic data types
 TEST_F(DocDetailedTest, BasicTypeSerializationDeserialization) {
   // Test boundary values

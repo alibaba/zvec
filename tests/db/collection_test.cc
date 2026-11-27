@@ -51,6 +51,7 @@
 #include "db/common/file_helper.h"
 #include "db/index/common/type_helper.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/storage/wal/wal_file.h"
 #include "index/utils/utils.h"
 #include "zvec/ailego/utility/float_helper.h"
 #include "zvec/db/doc.h"
@@ -136,6 +137,110 @@ class CollectionTest : public ::testing::Test {
   CollectionOptions options_;
   Collection::Ptr collection_;
 };
+
+class LegacyWalRecoveryTest : public CollectionTest {
+ protected:
+  void SetUp() override {
+    CollectionTest::SetUp();
+    ASSERT_NO_FATAL_FAILURE(create(make_schema()));
+    ASSERT_TRUE(collection_->close().ok());
+    collection_.reset();
+    auto manager = VersionManager::Recovery(col_path);
+    ASSERT_TRUE(manager.has_value());
+    auto meta = manager.value()->get_current_version().writing_segment_meta();
+    ASSERT_TRUE(meta && meta->writing_forward_block());
+    wal_path_ = FileHelper::MakeWalPath(col_path, meta->id(),
+                                        meta->writing_forward_block()->id());
+    wal_ = WalFile::Create(wal_path_);
+    ASSERT_EQ(0,
+              wal_->open(WalOptions{0, !std::filesystem::exists(wal_path_)}));
+  }
+
+  std::string record(const std::string &pk, int value) {
+    auto doc = make_doc(pk, value);
+    doc.set_operator(Operator::INSERT);
+    auto bytes = doc.serialize();
+    return std::string(bytes.begin(), bytes.end());
+  }
+
+  std::string wal_path_;
+  WalFilePtr wal_;
+};
+
+TEST_F(LegacyWalRecoveryTest, RepairsPartialTailBeforeNextAppend) {
+  const auto first = record("first", 1);
+  ASSERT_EQ(0, wal_->append(std::string(first)));
+  const auto valid_size = std::filesystem::file_size(wal_path_);
+  ASSERT_EQ(0, wal_->append(record("partial", 2)));
+  ASSERT_EQ(0, wal_->close());
+  const auto torn_size = std::filesystem::file_size(wal_path_) - 1;
+  std::filesystem::resize_file(wal_path_, torn_size);
+
+  auto read_only = options_;
+  read_only.read_only_ = true;
+  EXPECT_FALSE(Collection::Open(col_path, read_only).has_value());
+  EXPECT_EQ(torn_size, std::filesystem::file_size(wal_path_));
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  EXPECT_EQ(valid_size, std::filesystem::file_size(wal_path_));
+  expect_value("first", 1);
+  std::vector<Doc> docs{make_doc("next", 3)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
+
+  // Inspect the WAL before a clean close checkpoints and removes it.
+  ASSERT_EQ(0, wal_->open(WalOptions{0, false, true}));
+  ASSERT_EQ(0, wal_->prepare_for_read());
+  EXPECT_EQ(first, wal_->next());
+  auto next = wal_->next();
+  ASSERT_FALSE(next.empty());
+  auto doc = Doc::deserialize(reinterpret_cast<const uint8_t *>(next.data()),
+                              next.size());
+  ASSERT_NE(nullptr, doc);
+  EXPECT_EQ("next", doc->pk());
+  EXPECT_TRUE(wal_->next().empty());
+  ASSERT_EQ(0, wal_->close());
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  expect_value("first", 1);
+  expect_value("next", 3);
+}
+
+TEST_F(LegacyWalRecoveryTest, RejectsCompleteFrameWithBadChecksum) {
+  const auto header_size = std::filesystem::file_size(wal_path_);
+  ASSERT_EQ(0, wal_->append(record("first", 1)));
+  ASSERT_EQ(0, wal_->append(record("second", 2)));
+  ASSERT_EQ(0, wal_->close());
+  auto size = std::filesystem::file_size(wal_path_);
+  {
+    std::fstream file(wal_path_,
+                      std::ios::binary | std::ios::in | std::ios::out);
+    file.seekg(-1, std::ios::end);
+    int byte = file.get();
+    ASSERT_NE(byte, std::char_traits<char>::eof());
+    file.seekp(-1, std::ios::end);
+    ASSERT_TRUE(file.put(static_cast<char>(byte ^ 1)));
+  }
+  auto opened = Collection::Open(col_path, options_);
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_NE(std::string::npos, opened.error().message().find("checksum"));
+  EXPECT_EQ(size, std::filesystem::file_size(wal_path_));
+
+  // Restore the empty WAL. A failed open must not have installed "first"
+  // in the persistent primary-key map.
+  std::filesystem::resize_file(wal_path_, header_size);
+  ASSERT_NO_FATAL_FAILURE(reopen());
+  std::vector<Doc> docs{make_doc("first", 42)};
+  ASSERT_NO_FATAL_FAILURE(expect_write(collection_->insert(docs), 1));
+  expect_value("first", 42);
+}
+
+TEST_F(LegacyWalRecoveryTest, RejectsUndecodableDocumentWithValidChecksum) {
+  ASSERT_EQ(0, wal_->append(record("first", 1) + "trailing"));
+  ASSERT_EQ(0, wal_->close());
+  auto size = std::filesystem::file_size(wal_path_);
+  auto opened = Collection::Open(col_path, options_);
+  ASSERT_FALSE(opened.has_value());
+  EXPECT_NE(std::string::npos, opened.error().message().find("deserialize"));
+  EXPECT_EQ(size, std::filesystem::file_size(wal_path_));
+}
 
 class DirectoryWriteBlockerForTest {
  public:

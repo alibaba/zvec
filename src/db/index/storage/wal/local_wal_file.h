@@ -13,11 +13,11 @@
 // limitations under the License.
 #pragma once
 
-#include <atomic>
 #include <condition_variable>
 #include <deque>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <zvec/ailego/io/file.h>
@@ -62,6 +62,8 @@ class LocalWalFile : public WalFile {
   int append(std::string &&data) override;
   int prepare_for_read() override;
   std::string next() override;
+  Result<WalReadResult> next_checked() override;
+  Status discard_truncated_tail() override;
 
  public:
   int open(const WalOptions &wal_option) override;
@@ -78,7 +80,6 @@ class LocalWalFile : public WalFile {
 
  private:
   int write_record(WalRecord &record);
-  int read_record(WalRecord &record);
 
  private:
   ailego::File file_;
@@ -89,7 +90,8 @@ class LocalWalFile : public WalFile {
   std::string wal_path_{};
   std::mutex file_mutex_;
   uint32_t max_docs_wal_flush_{0};
-  std::atomic<uint64_t> docs_count_{0UL};
+  uint64_t docs_count_{0};
+  std::optional<size_t> truncated_at_;
   WalHeader header_;
 
   bool opened_{false};

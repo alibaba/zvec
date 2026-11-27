@@ -15,6 +15,7 @@
 
 #include <memory>
 #include <string>
+#include <zvec/db/status.h>
 
 
 namespace zvec {
@@ -27,6 +28,12 @@ struct WalOptions {
   uint32_t max_docs_wal_flush{0};
   bool create_new{false};
   bool read_only{false};
+};
+
+struct WalReadResult {
+  enum class State { kRecord, kEnd, kTruncatedTail };
+  State state;
+  std::string data;
 };
 
 class WalFile {
@@ -48,6 +55,8 @@ class WalFile {
   virtual int append(std::string &&data) = 0;
   virtual int prepare_for_read() = 0;
   virtual std::string next() = 0;
+  virtual Result<WalReadResult> next_checked() = 0;
+  virtual Status discard_truncated_tail() = 0;
 
  public:
   //! Open and initialize WalFile
