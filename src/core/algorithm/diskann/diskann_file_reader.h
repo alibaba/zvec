@@ -199,7 +199,7 @@ class LinuxAlignedFileReader : public AlignedFileReader {
   int file_desc;
 #if defined(__APPLE__)
   std::unique_ptr<DiskAnnReadCache> read_cache_;
-  std::unique_ptr<DiskAnnReadExecutor> read_executor_;
+  std::shared_ptr<DiskAnnReadExecutor> read_executor_;
   bool profile_reads_{false};
   std::atomic<uint64_t> profile_batches_{0}, profile_requests_{0},
       profile_requested_bytes_{0}, profile_misses_{0}, profile_read_bytes_{0},

@@ -2604,8 +2604,12 @@ TablePtr SegmentImpl::fetch_normal(
       block_table = memory_store_->fetch(fetch_columns, fetch_block_rows);
     }
 
-    if (!block_table || block_table->num_rows() == 0) {
-      continue;
+    if (!block_table ||
+        block_table->num_rows() !=
+            static_cast<int64_t>(fetch_block_rows.size()) ||
+        block_table->num_columns() != static_cast<int>(fetch_columns.size())) {
+      LOG_ERROR("Incomplete forward fetch for block %d", block_index);
+      return nullptr;
     }
 
     // Fill results
@@ -2627,7 +2631,7 @@ TablePtr SegmentImpl::fetch_normal(
 
       for (size_t j = 0; j < fetch_block_rows.size(); ++j) {
         auto scalar_result = flat_array->GetScalar(j);
-        if (!scalar_result.ok()) continue;
+        if (!scalar_result.ok()) return nullptr;
         int output_row = output_to_result_index[j].first;
         column_results[col_index].emplace_back(
             output_row, std::move(scalar_result.ValueOrDie()));
@@ -2995,7 +2999,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
 
     auto reader = store->scan(interested_cols);
     if (!reader) {
-      continue;
+      return nullptr;
     }
 
     auto key = std::make_pair(block.min_doc_id(), block.max_doc_id());
@@ -4220,6 +4224,10 @@ Status SegmentImpl::load_persist_scalar_blocks() {
         continue;
       }
       auto rb_reader = forward_store->scan({GLOBAL_DOC_ID});
+      if (!rb_reader) {
+        return Status::InternalError("Failed to scan document IDs from ",
+                                     forward_path);
+      }
       while (true) {
         std::shared_ptr<arrow::RecordBatch> batch;
         auto status = rb_reader->ReadNext(&batch);

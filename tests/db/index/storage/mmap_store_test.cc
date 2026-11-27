@@ -842,6 +842,16 @@ TEST_F(MmapStoreTest, BufferedIPCScanBypassesCacheAndOutlivesStore) {
   ASSERT_TRUE(scan->ReadNext(&batch).ok());
   ASSERT_NE(batch, nullptr);
   EXPECT_EQ(bounded->ipc_cache_bytes_, cached_bytes);
+  EXPECT_EQ(batch->column_name(0), "text");
+  EXPECT_EQ(batch->column_name(1), "id");
+  auto projected = bounded->scan({"text", "text"});
+  ASSERT_NE(projected, nullptr);
+  std::shared_ptr<arrow::RecordBatch> strings;
+  ASSERT_TRUE(projected->ReadNext(&strings).ok());
+  ASSERT_NE(strings, nullptr);
+  ASSERT_EQ(strings->num_columns(), 2);
+  EXPECT_TRUE(strings->column(0)->Equals(*batch->column(0)));
+  EXPECT_TRUE(strings->column(1)->Equals(*batch->column(0)));
   int64_t rows = batch->num_rows();
   bounded.reset();
   while (true) {
@@ -857,6 +867,7 @@ TEST_F(MmapStoreTest, BufferedIPCDetectsReadFailureAfterOpen) {
   MmapForwardStore bounded(uneven_ipc_path, 8192);
   ASSERT_TRUE(bounded.open().ok());
   std::filesystem::resize_file(uneven_ipc_path, 200);
+  EXPECT_EQ(bounded.scan({"id"}), nullptr);
   EXPECT_EQ(bounded.fetch({"id"}, 94), nullptr);
   EXPECT_TRUE(bounded.ipc_cache_.empty());
 }
@@ -880,6 +891,30 @@ TEST_F(MmapStoreTest, BufferedIPCGeneralTypeFallbackAndStableDescriptor) {
   EXPECT_LE(bounded.ipc_cache_bytes_, 1024);
   EXPECT_FALSE(bounded.ipc_cache_.empty());
   std::filesystem::remove(uneven_ipc_path + ".old");
+}
+
+TEST_F(MmapStoreTest, BufferedIPCProjectsLegacyRecordBatches) {
+  ASSERT_TRUE(WriteBufferedCacheFixture(uneven_ipc_path).ok());
+  MmapForwardStore original(uneven_ipc_path);
+  ASSERT_TRUE(original.open().ok());
+  const auto table = original.get_table();
+  const auto path = uneven_ipc_path + ".legacy.ipc";
+  auto sink = arrow::io::FileOutputStream::Open(path).ValueOrDie();
+  auto options = arrow::ipc::IpcWriteOptions::Defaults();
+  options.write_legacy_ipc_format = true;
+  auto writer =
+      arrow::ipc::MakeFileWriter(sink, table->schema(), options).ValueOrDie();
+  ASSERT_TRUE(writer->WriteTable(*table).ok());
+  ASSERT_TRUE(writer->Close().ok());
+  ASSERT_TRUE(sink->Close().ok());
+  MmapForwardStore bounded(path, 8192);
+  ASSERT_TRUE(bounded.open().ok());
+  auto scan = bounded.scan({"id"});
+  ASSERT_NE(scan, nullptr);
+  auto projected = scan->ToTable();
+  ASSERT_TRUE(projected.ok()) << projected.status();
+  EXPECT_TRUE((*projected)->Equals(*table->SelectColumns({0}).ValueOrDie()));
+  std::filesystem::remove(path);
 }
 
 TEST_F(MmapStoreTest, BufferedIPCCompressedBuffersUseBatchFallback) {

@@ -85,7 +85,7 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
                          turbo::Quantizer::Pointer quantizer) {
   node_record_reads_ = false;
 #if defined(__APPLE__)
-  std::vector<float>().swap(cosine_inverse_norms_);
+  DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
 #endif
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
@@ -174,7 +174,21 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
 
   index_segment_offset_ = vector_segment->data_offset();
 #if defined(__APPLE__) && TARGET_OS_OSX
-  const size_t vector_segment_bytes = vector_segment->data_size();
+  size_t cache_bytes = 0;
+  size_t workers = 1;
+  if (!pool) {
+    if (!DiskAnnReadCache::parse_budget_mib(
+            std::getenv("ZVEC_DISKANN_READ_CACHE_MIB"), &cache_bytes)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_CACHE_MIB must be an integer in [0, 1024]");
+      return IndexError_InvalidArgument;
+    }
+    if (!DiskAnnReadExecutor::parse_workers(
+            std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 32]");
+      return IndexError_InvalidArgument;
+    }
+    cache_bytes = std::min<size_t>(cache_bytes, vector_segment->data_size());
+  }
 #endif
 
   const auto file_path = storage->file_path();
@@ -271,14 +285,6 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     // The graph file is immutable. Cache its node records within a fixed
     // per-reader budget, while retaining F_NOCACHE for misses. BufferPool
     // storage already has its own cache and must not allocate a second one.
-    size_t cache_bytes = 0;
-    if (!DiskAnnReadCache::parse_budget_mib(
-            std::getenv("ZVEC_DISKANN_READ_CACHE_MIB"), &cache_bytes)) {
-      LOG_ERROR("ZVEC_DISKANN_READ_CACHE_MIB must be an integer in [0, 1024]");
-      return IndexError_InvalidArgument;
-    }
-    // Small indexes must not each reserve the full default budget.
-    cache_bytes = std::min(cache_bytes, vector_segment_bytes);
     auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
     // Charge an optional FP32 norm table to the existing read-cache budget.
     // Keep at least half for node payloads; large corpora fall back to fused
@@ -294,23 +300,16 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
                                      cosine_inverse_norms_.data())) {
           norm_bytes = cosine_inverse_norms_.capacity() * sizeof(float);
         } else {
-          std::vector<float>().swap(cosine_inverse_norms_);
+          DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
         }
       } catch (const std::bad_alloc &) {
-        std::vector<float>().swap(cosine_inverse_norms_);
-        return IndexError_NoMemory;
+        DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
       }
     }
     ret = file_reader->configure_read_cache(cache_bytes - norm_bytes,
                                             max_node_size_);
     if (ret != 0) return ret;
     node_record_reads_ = true;
-    size_t workers = 0;
-    if (!DiskAnnReadExecutor::parse_workers(
-            std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
-      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 32]");
-      return IndexError_InvalidArgument;
-    }
     ret = file_reader->configure_read_workers(workers);
     if (ret != 0) return ret;
     LOG_INFO(

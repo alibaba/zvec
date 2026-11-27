@@ -20,7 +20,7 @@
 namespace zvec {
 namespace core {
 
-// A fixed per-reader pool for portable pread batches. No per-request tasks or
+// A fixed pool for portable pread batches. No per-request tasks or
 // threads are allocated. Concurrent callers share the same workers; queued
 // batch assignments rotate. Workers claim request indices atomically, avoiding
 // a contended queue lock around every pread. run() drains the batch before
@@ -28,16 +28,7 @@ namespace core {
 // requires no callers.
 class DiskAnnReadExecutor {
  public:
-  explicit DiskAnnReadExecutor(size_t workers) : worker_count_(workers) {
-    if (workers <= 1) return;
-    try {
-      for (size_t i = 0; i < workers; ++i)
-        threads_.emplace_back([this] { work(); });
-    } catch (...) {
-      stop();
-      throw;
-    }
-  }
+  explicit DiskAnnReadExecutor(size_t workers) : worker_count_(workers) {}
   ~DiskAnnReadExecutor() {
     stop();
   }
@@ -50,6 +41,11 @@ class DiskAnnReadExecutor {
 
   void run(size_t count, const std::function<void(size_t)> &callback) {
     if (!count) return;
+    if (count == 1) {
+      callback(0);
+      return;
+    }
+    std::call_once(start_once_, [this] { start(); });
     if (threads_.empty()) {
       for (size_t i = 0; i < count; ++i) callback(i);
       return;
@@ -84,6 +80,21 @@ class DiskAnnReadExecutor {
   }
 
  private:
+  void start() {
+    const size_t count = workers();
+    if (count <= 1) return;
+    try {
+      threads_.reserve(count);
+      for (size_t i = 0; i < count; ++i)
+        threads_.emplace_back([this] { work(); });
+    } catch (const std::exception &) {
+      // Release partially started workers and serve all batches serially.
+      stop();
+      threads_.clear();
+      worker_count_ = 1;
+    }
+  }
+
   struct Batch {
     Batch(size_t n, size_t w, const std::function<void(size_t)> &fn)
         : count(n), workers(w), callback(fn) {}
@@ -140,7 +151,8 @@ class DiskAnnReadExecutor {
     ready_.notify_all();
     for (auto &thread : threads_) thread.join();
   }
-  const size_t worker_count_;
+  std::atomic<size_t> worker_count_;
+  std::once_flag start_once_;
   std::mutex mutex_;
   std::condition_variable ready_, finished_;
   Batch *head_{nullptr}, *tail_{nullptr};

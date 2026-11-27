@@ -15,15 +15,20 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <numeric>
 #include <string>
 #include <thread>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/ailego/hash/crc32c.h>
@@ -332,6 +337,21 @@ static void build_dump_load_and_search(size_t dimension) {
   auto storage = IndexFactory::CreateStorage("FileReadStorage");
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(storage->open(index_file.path(), false), 0);
+#if defined(__APPLE__) && TARGET_OS_OSX
+  for (const char *name :
+       {"ZVEC_DISKANN_READ_WORKERS", "ZVEC_DISKANN_READ_CACHE_MIB"}) {
+    const char *old = std::getenv(name);
+    const bool was_set = old != nullptr;
+    const std::string saved = was_set ? old : "";
+    const auto restore = ailego::ScopeGuard::Make([&] {
+      EXPECT_EQ(0,
+                was_set ? ::setenv(name, saved.c_str(), 1) : ::unsetenv(name));
+    });
+    ASSERT_EQ(0, ::setenv(name, "-1", 1));
+    EXPECT_EQ(IndexError_InvalidArgument,
+              searcher->load(storage, IndexMetric::Pointer()));
+  }
+#endif
   ASSERT_EQ(searcher->load(storage, IndexMetric::Pointer()), 0);
 
   auto context = searcher->create_context();

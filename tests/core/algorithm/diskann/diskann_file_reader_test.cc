@@ -799,6 +799,26 @@ TEST(DiskAnnFileReaderTest, MacOSBatchUsesSynchronousPread) {
 #endif
 
 #if defined(__APPLE__)
+TEST(DiskAnnFileReaderTest, CacheAdmissionFailureFallsBackToPread) {
+  TemporaryFile file;
+  std::vector<uint8_t> source(kPageSize, 0x5b);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  LinuxAlignedFileReader reader;
+  reader.open(file.path());
+  auto &rss = zvec::ailego::MemoryLimitPool::get_instance();
+  const size_t previous = rss.process_rss_limit();
+  const auto restore = zvec::ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(rss.configure_process_rss_limit(previous)); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(1));
+  ASSERT_EQ(0, reader.configure_read_cache(64 * 1024));
+  EXPECT_EQ(0u, reader.read_cache_bytes());
+  std::vector<uint8_t> out(kPageSize);
+  std::vector<AlignedRead> reads{{0, kPageSize, out.data()}};
+  IOContext ctx{};
+  ASSERT_EQ(0, reader.read(reads, ctx));
+  EXPECT_EQ(source, out);
+}
+
 TEST(DiskAnnFileReaderTest, SectorTransferCachesOnlyLogicalNode) {
   TemporaryFile file;
   std::vector<uint8_t> source(8192);

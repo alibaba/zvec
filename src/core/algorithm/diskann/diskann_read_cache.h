@@ -14,6 +14,7 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include "diskann_read_memory.h"
 
 namespace zvec {
 namespace core {
@@ -39,8 +40,11 @@ class DiskAnnReadCache {
       if (record_bytes > (available - sizeof(Set)) / ways_) return;
       set_count_ = available / (sizeof(Set) + ways_ * record_bytes);
       if (set_count_) {
-        sets_.reset(new Set[set_count_]);
-        data_.reset(new uint8_t[set_count_ * ways_ * record_bytes]);
+        backing_.allocate(allocated_bytes(), [&] {
+          sets_.reset(new Set[set_count_]);
+          data_.reset(new uint8_t[set_count_ * ways_ * record_bytes]);
+          return allocated_bytes();
+        });
       }
     }
   }
@@ -177,6 +181,7 @@ class DiskAnnReadCache {
   size_t set_count_{0};
   size_t ways_{16};
   size_t record_bytes_{kSectorBytes};
+  DiskAnnReadReservation backing_;
   std::unique_ptr<Set[]> sets_;
   std::unique_ptr<uint8_t[]> data_;
 };

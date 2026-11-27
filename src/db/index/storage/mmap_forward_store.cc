@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "mmap_forward_store.h"
+#include <algorithm>
 #include <limits>
 #include <map>
 #include <memory>
@@ -134,8 +135,24 @@ arrow::Status MmapForwardStore::open_ipc(
     // Only keep the row layout, not the file's batches. Older IPC files can
     // have uneven batches, so validate each batch rather than infer its size.
     const int count = ipc_file_reader_->num_record_batches();
+    std::shared_ptr<arrow::ipc::RecordBatchFileReader> layout_reader;
     for (int i = 0; i < count; ++i) {
-      ARROW_ASSIGN_OR_RAISE(auto batch, ipc_file_reader_->ReadRecordBatch(i));
+      if (!paged_ipc_ && physic_schema_->num_fields() > 1) {
+        // Only the row count is needed for the general batch layout.
+        if (!layout_reader) {
+          auto options = arrow::ipc::IpcReadOptions::Defaults();
+          options.included_fields = {
+              std::max(0, physic_schema_->GetFieldIndex(GLOBAL_DOC_ID))};
+          options.pre_buffer_cache_options.hole_size_limit = 0;
+          ARROW_ASSIGN_OR_RAISE(
+              layout_reader,
+              arrow::ipc::RecordBatchFileReader::Open(file, options));
+        }
+        ARROW_RETURN_NOT_OK(layout_reader->PreBufferMetadata({i}));
+      }
+      const auto &batch_reader =
+          layout_reader ? layout_reader : ipc_file_reader_;
+      ARROW_ASSIGN_OR_RAISE(auto batch, batch_reader->ReadRecordBatch(i));
       if (paged_ipc_) {
         std::vector<PagedColumn> columns;
         for (const auto &array : batch->columns()) {
@@ -287,10 +304,32 @@ RecordBatchReaderPtr MmapForwardStore::scan_ipc(
   if (ipc_cache_budget_ != 0) {
     // Scans stream through a separate reader and never pollute the point-read
     // cache. The reader owns the file and remains valid after this store dies.
-    auto reader = arrow::ipc::RecordBatchFileReader::Open(file_);
-    if (!reader.ok()) return nullptr;
-    return std::make_shared<IPCRecordBatchReader>(reader.ValueOrDie(), columns,
-                                                  physic_schema_);
+    auto options = arrow::ipc::IpcReadOptions::Defaults();
+    auto &fields = options.included_fields;
+    for (const auto &column : columns) {
+      const int index = physic_schema_->GetFieldIndex(column);
+      if (index >= 0) fields.push_back(index);
+    }
+    // An empty Arrow projection reads every column. Row-ID-only scans need
+    // the batch lengths and the wrapper will omit the physical column.
+    if (fields.empty())
+      fields.push_back(
+          std::max(0, physic_schema_->GetFieldIndex(GLOBAL_DOC_ID)));
+    std::sort(fields.begin(), fields.end());
+    fields.erase(std::unique(fields.begin(), fields.end()), fields.end());
+    const bool selective =
+        static_cast<int>(fields.size()) < physic_schema_->num_fields();
+    if (!selective) fields.clear();
+    options.pre_buffer_cache_options.hole_size_limit = 0;
+    auto result = arrow::ipc::RecordBatchFileReader::Open(file_, options);
+    if (!result.ok()) {
+      LOG_ERROR("Failed to open IPC scan: %s",
+                result.status().ToString().c_str());
+      return nullptr;
+    }
+    auto reader = std::move(result).ValueOrDie();
+    return std::make_shared<IPCRecordBatchReader>(reader, columns,
+                                                  reader->schema(), selective);
   }
   std::vector<int> col_indices;
   for (auto &column : columns) {
@@ -716,7 +755,7 @@ arrow::Status MmapForwardStore::read_cached_bytes(int64_t offset, int64_t size,
     const int64_t available = found->second.data->size() - (offset - page);
     if (available <= 0) return arrow::Status::IOError("Short IPC page");
     const int64_t take = std::min(size, available);
-    std::memcpy(dest, found->second.data->data() + offset - page, take);
+    std::memcpy(dest, found->second.data->data() + (offset - page), take);
     size -= take;
     offset += take;
     dest += take;

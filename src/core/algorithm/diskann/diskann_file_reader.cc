@@ -876,7 +876,7 @@ int LinuxAlignedFileReader::open_from_handle(const std::string &fname,
 
 void LinuxAlignedFileReader::close() {
 #if defined(__APPLE__)
-  // Join workers before releasing the cache and stable file descriptor.
+  // Every submitted batch has drained before close.
   read_executor_.reset();
   if (profile_reads_ && profile_batches_) {
     std::fprintf(stderr,
@@ -909,17 +909,19 @@ void LinuxAlignedFileReader::close() {
 int LinuxAlignedFileReader::configure_read_cache(size_t budget_bytes,
                                                  size_t record_bytes) {
   if (!record_bytes) return IndexError_InvalidArgument;
+  read_cache_.reset();
+  const char *profile = std::getenv("ZVEC_DISKANN_PROFILE_READS");
+  profile_reads_ = profile && std::strcmp(profile, "1") == 0;
   try {
-    std::unique_ptr<DiskAnnReadCache> next;
-    if (budget_bytes)
-      next.reset(new DiskAnnReadCache(budget_bytes, record_bytes));
-    read_cache_ = std::move(next);
-    const char *profile = std::getenv("ZVEC_DISKANN_PROFILE_READS");
-    profile_reads_ = profile && std::strcmp(profile, "1") == 0;
-    return 0;
+    if (budget_bytes) {
+      auto cache =
+          std::make_unique<DiskAnnReadCache>(budget_bytes, record_bytes);
+      if (cache->capacity()) read_cache_ = std::move(cache);
+    }
   } catch (const std::bad_alloc &) {
-    return IndexError_NoMemory;
+    LOG_WARN("Insufficient memory for the optional DiskAnn node cache");
   }
+  return 0;
 }
 
 int LinuxAlignedFileReader::read_cached(const AlignedRead &req) {
@@ -948,17 +950,22 @@ int LinuxAlignedFileReader::read_cached(const AlignedRead &req) {
 
 int LinuxAlignedFileReader::configure_read_workers(size_t workers) {
   if (workers < 1 || workers > 32) return IndexError_InvalidArgument;
+  read_executor_.reset();
+  if (workers == 1) return 0;
+  static std::mutex mutex;
+  static std::array<std::weak_ptr<DiskAnnReadExecutor>, 33> pools;
+  std::lock_guard<std::mutex> lock(mutex);
   try {
-    std::unique_ptr<DiskAnnReadExecutor> next;
-    if (workers > 1) next.reset(new DiskAnnReadExecutor(workers));
-    read_executor_ = std::move(next);
-    return 0;
+    read_executor_ = pools[workers].lock();
+    if (!read_executor_) {
+      read_executor_ = std::make_shared<DiskAnnReadExecutor>(workers);
+      pools[workers] = read_executor_;
+    }
   } catch (const std::bad_alloc &) {
-    return IndexError_NoMemory;
-  } catch (const std::system_error &e) {
-    LOG_ERROR("DiskAnn read worker creation failed: %s", e.what());
-    return IndexError_Runtime;
+    LOG_WARN(
+        "Insufficient memory for DiskAnn read workers; using serial reads");
   }
+  return 0;
 }
 #endif
 
@@ -1127,6 +1134,15 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     return 0;
   }
 
+  const auto bypass = [&]() {
+    const int ret = bypass_reader_.read(read_reqs, ctx);
+    if (ret == 0) {
+      for (const auto &req : read_reqs)
+        pool_->record_bypass_read(static_cast<size_t>(req.len));
+    }
+    return ret;
+  };
+
   try {
     struct UniquePage {
       ailego::block_id_t page_id;
@@ -1172,13 +1188,7 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     if (!pool_->cache_enabled()) {
       const int status = prepare_bypass_read_context(ctx);
       if (status != 0) return status;
-      const int ret = bypass_reader_.read(read_reqs, ctx);
-      if (ret == 0) {
-        for (const AlignedRead &req : read_reqs) {
-          pool_->record_bypass_read(static_cast<size_t>(req.len));
-        }
-      }
-      return ret;
+      return bypass();
     }
 
 #if defined(__APPLE__)
@@ -1443,6 +1453,11 @@ int BufferPoolAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
     }
     return 0;
   } catch (const std::bad_alloc &) {
+#if defined(__APPLE__)
+    // The request ranges were checked before the first workspace allocation.
+    // Immutable files can use synchronous pread directly into caller buffers.
+    if (!pool_->writable()) return bypass();
+#endif
     return IndexError_NoMemory;
   }
 }
