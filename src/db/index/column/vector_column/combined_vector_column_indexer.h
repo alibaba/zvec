@@ -46,6 +46,11 @@ class CombinedVectorColumnIndexer {
       const vector_column_params::QueryParams &query_params,
       int64_t *output_ids, float *output_scores);
 
+  // Match search()'s final ordering, including its ordering of equal scores.
+  // Strictly ordered results need no sort or temporary result objects.
+  static void sort_query_results(MetricType metric_type, int64_t *ids,
+                                 float *scores, size_t size);
+
   virtual Result<vector_column_params::VectorDataBuffer> fetch(
       uint32_t segment_doc_id) const;
 

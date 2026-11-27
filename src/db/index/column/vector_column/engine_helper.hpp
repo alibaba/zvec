@@ -13,6 +13,8 @@
 // limitations under the License.
 #pragma once
 
+#include <algorithm>
+#include <limits>
 #include <memory>
 #include <zvec/ailego/pattern/expected.hpp>
 #include <zvec/core/interface/index.h>
@@ -149,7 +151,8 @@ class ProximaEngineHelper {
       const core_interface::VectorData &vector_data,
       const QueryParams::Ptr &query_params, uint32_t topk,
       const IndexFilter *filter, const VectorColumnIndexer *reference_indexer,
-      int64_t *output_ids, float *output_scores) {
+      int64_t *output_ids, float *output_scores,
+      bool preserve_refine_order = false) {
     auto *index = indexer.index.get();
     if (!index) return Status::InvalidArgument("Index not opened");
     auto search = [&](auto engine_query_param) -> Status {
@@ -178,8 +181,25 @@ class ProximaEngineHelper {
       // search.
       const core_interface::BaseIndexQueryParam::Pointer params(
           core_interface::BaseIndexQueryParam::Pointer{}, &engine_query_param);
-      if (index->search_internal_ids(vector_data, params, output_ids,
-                                     output_scores) != 0) {
+      if (reference_indexer && preserve_refine_order) {
+        // Public Query must retain the general refiner's selection at tied
+        // cutoffs. Sorting the compact results cannot recover an omitted ID.
+        core_interface::SearchResult result;
+        if (index->search(vector_data, params, &result) != 0) {
+          return Status::InternalError("Failed to search vector");
+        }
+        const size_t count = std::min<size_t>(topk, result.doc_list_.size());
+        for (size_t i = 0; i < count; ++i) {
+          output_ids[i] = static_cast<int64_t>(result.doc_list_[i].key());
+          if (output_scores) output_scores[i] = result.doc_list_[i].score();
+        }
+        std::fill(output_ids + count, output_ids + topk, int64_t{-1});
+        if (output_scores) {
+          std::fill(output_scores + count, output_scores + topk,
+                    std::numeric_limits<float>::quiet_NaN());
+        }
+      } else if (index->search_internal_ids(vector_data, params, output_ids,
+                                            output_scores) != 0) {
         return Status::InternalError("Failed to search vector");
       }
       return Status::OK();
