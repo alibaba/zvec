@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -2603,8 +2604,12 @@ TablePtr SegmentImpl::fetch_normal(
       block_table = memory_store_->fetch(fetch_columns, fetch_block_rows);
     }
 
-    if (!block_table || block_table->num_rows() == 0) {
-      continue;
+    if (!block_table ||
+        block_table->num_rows() !=
+            static_cast<int64_t>(fetch_block_rows.size()) ||
+        block_table->num_columns() != static_cast<int>(fetch_columns.size())) {
+      LOG_ERROR("Incomplete forward fetch for block %d", block_index);
+      return nullptr;
     }
 
     // Fill results
@@ -2626,7 +2631,7 @@ TablePtr SegmentImpl::fetch_normal(
 
       for (size_t j = 0; j < fetch_block_rows.size(); ++j) {
         auto scalar_result = flat_array->GetScalar(j);
-        if (!scalar_result.ok()) continue;
+        if (!scalar_result.ok()) return nullptr;
         int output_row = output_to_result_index[j].first;
         column_results[col_index].emplace_back(
             output_row, std::move(scalar_result.ValueOrDie()));
@@ -2994,7 +2999,7 @@ RecordBatchReaderPtr SegmentImpl::scan(
 
     auto reader = store->scan(interested_cols);
     if (!reader) {
-      continue;
+      return nullptr;
     }
 
     auto key = std::make_pair(block.min_doc_id(), block.max_doc_id());
@@ -3897,6 +3902,13 @@ SegmentImpl::build_persisted_read_state() const {
   std::vector<arrow::Status> errors(fields.size());
   for (size_t b = 0; b < blocks.size(); ++b) {
     const auto table = persist_stores_[b]->get_table();
+    if (!table) {
+      const auto *store =
+          dynamic_cast<const MmapForwardStore *>(persist_stores_[b].get());
+      // Bounded IPC reads fetch batches on demand through the locked path.
+      if (store && store->uses_bounded_ipc_cache())
+        return PersistedReadStatePtr{};
+    }
     if (!table ||
         table->num_rows() != static_cast<int64_t>(blocks[b].doc_count_)) {
       return tl::make_unexpected(Status::InternalError(
@@ -4167,6 +4179,30 @@ const std::vector<BlockMeta> &SegmentImpl::get_persist_block_metas(
 }
 
 Status SegmentImpl::load_persist_scalar_blocks() {
+  size_t scalar_cache_bytes = 0;
+  const auto vector_fields = collection_schema_->vector_fields();
+  const bool has_diskann = std::any_of(
+      vector_fields.begin(), vector_fields.end(), [](const auto &field) {
+        return field->index_type() == IndexType::DISKANN;
+      });
+  if (options_.read_only_ && has_diskann) {
+    const char *setting = std::getenv("ZVEC_DISKANN_SCALAR_CACHE_MIB");
+    if (setting && *setting) {
+      size_t mib = 0;
+      for (const char *p = setting; *p; ++p) {
+        if (*p < '0' || *p > '9' || mib > 64) {
+          return Status::InvalidArgument(
+              "ZVEC_DISKANN_SCALAR_CACHE_MIB must be in [0, 64]");
+        }
+        mib = mib * 10 + (*p - '0');
+      }
+      if (mib > 64) {
+        return Status::InvalidArgument(
+            "ZVEC_DISKANN_SCALAR_CACHE_MIB must be in [0, 64]");
+      }
+      scalar_cache_bytes = mib * 1024 * 1024;
+    }
+  }
   doc_ids_.reserve(segment_meta_->doc_count());
   for (const auto &block : segment_meta_->persisted_blocks()) {
     if (block.type() == BlockType::SCALAR) {
@@ -4175,7 +4211,8 @@ Status SegmentImpl::load_persist_scalar_blocks() {
 
       BaseForwardStore::Ptr forward_store;
       if (options_.enable_mmap_) {
-        forward_store = std::make_shared<MmapForwardStore>(forward_path);
+        forward_store = std::make_shared<MmapForwardStore>(forward_path,
+                                                           scalar_cache_bytes);
       } else {
         forward_store = std::make_shared<BufferPoolForwardStore>(forward_path);
       }
@@ -4187,6 +4224,10 @@ Status SegmentImpl::load_persist_scalar_blocks() {
         continue;
       }
       auto rb_reader = forward_store->scan({GLOBAL_DOC_ID});
+      if (!rb_reader) {
+        return Status::InternalError("Failed to scan document IDs from ",
+                                     forward_path);
+      }
       while (true) {
         std::shared_ptr<arrow::RecordBatch> batch;
         auto status = rb_reader->ReadNext(&batch);

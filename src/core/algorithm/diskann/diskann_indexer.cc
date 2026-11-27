@@ -24,7 +24,12 @@
 #include <tuple>
 #include <unordered_set>
 #include <vector>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#include <cstdlib>
+#endif
 #include <ailego/pattern/scope_guard.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
 
@@ -79,6 +84,10 @@ DiskAnnIndexer::~DiskAnnIndexer() {
 
 int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
                          turbo::Quantizer::Pointer quantizer) {
+  node_record_reads_ = false;
+#if defined(__APPLE__)
+  DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
+#endif
   auto storage = entity.get_storage();
   auto vector_segment = entity.get_vector_segment();
   if (!storage || !vector_segment) {
@@ -165,6 +174,23 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   paged_quant_codes_ = entity.paged_pq_codes();
 
   index_segment_offset_ = vector_segment->data_offset();
+#if defined(__APPLE__) && TARGET_OS_OSX
+  size_t cache_bytes = 0;
+  size_t workers = 1;
+  if (!pool) {
+    if (!DiskAnnReadCache::parse_budget_mib(
+            std::getenv("ZVEC_DISKANN_READ_CACHE_MIB"), &cache_bytes)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_CACHE_MIB must be an integer in [0, 1024]");
+      return IndexError_InvalidArgument;
+    }
+    if (!DiskAnnReadExecutor::parse_workers(
+            std::getenv("ZVEC_DISKANN_READ_WORKERS"), &workers)) {
+      LOG_ERROR("ZVEC_DISKANN_READ_WORKERS must be an integer in [1, 32]");
+      return IndexError_InvalidArgument;
+    }
+    cache_bytes = std::min<size_t>(cache_bytes, vector_segment->data_size());
+  }
+#endif
 
   const auto file_path = storage->file_path();
   int ret = 0;
@@ -256,6 +282,42 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
     // Releasing the last internal reference closes the buffered source handle.
     // POSIX caller-owned aliases remain valid; Windows has rejected them above.
     cached_file.reset();
+#if defined(__APPLE__) && TARGET_OS_OSX
+    // The graph file is immutable. Cache its node records within a fixed
+    // per-reader budget, while retaining F_NOCACHE for misses. BufferPool
+    // storage already has its own cache and must not allocate a second one.
+    auto *file_reader = static_cast<LinuxAlignedFileReader *>(reader_.get());
+    // Charge an optional FP32 norm table to the existing read-cache budget.
+    // Keep at least half for node payloads; large corpora fall back to fused
+    // ADC.
+    size_t norm_bytes = 0;
+    auto *pq = dynamic_cast<const turbo::PqInt8Quantizer *>(quantizer_.get());
+    if (pq && meta_.metric_name() == "Cosine" && entity.doc_cnt() > 0 &&
+        entity.doc_cnt() <= cache_bytes / (2 * sizeof(float))) {
+      try {
+        cosine_inverse_norms_.resize(entity.doc_cnt());
+        if (pq->cosine_inverse_norms(quant_codes_, entity.doc_cnt(),
+                                     entity.pq_chunk_num(),
+                                     cosine_inverse_norms_.data())) {
+          norm_bytes = cosine_inverse_norms_.capacity() * sizeof(float);
+        } else {
+          DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
+        }
+      } catch (const std::bad_alloc &) {
+        DiskAnnReadVector<float>().swap(cosine_inverse_norms_);
+      }
+    }
+    ret = file_reader->configure_read_cache(cache_bytes - norm_bytes,
+                                            max_node_size_);
+    if (ret != 0) return ret;
+    node_record_reads_ = true;
+    ret = file_reader->configure_read_workers(workers);
+    if (ret != 0) return ret;
+    LOG_INFO(
+        "DiskAnn node-record read cache: budget_bytes=%zu allocated_bytes=%zu "
+        "record_bytes=%u read_workers=%zu",
+        cache_bytes, file_reader->read_cache_bytes(), max_node_size_, workers);
+#endif
   }
 
   if (reader_->requires_io_context()) {
@@ -297,6 +359,34 @@ int DiskAnnIndexer::init(DiskAnnSearcherEntity &entity,
   }
 
   return 0;
+}
+
+AlignedRead DiskAnnIndexer::node_read(diskann_id_t id,
+                                      uint8_t *sector_buffer) const {
+  const uint64_t sector_offset =
+      index_segment_offset_ +
+      DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
+                                   DiskAnnUtil::kSectorSize, id) *
+          DiskAnnUtil::kSectorSize;
+#if defined(__APPLE__)
+  if (node_record_reads_) {
+    // Keep sector-sized disk transfers, but retain only the requested node
+    // in the cache. Existing scratch offsets and graph decoding stay intact.
+    const size_t within =
+        node_per_sector_
+            ? static_cast<size_t>(id % node_per_sector_) * max_node_size_
+            : 0;
+    AlignedRead read(sector_offset + within, max_node_size_,
+                     sector_buffer + within);
+    read.enclosing_offset = sector_offset;
+    read.enclosing_len = sector_num_per_node_ * DiskAnnUtil::kSectorSize;
+    read.enclosing_buf = sector_buffer;
+    return read;
+  }
+#endif
+  return AlignedRead(sector_offset,
+                     sector_num_per_node_ * DiskAnnUtil::kSectorSize,
+                     sector_buffer);
 }
 
 int DiskAnnIndexer::use_medroids_data_as_centroids() {
@@ -349,35 +439,31 @@ std::vector<int> DiskAnnIndexer::read_nodes(
   std::vector<AlignedRead> read_reqs;
   read_reqs.reserve(node_ids.size());
 
-  void *buf = nullptr;
   auto sector_num =
       node_per_sector_ > 0
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
-  DiskAnnUtil::alloc_aligned(
-      &buf, node_ids.size() * sector_num * DiskAnnUtil::kSectorSize,
-      DiskAnnUtil::kSectorSize);
-  if (buf == nullptr) {
+  const size_t sector_bytes =
+      static_cast<size_t>(sector_num) * DiskAnnUtil::kSectorSize;
+  ailego::BudgetedAlignedBuffer buffer;
+  try {
+    if (node_ids.size() > std::numeric_limits<size_t>::max() / sector_bytes)
+      throw std::bad_alloc();
+    buffer.resize_process_rss(node_ids.size() * sector_bytes,
+                              DiskAnnUtil::kSectorSize);
+  } catch (const std::bad_alloc &) {
     LOG_ERROR("read_nodes: failed to allocate aligned read buffer");
     std::fill(retval.begin(), retval.end(), IndexError_NoMemory);
     return retval;
   }
-  const std::unique_ptr<void, decltype(&DiskAnnUtil::free_aligned)> buffer(
-      buf, &DiskAnnUtil::free_aligned);
+  void *buf = buffer.data();
 
   for (size_t i = 0; i < node_ids.size(); ++i) {
     auto node_id = node_ids[i];
 
-    AlignedRead read;
-    read.len = sector_num * DiskAnnUtil::kSectorSize;
-    read.buf =
-        static_cast<uint8_t *>(buf) + i * sector_num * DiskAnnUtil::kSectorSize;
-    read.offset =
-        index_segment_offset_ +
-        DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                     DiskAnnUtil::kSectorSize, node_id) *
-            DiskAnnUtil::kSectorSize;
-    read_reqs.push_back(read);
+    read_reqs.push_back(
+        node_read(node_id, static_cast<uint8_t *>(buf) +
+                               i * sector_num * DiskAnnUtil::kSectorSize));
   }
 
   int read_ret = reader_->read(read_reqs, init_ctx_);
@@ -388,9 +474,12 @@ std::vector<int> DiskAnnIndexer::read_nodes(
   }
 
   for (uint32_t i = 0; i < read_reqs.size(); i++) {
-    uint8_t *node_buf =
-        DiskAnnUtil::offset_to_node(node_per_sector_, max_node_size_,
-                                    (uint8_t *)read_reqs[i].buf, node_ids[i]);
+    // node_read may point req.buf at the record inside its sector. Compute
+    // the offset from the sector base so packed nodes are not offset twice.
+    uint8_t *node_buf = DiskAnnUtil::offset_to_node(
+        node_per_sector_, max_node_size_,
+        static_cast<uint8_t *>(buf) + i * sector_num * DiskAnnUtil::kSectorSize,
+        node_ids[i]);
 
     if (coord_buffers[i] != nullptr) {
       void *node_coords = node_buf;
@@ -872,13 +961,8 @@ int DiskAnnIndexer::linear_search(DiskAnnContext *ctx) {
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1043,13 +1127,8 @@ int DiskAnnIndexer::keys_search(const std::vector<uint64_t> &keys,
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1181,12 +1260,7 @@ int DiskAnnIndexer::get_vector(diskann_id_t id, IndexContext::Pointer &context,
     frontier_neighbor.second = sector_buffer;
     frontier_neighbors.push_back(frontier_neighbor);
 
-    frontier_read_reqs.emplace_back(
-        index_segment_offset_ +
-            DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                         DiskAnnUtil::kSectorSize, id) *
-                DiskAnnUtil::kSectorSize,
-        sector_read_size, frontier_neighbor.second);
+    frontier_read_reqs.push_back(node_read(id, frontier_neighbor.second));
 
     stats.disk_page_reads++;
     stats.io_num++;
@@ -1280,9 +1354,13 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
           ? 1
           : DiskAnnUtil::div_round_up(max_node_size_, DiskAnnUtil::kSectorSize);
 
-  dc.bind_quantizer(quantizer_.get(), quant_codes_, quant_code_size_,
-                    paged_quant_codes_,
-                    storage_ ? storage_->vec_buffer_pool().get() : nullptr);
+  const float *norms = nullptr;
+#if defined(__APPLE__)
+  if (!cosine_inverse_norms_.empty()) norms = cosine_inverse_norms_.data();
+#endif
+  dc.bind_quantizer(
+      quantizer_.get(), quant_codes_, quant_code_size_, paged_quant_codes_,
+      storage_ ? storage_->vec_buffer_pool().get() : nullptr, norms);
   const int quantize_status = dc.quantize_query(ctx->query_rotated());
   if (quantize_status != 0) return quantize_status;
 
@@ -1321,8 +1399,18 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
   uint32_t max_beam_width =
       std::max(1u, static_cast<uint32_t>(DiskAnnUtil::kMaxSectorReadNum /
                                          sector_num_per_node));
-  uint32_t effective_beam_width = std::min(
-      std::max(8u, std::min(ctx->list_size() / 5, 32u)), max_beam_width);
+  // Wide portable read pools can overlap more cache misses in one search hop.
+  // Preserve the original beam for narrow pools and other storage paths.
+  uint32_t beam_divisor = 5;
+#if defined(__APPLE__) && TARGET_OS_OSX
+  auto *cached_reader = dynamic_cast<LinuxAlignedFileReader *>(reader_.get());
+  if (node_record_reads_ && cached_reader &&
+      cached_reader->read_workers() >= 24)
+    beam_divisor = 3;
+#endif
+  uint32_t effective_beam_width =
+      std::min(std::max(8u, std::min(ctx->list_size() / beam_divisor, 32u)),
+               max_beam_width);
 
   DiskAnnReadVector<diskann_id_t> frontier;
   frontier.reserve(2 * effective_beam_width);
@@ -1349,6 +1437,30 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
   DiskAnnReadVector<diskann_id_t> unvisited;
   DiskAnnReadVector<float> distances;
+
+  auto expand_neighbors = [&](const diskann_id_t *neighbors, uint32_t count) {
+    cpu_timer.reset();
+    const int status = dc.quantized_dist_unvisited(
+        neighbors, count, visit_filter, unvisited, distances);
+    if (status != 0) return status;
+    stats.dist_num += unvisited.size();
+    for (size_t i = 0; i < unvisited.size(); ++i)
+      candidates.insert(Neighbor(unvisited[i], distances[i]));
+    stats.cpu_us += cpu_timer.micro_seconds();
+    return 0;
+  };
+
+  auto expand_node = [&](diskann_id_t id, uint8_t *node, bool filtered) -> int {
+    auto *edges =
+        DiskAnnUtil::offset_to_node_neighbor(node, meta_.element_size());
+    if (*edges > max_degree_) return IndexError_InvalidFormat;
+    if (!filtered) {
+      const float distance = dc.dist(ctx->query(), node);
+      emplace_candidate(ctx, topk_heap, id, distance, node);
+    }
+    return expand_neighbors(reinterpret_cast<const diskann_id_t *>(edges + 1),
+                            *edges);
+  };
 
   while (candidates.has_unexpanded_node() && num_ios < io_limit_) {
     frontier.clear();
@@ -1377,6 +1489,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
                                       iter->second.second, filtered);
         stats.cache_hits++;
       } else {
+        // Select the whole frontier before reading it. Node-cache hits are
+        // served by the reader and expanded in the same order as misses.
         frontier_filtered[frontier.size()] = filtered;
         frontier.push_back(neighbor.id);
       }
@@ -1401,13 +1515,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
 
         sector_buffer_idx++;
 
-        frontier_read_reqs.emplace_back(
-            index_segment_offset_ +
-                DiskAnnUtil::get_node_sector(node_per_sector_, max_node_size_,
-                                             DiskAnnUtil::kSectorSize, cur_id) *
-                    DiskAnnUtil::kSectorSize,
-            sector_num_per_node * DiskAnnUtil::kSectorSize,
-            frontier_neighbor.second);
+        frontier_read_reqs.push_back(
+            node_read(cur_id, frontier_neighbor.second));
 
         stats.disk_page_reads++;
         stats.io_num++;
@@ -1445,17 +1554,8 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
       uint32_t neighbor_num = std::get<1>(cached_neighbor);
       diskann_id_t *node_neighbors = std::get<2>(cached_neighbor);
 
-      cpu_timer.reset();
-
-      const int status = dc.quantized_dist_unvisited(
-          node_neighbors, neighbor_num, visit_filter, unvisited, distances);
+      const int status = expand_neighbors(node_neighbors, neighbor_num);
       if (status != 0) return status;
-      stats.dist_num += unvisited.size();
-      stats.cpu_us += cpu_timer.micro_seconds();
-
-      for (size_t m = 0; m < unvisited.size(); ++m) {
-        candidates.insert(Neighbor(unvisited[m], distances[m]));
-      }
     }
 
     if (!frontier.empty()) {
@@ -1475,36 +1575,9 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
           uint8_t *node_disk_buf = DiskAnnUtil::offset_to_node(
               node_per_sector_, max_node_size_, frontier_neighbor.second,
               frontier_neighbor.first);
-          uint32_t *node_buf = DiskAnnUtil::offset_to_node_neighbor(
-              node_disk_buf, meta_.element_size());
-          uint32_t neighbor_num = *node_buf;
-          if (neighbor_num > max_degree_) return IndexError_InvalidFormat;
-
-          void *node_fp_coords = node_disk_buf;
-
-          float cur_expanded_dist = dc.dist(ctx->query(), node_fp_coords);
-
-          if (!frontier_filtered[idx]) {
-            emplace_candidate(ctx, topk_heap, frontier_neighbor.first,
-                              cur_expanded_dist, node_fp_coords);
-          }
-
-          diskann_id_t *node_neighbors =
-              reinterpret_cast<diskann_id_t *>(node_buf + 1);
-
-          cpu_timer.reset();
-          const int status = dc.quantized_dist_unvisited(
-              node_neighbors, neighbor_num, visit_filter, unvisited, distances);
+          const int status = expand_node(frontier_neighbor.first, node_disk_buf,
+                                         frontier_filtered[idx]);
           if (status != 0) return status;
-          stats.dist_num += unvisited.size();
-          stats.cpu_us += cpu_timer.micro_seconds();
-
-          cpu_timer.reset();
-          for (size_t m = 0; m < unvisited.size(); ++m) {
-            candidates.insert(Neighbor(unvisited[m], distances[m]));
-          }
-
-          stats.cpu_us += cpu_timer.micro_seconds();
         }
       }
     }
@@ -1653,13 +1726,8 @@ int DiskAnnIndexer::cached_beam_search_by_group(DiskAnnContext *ctx) try {
 
           sector_buffer_idx++;
 
-          frontier_read_reqs.emplace_back(
-              index_segment_offset_ + DiskAnnUtil::get_node_sector(
-                                          node_per_sector_, max_node_size_,
-                                          DiskAnnUtil::kSectorSize, cur_id) *
-                                          DiskAnnUtil::kSectorSize,
-              sector_num_per_node * DiskAnnUtil::kSectorSize,
-              frontier_neighbor.second);
+          frontier_read_reqs.push_back(
+              node_read(cur_id, frontier_neighbor.second));
 
           stats.disk_page_reads++;
           stats.io_num++;

@@ -21,8 +21,11 @@
 #undef private
 #undef protected
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <memory>
 #include <thread>
+#include <ailego/pattern/scope_guard.h>
 #include <arrow/array/array_binary.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
@@ -1312,6 +1315,50 @@ TEST_P(SegmentTest, FetchWithTwoVectorFields) {
     ASSERT_EQ(*ret_doc, expect_doc);
   }
 }
+
+#if DISKANN_SUPPORTED && !defined(_WIN32)
+TEST_P(SegmentTest, BoundedIpcFetchPropagatesBlockReadFailure) {
+  if (!GetParam()) GTEST_SKIP() << "Requires IPC forward storage";
+  ASSERT_TRUE(
+      schema_
+          ->add_field(std::make_shared<FieldSchema>(
+              "embedding", DataType::VECTOR_FP32, 8, false,
+              std::make_shared<DiskAnnIndexParams>(MetricType::L2, 8, 16, 2)))
+          .ok());
+  auto writer = test::TestHelper::CreateSegmentWithDoc(
+      col_path_, *schema_, 0, 0, id_map_, delete_store_, version_manager_,
+      options_, 0, 16);
+  ASSERT_NE(writer, nullptr);
+  ASSERT_TRUE(writer->dump().ok());
+  auto meta = writer->meta();
+  writer->remove_writing_forward_block();
+  writer.reset();
+
+  constexpr char setting[] = "ZVEC_DISKANN_SCALAR_CACHE_MIB";
+  const char *old = std::getenv(setting);
+  const bool was_set = old != nullptr;
+  const std::string saved = was_set ? old : "";
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_EQ(
+        0, was_set ? ::setenv(setting, saved.c_str(), 1) : ::unsetenv(setting));
+  });
+  ASSERT_EQ(0, ::setenv(setting, "1", 1));
+  options_.read_only_ = true;
+  auto opened = Segment::Open(col_path_, *schema_, *meta, id_map_,
+                              delete_store_, version_manager_, options_);
+  ASSERT_TRUE(opened.has_value()) << opened.error().message();
+  const auto &blocks = meta->persisted_blocks();
+  auto block = std::find_if(blocks.begin(), blocks.end(), [](const auto &b) {
+    return b.type() == BlockType::SCALAR && b.contain_column("name");
+  });
+  ASSERT_NE(block, blocks.end());
+  auto path = FileHelper::MakeForwardBlockPath(col_path_, meta->id(),
+                                               block->id(), false);
+  std::filesystem::resize_file(path, 0);
+  EXPECT_EQ(opened.value()->fetch({"name"}, std::vector<int>{1, 3}), nullptr);
+  EXPECT_EQ(opened.value()->scan({"name"}), nullptr);
+}
+#endif
 
 TEST_P(SegmentTest, FetchPerf) {
   // create segment

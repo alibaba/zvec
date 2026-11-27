@@ -13,6 +13,8 @@
 // limitations under the License.
 
 #include "diskann_searcher_entity.h"
+#include <array>
+#include <limits>
 #include <zvec/ailego/buffer/budgeted_buffer.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include "diskann_quantizer.h"
@@ -46,6 +48,9 @@ void DiskAnnSearcherEntity::clear() {
   pq_codes_.reset();
   key_buffer_.reset();
   key_mapping_buffer_.reset();
+  sequential_keys_ = false;
+  identity_mapping_ = false;
+  first_key_ = 0;
   entrypoints_.clear();
   meta_.clear();
   meta_header_ = {};
@@ -80,8 +85,12 @@ const DiskAnnEntity::Pointer DiskAnnSearcherEntity::clone() const {
   if (!pq_codes_.data()) entity->pq_data_segment_ = pq_data_segment_;
   entity->key_buffer_ = key_buffer_;
   entity->key_mapping_buffer_ = key_mapping_buffer_;
-  if (!key_buffer_.data()) entity->key_segment_ = key_segment_;
-  if (!key_mapping_buffer_.data())
+  entity->sequential_keys_ = sequential_keys_;
+  entity->identity_mapping_ = identity_mapping_;
+  entity->first_key_ = first_key_;
+  if (!sequential_keys_ && !key_buffer_.data())
+    entity->key_segment_ = key_segment_;
+  if (!identity_mapping_ && !key_mapping_buffer_.data())
     entity->key_mapping_segment_ = key_mapping_segment_;
   entity->entrypoints_ = entrypoints_;
 
@@ -331,8 +340,31 @@ int DiskAnnSearcherEntity::load_key_segment() {
   const size_t key_data_len = doc_cnt() * sizeof(diskann_key_t);
   if (storage_->vec_buffer_pool()) {
     key_buffer_.reset();
+    sequential_keys_ = false;
     return 0;
   }
+  // Probe in bounded chunks instead of allocating an index-sized temporary.
+  // Sequential internal keys need only their first value; arbitrary keys keep
+  // the original representation and lookup semantics.
+  std::array<diskann_key_t, 512> chunk{};
+  sequential_keys_ = doc_cnt() != 0;
+  key_buffer_.reset();
+  for (size_t begin = 0; begin < doc_cnt() && sequential_keys_;
+       begin += chunk.size()) {
+    const size_t count = std::min(chunk.size(), size_t(doc_cnt() - begin));
+    const size_t bytes = count * sizeof(diskann_key_t);
+    if (key_segment_->fetch(begin * sizeof(diskann_key_t), chunk.data(),
+                            bytes) != bytes)
+      return key_segment_->read_error();
+    if (begin == 0) first_key_ = chunk[0];
+    for (size_t i = 0; i < count; ++i) {
+      if (chunk[i] < first_key_ || chunk[i] - first_key_ != begin + i) {
+        sequential_keys_ = false;
+        break;
+      }
+    }
+  }
+  if (sequential_keys_) return 0;
 
   return load_owned_segment(*key_segment_, key_data_len, key_buffer_);
 }
@@ -386,8 +418,27 @@ int DiskAnnSearcherEntity::load_key_mapping_segment() {
   const size_t key_mapping_data_len = doc_cnt() * sizeof(diskann_id_t);
   if (storage_->vec_buffer_pool()) {
     key_mapping_buffer_.reset();
+    identity_mapping_ = false;
     return 0;
   }
+  std::array<diskann_id_t, 1024> chunk{};
+  identity_mapping_ = true;
+  key_mapping_buffer_.reset();
+  for (size_t begin = 0; begin < doc_cnt() && identity_mapping_;
+       begin += chunk.size()) {
+    const size_t count = std::min(chunk.size(), size_t(doc_cnt() - begin));
+    const size_t bytes = count * sizeof(diskann_id_t);
+    if (key_mapping_segment_->fetch(begin * sizeof(diskann_id_t), chunk.data(),
+                                    bytes) != bytes)
+      return key_mapping_segment_->read_error();
+    for (size_t i = 0; i < count; ++i) {
+      if (chunk[i] != begin + i) {
+        identity_mapping_ = false;
+        break;
+      }
+    }
+  }
+  if (identity_mapping_) return 0;
 
   return load_owned_segment(*key_mapping_segment_, key_mapping_data_len,
                             key_mapping_buffer_);
@@ -403,6 +454,11 @@ int DiskAnnSearcherEntity::find_id(diskann_key_t key, diskann_id_t *id) const
     try {
   if (!id) return IndexError_InvalidArgument;
   *id = kInvalidId;
+  if (sequential_keys_ && identity_mapping_) {
+    if (key >= first_key_ && key - first_key_ < doc_cnt())
+      *id = static_cast<diskann_id_t>(key - first_key_);
+    return 0;
+  }
 
   //! Do binary search
   diskann_id_t start = 0UL;
@@ -411,7 +467,9 @@ int DiskAnnSearcherEntity::find_id(diskann_key_t key, diskann_id_t *id) const
   while (start < end) {
     idx = start + (end - start) / 2;
     diskann_id_t local_id;
-    if (key_mapping_buffer_.data()) {
+    if (identity_mapping_) {
+      local_id = idx;
+    } else if (key_mapping_buffer_.data()) {
       std::memcpy(&local_id,
                   static_cast<const char *>(key_mapping_buffer_.data()) +
                       idx * sizeof(local_id),
@@ -454,6 +512,10 @@ diskann_key_t DiskAnnSearcherEntity::get_key(diskann_id_t id) const {
 int DiskAnnSearcherEntity::read_key(diskann_id_t id, diskann_key_t *key) const
     try {
   if (!key || id >= doc_cnt()) return IndexError_InvalidArgument;
+  if (sequential_keys_) {
+    *key = first_key_ + id;
+    return 0;
+  }
   const size_t offset = static_cast<size_t>(id) * sizeof(*key);
   if (key_buffer_.data()) {
     std::memcpy(key, static_cast<const char *>(key_buffer_.data()) + offset,

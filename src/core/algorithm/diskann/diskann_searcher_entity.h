@@ -105,6 +105,10 @@ class DiskAnnSearcherEntity : public DiskAnnEntity {
   IndexStorage::MemoryBlock pq_codes_;
   IndexStorage::MemoryBlock key_buffer_;
   IndexStorage::MemoryBlock key_mapping_buffer_;
+  // Lossless compact forms, enabled only after validating every stored value.
+  bool sequential_keys_{false};
+  bool identity_mapping_{false};
+  diskann_key_t first_key_{0};
   std::vector<diskann_id_t> entrypoints_;
 };
 

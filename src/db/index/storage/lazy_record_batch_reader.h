@@ -27,10 +27,11 @@ class IPCRecordBatchReader : public arrow::RecordBatchReader {
   IPCRecordBatchReader(
       std::shared_ptr<arrow::ipc::RecordBatchFileReader> reader,
       const std::vector<std::string> &columns,
-      std::shared_ptr<arrow::Schema> schema)
+      std::shared_ptr<arrow::Schema> schema, bool selective_reads = false)
       : reader_(std::move(reader)),
         schema_(std::move(schema)),
-        columns_(columns) {
+        columns_(columns),
+        selective_reads_(selective_reads) {
     std::vector<std::shared_ptr<arrow::Field>> fields;
     for (const auto &col : columns) {
       int index = schema_->GetFieldIndex(col);
@@ -53,6 +54,10 @@ class IPCRecordBatchReader : public arrow::RecordBatchReader {
       return arrow::Status::OK();
     }
 
+    // Decode selected buffers by their offsets, without allocating the full
+    // batch body. Wait for each batch before advancing to the next one.
+    if (selective_reads_)
+      ARROW_RETURN_NOT_OK(reader_->PreBufferMetadata({current_batch_}));
     ARROW_ASSIGN_OR_RAISE(auto full_batch,
                           reader_->ReadRecordBatch(current_batch_));
     current_batch_++;
@@ -72,6 +77,7 @@ class IPCRecordBatchReader : public arrow::RecordBatchReader {
   std::shared_ptr<arrow::Schema> schema_;
   std::shared_ptr<arrow::Schema> projected_schema_;
   std::vector<std::string> columns_;
+  bool selective_reads_;
   std::vector<int> col_indices_;
   int current_batch_ = 0;
   int num_record_batches_ = 0;

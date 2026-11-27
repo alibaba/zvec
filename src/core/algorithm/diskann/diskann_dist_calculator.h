@@ -16,6 +16,7 @@
 #include <memory>
 #include <vector>
 #include <ailego/pattern/scope_guard.h>
+#include <turbo/quantizer/pq_int8_quantizer/pq_int8_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_context.h>
@@ -55,6 +56,7 @@ class DistCalculator {
 
   inline void update_distance(const IndexMetric::MatrixDistance &distance) {
     distance_ = distance;
+    cosine_metric_ = false;
   }
 
   //! Reset query vector data
@@ -125,7 +127,9 @@ class DistCalculator {
   void bind_quantizer(const turbo::Quantizer *quantizer, const uint8_t *codes,
                       uint32_t code_size,
                       IndexStorage::Segment::Pointer paged_codes = nullptr,
-                      ailego::VecBufferPool *pool = nullptr) {
+                      ailego::VecBufferPool *pool = nullptr,
+                      const float *inverse_norms = nullptr) {
+    inverse_norms_ = inverse_norms;
     quantizer_ = quantizer;
     quant_codes_ = codes;
     quant_code_size_ = code_size;
@@ -135,7 +139,17 @@ class DistCalculator {
 
   int quantize_query(const void *query_rotated) try {
     if (!quantizer_ || !query_rotated) return IndexError_InvalidArgument;
-    quant_query_scratch_.resize(quantizer_->quantized_query_vector_length());
+    cosine_pq_ = cosine_metric_
+                     ? dynamic_cast<const turbo::PqInt8Quantizer *>(quantizer_)
+                     : nullptr;
+    quant_query_scratch_.resize(quantizer_->quantized_query_vector_length() *
+                                (cosine_pq_ && !inverse_norms_ ? 2 : 1));
+    if (cosine_pq_ &&
+        cosine_pq_->quantize_cosine_query(
+            query_rotated, quant_query_scratch_.data(), !inverse_norms_)) {
+      return 0;
+    }
+    cosine_pq_ = nullptr;
     quantizer_->quantize_query(query_rotated, quant_query_scratch_.data());
     quant_dist_impl_ = quantizer_->distance(quant_query_scratch_.data(),
                                             quantizer_->quantized_query_meta());
@@ -167,7 +181,17 @@ class DistCalculator {
                                   quant_code_scratch_, quant_dp_list_.data());
       if (status != 0) return status;
     }
-    quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
+    if (cosine_pq_ && inverse_norms_) {
+      cosine_pq_->calc_distance_dp_query_batch(
+          quant_dp_list_.data(), n, quant_query_scratch_.data(), dists);
+      for (uint32_t i = 0; i < n; ++i)
+        dists[i] = 1.0f + dists[i] * inverse_norms_[ids[i]];
+    } else if (cosine_pq_) {
+      cosine_pq_->cosine_distance_batch(quant_dp_list_.data(),
+                                        quant_query_scratch_.data(), n, dists);
+    } else {
+      quant_dist_impl_.batch(quant_dp_list_.data(), n, dists);
+    }
     return 0;
   } catch (const std::bad_alloc &) {
     return IndexError_NoMemory;
@@ -221,6 +245,8 @@ class DistCalculator {
   void bind_distance(const IndexMeta &meta, const IndexMetric::Pointer &measure,
                      const turbo::Quantizer::Pointer &external_quantizer) {
     data_quantizer_.reset();
+    cosine_metric_ =
+        meta.metric_name() == "Cosine" && measure->name() == "Cosine";
 
     // load(storage, metric) and IndexFlow can override the persisted metric.
     // A quantizer chosen for that persisted metric must not replace the
@@ -292,6 +318,9 @@ class DistCalculator {
   bool error_{false};
 
   const turbo::Quantizer *quantizer_{nullptr};
+  const turbo::PqInt8Quantizer *cosine_pq_{nullptr};
+  bool cosine_metric_{false};
+  const float *inverse_norms_{nullptr};
   const uint8_t *quant_codes_{nullptr};
   uint32_t quant_code_size_{0};
 

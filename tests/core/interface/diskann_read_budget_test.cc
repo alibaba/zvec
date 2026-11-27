@@ -152,6 +152,48 @@ class DiskAnnReadBudgetTest : public ::testing::TestWithParam<StorageType> {
   uint64_t previous_rss_{0};
 };
 
+TEST_P(DiskAnnReadBudgetTest, RepeatedSearchPreservesResultsAfterCacheWarmup) {
+  constexpr uint32_t dimension = 128;
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kInnerProduct, MetricType::kCosine}) {
+    SCOPED_TRACE(static_cast<int>(metric));
+    const auto path = (directory_ / "repeat.index").string();
+    auto param = DiskAnnIndexParamBuilder()
+                     .with_metric_type(metric)
+                     .with_data_type(DataType::DT_FP32)
+                     .with_dimension(dimension)
+                     .with_max_degree(16)
+                     .with_list_size(64)
+                     .with_pq_chunk_num(4)
+                     .build();
+    std::vector<float> rows;
+    ASSERT_NO_FATAL_FAILURE(build_index(path, *param, &rows, 754));
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, {GetParam(), false, true}));
+    auto query = std::make_shared<DiskAnnQueryParam>();
+    query->topk = 10;
+    query->list_size = 64;
+    std::vector<float> vector(rows.begin() + 12 * dimension,
+                              rows.begin() + 13 * dimension);
+    for (auto &value : vector) value += 0.021F;
+    VectorData input{DenseVector{vector.data()}};
+    SearchResult expected;
+    ASSERT_EQ(0, index->search(input, query, &expected));
+    ASSERT_EQ(10u, expected.doc_list_.size());
+    for (int repeat = 0; repeat < 5; ++repeat) {
+      SearchResult actual;
+      ASSERT_EQ(0, index->search(input, query, &actual));
+      ASSERT_EQ(expected.doc_list_.size(), actual.doc_list_.size());
+      for (size_t i = 0; i < actual.doc_list_.size(); ++i) {
+        ASSERT_EQ(expected.doc_list_[i].key(), actual.doc_list_[i].key());
+        ASSERT_EQ(expected.doc_list_[i].score(), actual.doc_list_[i].score());
+      }
+    }
+    ASSERT_EQ(0, index->close());
+  }
+}
+
 TEST_P(DiskAnnReadBudgetTest, NewStorageResetsPreviousBuildState) {
   const auto path = (directory_ / "original.index").string();
   const auto param = parameters(false);
