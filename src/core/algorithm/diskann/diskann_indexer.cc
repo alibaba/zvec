@@ -1499,9 +1499,9 @@ int DiskAnnIndexer::cached_beam_search_impl(DiskAnnContext *ctx) {
                                static_cast<uint8_t *>(ctx->sector_buffer()));
           if (cached_reader->try_read_cached(req)) {
             ++stats.cache_hits;
-            const int status = expand_node(
+            const int expand_status = expand_node(
                 neighbor.id, static_cast<uint8_t *>(req.buf), filtered);
-            if (status != 0) return status;
+            if (expand_status != 0) return expand_status;
             continue;
           }
         }

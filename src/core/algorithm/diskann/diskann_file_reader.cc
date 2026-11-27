@@ -978,8 +978,9 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
       std::any_of(
           read_reqs.begin(), read_reqs.end(),
           [](const AlignedRead &req) { return req.enclosing_len != 0; })) {
-    const auto begin = profile_reads_ ? std::chrono::steady_clock::now()
-                                      : std::chrono::steady_clock::time_point{};
+    const auto batch_start = profile_reads_
+                                 ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
     bool parallel = read_executor_ && read_reqs.size() > 1;
     // Preserve the serial API's behavior for overlapping destination buffers.
     // A conservative bounding interval avoids quadratic overlap checks.
@@ -1043,7 +1044,7 @@ int LinuxAlignedFileReader::read(std::vector<AlignedRead> &read_reqs,
         profile_requested_bytes_.fetch_add(req.len, std::memory_order_relaxed);
       profile_batch_ns_.fetch_add(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
-              std::chrono::steady_clock::now() - begin)
+              std::chrono::steady_clock::now() - batch_start)
               .count(),
           std::memory_order_relaxed);
     }
