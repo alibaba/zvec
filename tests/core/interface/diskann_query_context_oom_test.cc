@@ -233,8 +233,8 @@ TEST_P(QueryContextOomTest, DiskAnnReadersReleaseFailedContexts) {
   {
     auto writer = ci::IndexFactory::CreateAndInitIndex(*param);
     ASSERT_NE(nullptr, writer);
-    ASSERT_EQ(0, writer->open(
-                     path, {ci::StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(
+        0, writer->open(path, {ci::StorageOptions::StorageType::kMMAP, true}));
     for (uint32_t id = 0; id < 512; ++id) {
       const auto value = static_cast<float>(id);
       ASSERT_EQ(0, writer->add(ci::VectorData{ci::DenseVector{&value}}, id));
@@ -262,8 +262,7 @@ TEST_P(QueryContextOomTest, DiskAnnReadersReleaseFailedContexts) {
   const float query = 256.0F;
   auto check_reader = [&](auto &reader) {
     ASSERT_NO_FATAL_FAILURE(
-        check_context_failure(reader, sizeof(core::DiskAnnContext),
-                            sizeof(core::VisitByteMap::Context)));
+        check_context_failure(reader, sizeof(core::DiskAnnContext)));
     auto context = reader.create_context();
     ASSERT_NE(nullptr, context);
     context->set_topk(1);
@@ -337,7 +336,8 @@ TEST_P(QueryContextOomTest, DiskAnnKeepsIdsWhenScoreNormalizationFails) {
   EXPECT_EQ(expected_scores, scores);
   ASSERT_EQ(0, index->close());
 }
-INSTANTIATE_TEST_SUITE_P(StorageBackends, QueryContextOomTest, ::testing::Bool());
+INSTANTIATE_TEST_SUITE_P(StorageBackends, QueryContextOomTest,
+                         ::testing::Bool());
 }  // namespace
 }  // namespace zvec
 #endif
