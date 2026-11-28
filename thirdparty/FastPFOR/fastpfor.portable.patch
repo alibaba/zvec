@@ -1,0 +1,30 @@
+diff --git a/headers/common.h b/headers/common.h
+--- a/headers/common.h
++++ b/headers/common.h
+@@ -10,5 +10,8 @@
+ // C headers (sorted)
+ #include <errno.h>
+ #include <fcntl.h>
++#if defined(ZVEC_FASTPFOR_PORTABLE)
++#include <simde/x86/sse4.1.h>
++#else
+ #if defined(__GNUC__) && (defined(__x86_64__) || defined(__i386__))
+ #include <immintrin.h>
+@@ -16,5 +19,6 @@
+ #include <simde/x86/sse4.1.h>
+ #endif
++#endif
+ 
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -50,9 +54,9 @@
+ #include <iso646.h>
+ #include <stdint.h>
+ 
+-#if (defined(_M_IX86) || defined(_M_AMD64))
++#if !defined(ZVEC_FASTPFOR_PORTABLE) && (defined(_M_IX86) || defined(_M_AMD64))
+ #include <intrin.h>
+ #elif defined(_M_ARM64)
+ #include <simde/x86/sse4.1.h>
+ #endif
+ 

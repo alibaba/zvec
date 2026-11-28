@@ -64,6 +64,22 @@ pytest python/tests/ --cov=zvec --cov-report=term-missing
 
 > 🔎 See full rules in `[tool.ruff]` section of `pyproject.toml`.
 
+### Portable FastPFOR
+
+The standalone regression builds only FastPFOR and its integer-codec consumer.
+On x86, it targets Core 2 with SSE4.1 disabled; on other architectures, it uses
+the compiler's normal baseline.
+
+```bash
+cmake -S thirdparty/FastPFOR/tests -B build/fastpfor-portable \
+  -DZVEC_FASTPFOR_PORTABLE=ON
+cmake --build build/fastpfor-portable
+ctest --test-dir build/fastpfor-portable --output-on-failure
+```
+
+For offline builds, pass `-DFETCHCONTENT_SOURCE_DIR_SIMDE` with the path to an
+existing SIMDe v0.8.2 source directory.
+
 ---
 
 ## Build Customization
@@ -75,6 +91,7 @@ You can control build behavior via environment variables or `pyproject.toml`:
 | **Build Type** | `CMAKE_BUILD_TYPE=Debug` | `Debug`, `Release`, or `Coverage` (for gcov/lcov) |
 | **Generator** | `CMAKE_GENERATOR="Unix Makefiles"` | Default: `Ninja`; use Make if preferred |
 | **AVX-512** | `ENABLE_SKYLAKE_AVX512=ON` | Enable AVX-512 optimizations (x86_64 only) |
+| **Portable FastPFOR** | `-DZVEC_FASTPFOR_PORTABLE=ON` (CMake) | Use SIMDe without requiring SSE4.1 for FastPFOR (default: `OFF`); other kernels are unchanged |
 
 Example (Debug + Make):
 ```bash

@@ -1,9 +1,14 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 
-# On non-x86 platforms, FastPFOR uses SIMDe to emulate SSE intrinsics.
-# Detection covers native ARM/RISC-V builds AND cross-compilation (e.g. iOS/Android).
+option(ZVEC_FASTPFOR_PORTABLE
+    "Use SIMDe for FastPFOR without requiring SSE4.1" OFF)
+
+# On non-x86 platforms and in portable mode, FastPFOR uses SIMDe for SSE
+# intrinsics. Detection also covers cross-compilation (e.g. iOS/Android).
 set(_FASTPFOR_NEEDS_SIMDE FALSE)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM64|arm64")
+if(ZVEC_FASTPFOR_PORTABLE)
+    set(_FASTPFOR_NEEDS_SIMDE TRUE)
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm|aarch64|ARM64|arm64")
     set(_FASTPFOR_NEEDS_SIMDE TRUE)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|riscv32")
     set(_FASTPFOR_NEEDS_SIMDE TRUE)
@@ -13,10 +18,15 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(_FASTPFOR_NEEDS_SIMDE TRUE)
 endif()
 
-# RISC-V: patch FastPFOR common.h to include SIMDe header for __riscv
+# RISC-V: preserve the existing patch and marker for previously configured trees.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "riscv64|riscv32")
     set(FASTPFOR_RISCV_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/fastpfor.riscv.patch)
     apply_patch_once("fastpfor_riscv_fix" "${CMAKE_CURRENT_SOURCE_DIR}/FastPFOR-0.4.0" "${FASTPFOR_RISCV_PATCH}")
+endif()
+
+if(ZVEC_FASTPFOR_PORTABLE)
+    set(FASTPFOR_PORTABLE_PATCH ${CMAKE_CURRENT_SOURCE_DIR}/fastpfor.portable.patch)
+    apply_patch_once("fastpfor_portable_fix" "${CMAKE_CURRENT_SOURCE_DIR}/FastPFOR-0.4.0" "${FASTPFOR_PORTABLE_PATCH}")
 endif()
 
 if(_FASTPFOR_NEEDS_SIMDE)
@@ -40,6 +50,10 @@ else()
     set(FASTPFOR_EXTRA_DEFS "")
 endif()
 
+if(ZVEC_FASTPFOR_PORTABLE)
+    list(APPEND FASTPFOR_EXTRA_DEFS ZVEC_FASTPFOR_PORTABLE)
+endif()
+
 cc_library(
     NAME FastPFOR STATIC
     SRCS FastPFOR-0.4.0/src/simdbitpacking.cpp
@@ -52,6 +66,12 @@ cc_library(
     DEFS ${FASTPFOR_EXTRA_DEFS}
     CXXFLAGS ${FASTPFOR_EXTRA_CXXFLAGS}
 )
+
+# cc_library's DEFS are private, but consumers instantiate FastPFOR's
+# header-defined codecs and must use the same portable intrinsics.
+if(ZVEC_FASTPFOR_PORTABLE)
+    target_compile_definitions(FastPFOR INTERFACE ${FASTPFOR_EXTRA_DEFS})
+endif()
 
 # Mark SIMDe's x86 emulation headers as a SYSTEM include so consumers of
 # FastPFOR (e.g. src/db's bitpacked posting-list translation units) do not
