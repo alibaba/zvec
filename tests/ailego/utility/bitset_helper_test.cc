@@ -45,3 +45,23 @@ TEST(BitsetHelper, Benchmark) {
   printf("* Cardinality (us): \t%zu\n", (size_t)elapsed_time.micro_seconds());
   printf("* Result: \t%zu\n", total);
 }
+
+TEST(BitsetHelper, SafeClearAndOperations) {
+  ailego::BitsetHelper bitset;
+  bitset.clear();
+
+  uint32_t buf[4] = {0};
+  bitset.mount(buf, sizeof(buf));
+  bitset.set(10);
+  EXPECT_TRUE(bitset.test(10));
+  EXPECT_FALSE(bitset.test(11));
+
+  bitset.clear();
+  EXPECT_FALSE(bitset.test(10));
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(0u, buf[i]);
+  }
+
+  bitset.umount();
+  bitset.clear();
+}
