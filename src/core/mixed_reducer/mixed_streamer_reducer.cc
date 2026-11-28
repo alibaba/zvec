@@ -151,6 +151,12 @@ int MixedStreamerReducer::feed_streamer_with_reformer(
 
   auto check_datatype = [&](const IndexMeta & /*target_meta*/,
                             const IndexMeta &source_meta) -> bool {
+    if (target_builder_ && !is_sparse_) {
+      // Builders consume decoded vectors. Legacy and Turbo postings can
+      // describe different stored types for the same original input type.
+      // Validate each decoded record against original_query_meta_ in read_vec.
+      return true;
+    }
     if (!streamers_.empty()) {
       auto &last_meta = streamers_.back()->meta();
       // Quantizer-encoded sources are dequantized to the original format
@@ -366,8 +372,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     // original vectors), dequantize back to the original format.
     const auto &source_meta = streamer->meta();
     const auto &target_meta = target_streamer_->meta();
+    // A trained RaBitQ model still owns the rotation and centroids for its
+    // codes.
     const bool same_layout =
-        target_builder_ == nullptr &&
+        target_builder_ == nullptr && !quantizer->require_train() &&
+        !quantizer->requires_original_vectors() &&
         turbo::QuantizerStorageDataTypeMatches(target_meta, source_meta) &&
         target_meta.quantizer_name() == source_meta.quantizer_name() &&
         target_meta.metric_name() == source_meta.metric_name() &&
@@ -389,6 +398,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
     return IndexError_Runtime;
   }
 
+  const auto originals =
+      !target_builder_ && target_streamer_quantizer_ &&
+              target_streamer_quantizer_->requires_original_vectors()
+          ? target_streamer_->original_provider()
+          : nullptr;
   while (iterator->is_valid()) {
     if (iterator->status() != 0) {
       return iterator->status();
@@ -407,9 +421,16 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       continue;
     }
 
-    const void *vector_data = iterator->data();
-    if (iterator->status() != 0) {
-      return iterator->status();
+    // The build provider is keyed by the rewritten ID, including on append.
+    IndexStorage::MemoryBlock original_block;
+    const void *vector_data;
+    if (originals) {
+      int ret = originals->get_vector(*next_id, original_block);
+      if (ret != 0) return ret;
+      vector_data = original_block.data();
+    } else {
+      vector_data = iterator->data();
+      if (iterator->status() != 0) return iterator->status();
     }
     if (!vector_data) {
       LOG_ERROR("Failed to read source vector, index=%zu key=%zu",
@@ -419,7 +440,11 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
 
     std::vector<uint8_t> bytes;
     bool needs_convert = false;
-    if (quantizer != nullptr && need_encode) {
+    if (originals) {
+      const auto *raw = static_cast<const uint8_t *>(vector_data);
+      bytes.assign(raw, raw + originals->element_size());
+      needs_convert = true;
+    } else if (quantizer != nullptr && need_encode) {
       std::string original_vector;
       if (quantizer->dequantize(vector_data, source_streamer_query_meta,
                                 &original_vector) != 0) {
@@ -445,6 +470,15 @@ int MixedStreamerReducer::read_vec(size_t source_streamer_index,
       bytes.resize(provider->element_size());
       memcpy(bytes.data(), vector_data, bytes.size());
       needs_convert = need_encode;
+    }
+
+    if (target_builder_ &&
+        (bytes.size() != original_query_meta_.element_size() ||
+         (!need_revert &&
+          (provider->data_type() != original_query_meta_.data_type() ||
+           provider->dimension() != original_query_meta_.dimension())))) {
+      LOG_ERROR("Decoded source vector does not match the builder input");
+      return IndexError_Mismatch;
     }
 
     // TODO: use id instead of key
@@ -493,13 +527,24 @@ void MixedStreamerReducer::add_vec(int *result) {
       // the original format directly, so no encoding is needed.
       if (target_streamer_quantizer_ != nullptr) {
         IndexQueryMeta quantized_meta;
-        if (target_streamer_quantizer_->quantize(vector, original_query_meta_,
-                                                 &new_vector,
-                                                 &quantized_meta) != 0) {
-          LOG_ERROR("Failed to quantize vector. pkey[%zu]",
-                    (size_t)vector_item.pkey_);
-          *result = IndexError_Runtime;
-          return;
+        if (target_streamer_quantizer_->requires_original_vectors()) {
+          if (target_streamer_quantizer_->quantize_datapoint(
+                  vector, original_query_meta_, &new_vector, &quantized_meta) !=
+              0) {
+            LOG_ERROR("Failed to quantize vector. pkey[%zu]",
+                      (size_t)vector_item.pkey_);
+            *result = IndexError_Runtime;
+            return;
+          }
+        } else {
+          new_vector.resize(
+              target_streamer_quantizer_->quantized_datapoint_vector_length());
+          target_streamer_quantizer_->quantize_data(vector, new_vector.data());
+          quantized_meta.set_meta(
+              target_streamer_query_meta.data_type(),
+              target_streamer_query_meta.dimension(),
+              static_cast<uint32_t>(target_streamer_quantizer_->type()),
+              target_streamer_query_meta.extra_meta_size());
         }
         vector = new_vector.data();
         add_meta = quantized_meta;
@@ -725,9 +770,11 @@ int MixedStreamerReducer::reduce_with_builder(const IndexFilter &filter) {
 }
 
 int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
+  auto threads =
+      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   if (target_builder_converter_) {
     int ret = core::IndexConverter::TrainAndTransform(target_builder_converter_,
-                                                      target_holder);
+                                                      target_holder, threads);
     if (ret != 0) {
       LOG_ERROR("Failed to convert target holder, ret=%d", ret);
       return merged_holder_ && merged_holder_->status() != 0
@@ -740,8 +787,6 @@ int MixedStreamerReducer::index_build(IndexHolder::Pointer target_holder) {
       return core::IndexError_Runtime;
     }
   }
-  auto threads =
-      std::make_shared<BorrowedSingleQueueIndexThreads>(*thread_pool_);
   int ret = target_builder_->train(threads, target_holder);
   if (merged_holder_ && merged_holder_->status() != 0) {
     return merged_holder_->status();

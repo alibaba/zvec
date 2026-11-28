@@ -17,10 +17,12 @@
 #include <array>
 #include <cstring>
 #include <limits>
+#include <rabitqlib/core/data_layout.hpp>
+#include <rabitqlib/core/estimator.hpp>
+#include <rabitqlib/fastscan/data_layout.hpp>
+#include <rabitqlib/fastscan/estimator.hpp>
 #include <rabitqlib/fastscan/fastscan.hpp>
-#include <rabitqlib/index/estimator.hpp>
-#include <rabitqlib/index/query.hpp>
-#include <rabitqlib/quantization/data_layout.hpp>
+#include <rabitqlib/fastscan/query.hpp>
 #include <rabitqlib/utils/space.hpp>
 #include <zvec/ailego/logger/logger.h>
 #include "algorithm/hnsw_rabitq/rabitq_params.h"
@@ -236,15 +238,15 @@ uint32_t IvfRabitqEntity::key_to_id(uint64_t key) const {
 
   uint32_t start = 0U;
   uint32_t end = header_.total_vector_count;
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   while (start < end) {
     uint32_t idx = start + (end - start) / 2U;
-    if (mapping_->read(idx * sizeof(uint32_t), &data, sizeof(uint32_t)) !=
+    if (mapping_->read(idx * sizeof(uint32_t), data, sizeof(uint32_t)) !=
         sizeof(uint32_t)) {
       LOG_ERROR("Failed to read mapping segment, idx=%zu", (size_t)idx);
       return std::numeric_limits<uint32_t>::max();
     }
-    uint32_t local_id = *reinterpret_cast<const uint32_t *>(data);
+    uint32_t local_id = *reinterpret_cast<const uint32_t *>(data.data());
     if (local_id >= header_.total_vector_count) {
       LOG_ERROR("Invalid mapping local_id=%zu, vector_count=%zu",
                 (size_t)local_id, (size_t)header_.total_vector_count);

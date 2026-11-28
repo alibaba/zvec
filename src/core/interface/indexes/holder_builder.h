@@ -25,18 +25,38 @@
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_param.h>
+#include "utility/stable_vector_holder.h"
 
 namespace zvec::core_interface {
 
 inline constexpr uint64_t kInvalidKey = std::numeric_limits<uint64_t>::max();
+
+// Populated before publishing as IndexHolder, then kept immutable while a
+// builder borrows its vectors. Retaining the holder also retains every vector
+// returned by its existing multi-pass iterators.
+template <core::IndexMeta::DataType DT>
+class StableMultiPassIndexHolder
+    : public core::MultiPassIndexHolder<DT>,
+      public core::StableVectorHolder,
+      public std::enable_shared_from_this<StableMultiPassIndexHolder<DT>> {
+ public:
+  using core::MultiPassIndexHolder<DT>::MultiPassIndexHolder;
+
+  int retain_stable_data(std::shared_ptr<const void> *lifetime) override {
+    if (!lifetime) return core::IndexError_InvalidArgument;
+    auto owner = this->weak_from_this().lock();
+    if (!owner) return core::IndexError_NoReady;
+    *lifetime = std::move(owner);
+    return 0;
+  }
+};
 
 template <core::IndexMeta::DataType DT, typename T>
 inline int BuildMultiPassHolderImpl(
     uint32_t dimension,
     const std::vector<std::pair<uint64_t, std::string>> &doc_cache,
     core::IndexHolder::Pointer *holder_out) {
-  auto holder =
-      std::make_shared<zvec::core::MultiPassIndexHolder<DT>>(dimension);
+  auto holder = std::make_shared<StableMultiPassIndexHolder<DT>>(dimension);
   for (const auto &doc : doc_cache) {
     if (doc.first == kInvalidKey) {
       continue;

@@ -55,11 +55,11 @@ TEST(FileDumper, General) {
 
   for (size_t i = 0; i < 10; ++i) {
     auto seg = container->get(std::to_string(i));
-    const void *data = nullptr;
-    EXPECT_EQ(seg->data_size(), seg->read(0, &data, seg->data_size()));
+    IndexStorage::MemoryBlock data;
+    EXPECT_EQ(seg->data_size(), seg->read(0, data, seg->data_size()));
 
     std::string hello = "Hello world!!! #" + std::to_string(i);
-    EXPECT_EQ(hello, std::string((const char *)data, seg->data_size()));
+    EXPECT_EQ(hello, std::string((const char *)data.data(), seg->data_size()));
   }
 }
 
@@ -127,4 +127,59 @@ TEST(IndexSegmentDumper, General) {
   params.set("proxima.mmap_file.container.checksum_validation", true);
   ASSERT_EQ(0, container->init(params));
   ASSERT_EQ(0, container->open(file_path, false));
+
+  // Exercise nested unpacking with independently owned, file-backed reads.
+  auto file_storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_TRUE(file_storage);
+  ASSERT_EQ(0, file_storage->init(ailego::Params()));
+  ASSERT_EQ(0, file_storage->open(file_path, false));
+  auto parent = file_storage->get("AAAAA", 1);
+  ASSERT_TRUE(parent);
+  IndexSegmentStorage nested(parent);
+  ASSERT_EQ(0, nested.open("", false));
+  auto segment = nested.get("3", 0);
+  ASSERT_TRUE(segment);
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(segment->data_size(),
+            segment->read(0, block, segment->data_size()));
+  EXPECT_EQ("A: Hello world!!! #3",
+            std::string(static_cast<const char *>(block.data()),
+                        segment->data_size()));
+}
+
+
+TEST(FileReadStorage, MemoryBlockReadsRetainIndependentBuffers) {
+  const std::string file_path = "file_read_storage_memory_block_test";
+  const std::string first(64, 'A');
+  const std::string second(8192, 'B');
+  auto dumper = IndexFactory::CreateDumper("FileDumper");
+  ASSERT_TRUE(dumper);
+  ASSERT_EQ(0, dumper->create(file_path));
+  ASSERT_EQ(first.size(), dumper->write(first.data(), first.size()));
+  ASSERT_EQ(second.size(), dumper->write(second.data(), second.size()));
+  ASSERT_EQ(0, dumper->append("payload", first.size() + second.size(), 0, 0));
+  ASSERT_EQ(0, dumper->close());
+
+  auto storage = IndexFactory::CreateStorage("FileReadStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(file_path, false));
+  auto segment = storage->get("payload", 1);
+  ASSERT_TRUE(segment);
+  IndexStorage::MemoryBlock first_block;
+  IndexStorage::MemoryBlock second_block;
+  ASSERT_EQ(first.size(), segment->read(0, first_block, first.size()));
+  ASSERT_EQ(second.size(),
+            segment->read(first.size(), second_block, second.size()));
+  EXPECT_EQ(first, std::string(static_cast<const char *>(first_block.data()),
+                               first.size()));
+  EXPECT_EQ(second, std::string(static_cast<const char *>(second_block.data()),
+                                second.size()));
+  ASSERT_EQ(0u, segment->read(segment->capacity() + 1, second_block, 1));
+  EXPECT_EQ(nullptr, second_block.data());
+  ASSERT_EQ(0, storage->close());
+  segment.reset();
+  EXPECT_EQ(first, std::string(static_cast<const char *>(first_block.data()),
+                               first.size()));
+  std::remove(file_path.c_str());
 }

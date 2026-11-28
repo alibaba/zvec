@@ -71,6 +71,13 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
 
   int train(IndexHolder::Pointer holder) override;
 
+  // Rebuild the centroid-pair table for SDC before graph inserts.
+  // Read-only ADC queries use their own LUT and do not need this table.
+  int prepare_build() override {
+    if (dist_table_.empty()) compute_dist_table();
+    return 0;
+  }
+
   size_t quantized_datapoint_vector_length() const override {
     return packed_code_length() + extra_meta_size_;
   }
@@ -125,6 +132,19 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
                                  const std::string &centroid_table,
                                  size_t centroid_id,
                                  std::string *out) const override;
+
+  // IP kernels return a negated dot product for nearest-distance search.
+  void normalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  void denormalize_score(float *score) const override {
+    *score = -(*score);
+  }
+
+  bool support_score_normalization() const override {
+    return meta_.metric_name() == "InnerProduct";
+  }
 
   int serialize(std::string *out) const override;
 
@@ -259,6 +279,7 @@ class PqInt4Quantizer : public Quantizer, public PrecomputeTableQuantizer {
   //! ISA-dispatched kernel function pointers (ADC / SDC / Batch ADC).
   CodebookAsymmetricDistanceFunc adc_fn_{nullptr};
   CodebookSymmetricDistanceFunc sdc_fn_{nullptr};
+  CodebookBatchSymmetricDistanceFunc batch_sdc_fn_{nullptr};
   CodebookBatchAsymmetricDistanceFunc batch_adc_fn_{nullptr};
 
   //! Metric-aware batch distance function for search-side LUT

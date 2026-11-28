@@ -19,15 +19,16 @@
 #include <limits>
 #include <thread>
 #include <vector>
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math/normalizer.h>
 #include <ailego/pattern/defer.h>
+#include <turbo/distance/matrix.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/container/vector.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_holder.h>
 #include <zvec/core/interface/index_factory.h>
 #include "algorithm/cluster/vector_mean.h"
-#include "utility/prefix_index_holder.h"
+#include "utility/owned_vector_holder.h"
+#include "utility/stable_vector_holder.h"
 #include "diskann_context.h"
 #include "diskann_params.h"
 #include "diskann_util.h"
@@ -58,18 +59,6 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
     LOG_WARN("Build thread count [%s] greater than cpu cores %u",
              PARAM_DISKANN_BUILDER_THREAD_COUNT.c_str(),
              std::thread::hardware_concurrency());
-  }
-
-  uint32_t max_pq_chunk_num{0};
-  if (params.get(PARAM_DISKANN_BUILDER_MAX_PQ_CHUNK_NUM, &max_pq_chunk_num)) {
-    if (max_pq_chunk_num > meta.dimension()) {
-      LOG_ERROR(
-          "PQ Chunk Num larger than dimension, PQ Chunk Num: %d, Dimension: %d",
-          max_pq_chunk_num, meta.dimension());
-      return IndexError_InvalidArgument;
-    }
-
-    max_pq_chunk_num_ = max_pq_chunk_num;
   }
 
   if (params.has(PARAM_DISKANN_BUILDER_MEMORY_LIMIT)) {
@@ -105,6 +94,9 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   if (ret != 0) {
     return ret;
   }
+
+  ret = candidate_quantizer_.init(&raw_meta_, params);
+  if (ret != 0) return ret;
 
   metric_ = IndexFactory::CreateMetric(build_meta_.metric_name());
   if (!metric_) {
@@ -148,7 +140,7 @@ int DiskAnnBuilder::init(const IndexMeta &meta, const ailego::Params &params,
 int DiskAnnBuilder::cleanup() {
   holder_.reset();
   algo_.reset();
-  quantizer_.reset();
+  candidate_quantizer_ = DiskAnnQuantizer{};
   data_quantizer_.reset();
   metric_.reset();
   entity_.clear();
@@ -160,8 +152,7 @@ int DiskAnnBuilder::cleanup() {
   list_size_ = kDefaultListSize;
   memory_limit_ = 0.0;
   memory_limit_set_ = false;
-  max_pq_chunk_num_ = kDefaultPqChunkNum;
-  pq_chunk_num_ = kDefaultPqChunkNum;
+  code_size_ = 0;
   build_thread_count_ = 0;
   max_train_sample_count_ = kDefaultMaxTrainSampleCount;
   train_sample_ratio_ = kDefaultTrainSampleRatio;
@@ -222,7 +213,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const float *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<float, 1, 1>::Compute(
             centroid_fp32.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {
@@ -237,7 +228,7 @@ int DiskAnnBuilder::calculate_entry_point() {
             reinterpret_cast<const ailego::Float16 *>(entity_.get_vector(id));
 
         float dist = 0.0f;
-        ailego::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
+        turbo::SquaredEuclideanDistanceMatrix<ailego::Float16, 1, 1>::Compute(
             centroid_fp16.data(), data_ptr, dimension, &dist);
 
         if (dist < min_dist) {
@@ -253,50 +244,6 @@ int DiskAnnBuilder::calculate_entry_point() {
   (*entity_.mutable_medoid()) = medoid_id;
 
   LOG_INFO("Medoid Calculation Done. ID: %zu", (size_t)medoid_id);
-
-  return 0;
-}
-
-int DiskAnnBuilder::calculate_pq_chunk_num() {
-  size_t doc_cnt = holder_->count();
-  if (doc_cnt == 0) {
-    LOG_ERROR("Invalid Input. Empty Vecs.");
-
-    return IndexError_InvalidLength;
-  }
-
-  uint32_t requested_chunk_num = max_pq_chunk_num_;
-  if (requested_chunk_num == 0 || requested_chunk_num == kDefaultPqChunkNum) {
-    requested_chunk_num =
-        std::max(1U, static_cast<uint32_t>(build_meta_.dimension() / 2));
-    LOG_INFO(
-        "No Chunk Num input. Quantizing %u dimension data into %u dimension.",
-        build_meta_.dimension(), requested_chunk_num);
-  }
-
-  pq_chunk_num_ = requested_chunk_num;
-  if (memory_limit_set_) {
-    size_t memory_limit_bytes =
-        static_cast<size_t>(get_memory_in_bytes(memory_limit_));
-    size_t budget_chunk_num = memory_limit_bytes / doc_cnt;
-    if (budget_chunk_num == 0) {
-      LOG_ERROR("Insufficient memory limit for vec, memory: %zu, vec num: %zu",
-                memory_limit_bytes, doc_cnt);
-      return IndexError_InvalidArgument;
-    }
-    pq_chunk_num_ = std::min(pq_chunk_num_,
-                             static_cast<uint32_t>(std::min<size_t>(
-                                 budget_chunk_num, build_meta_.dimension())));
-  }
-
-  if (pq_chunk_num_ == 0 || pq_chunk_num_ > build_meta_.dimension()) {
-    LOG_ERROR("PQ Chunk Num is more than dimension, chunk num: %u, dim: %u",
-              pq_chunk_num_, build_meta_.dimension());
-    return IndexError_InvalidArgument;
-  }
-
-  LOG_INFO("Quantizing %u dimension data into %u bytes.",
-           build_meta_.dimension(), pq_chunk_num_);
 
   return 0;
 }
@@ -321,7 +268,7 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
         LOG_ERROR("Failed to build index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Built cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -329,12 +276,13 @@ int DiskAnnBuilder::build_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  // A failed row allocation must not leave workers accessing the entity
+  // after build returns. Joining also publishes the winning worker's error.
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to build index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
@@ -358,7 +306,7 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
                                std::chrono::seconds(check_interval_secs_));
       if (error_.load(std::memory_order_acquire)) {
         LOG_ERROR("Failed to prune index while waiting finish");
-        return errcode_;
+        break;
       }
       LOG_INFO("Prune cnt %zu, finished percent %.3f%%",
                (size_t)finished.load(),
@@ -366,50 +314,30 @@ int DiskAnnBuilder::prune_internal(IndexThreads::Pointer threads) {
     }
   }
 
+  task_group->wait_finish();
   if (error_.load(std::memory_order_acquire)) {
     LOG_ERROR("Failed to prune index while waiting finish");
     return errcode_;
   }
-  task_group->wait_finish();
-
   return 0;
 }
 
-int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
-  LOG_INFO("Starting Train: Chunk Num: %u", pq_chunk_num_);
+int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer threads) {
+  LOG_INFO("Starting Train: Code Bytes: %u", code_size_);
 
   ailego::ElapsedTime timer;
 
-  quantizer_ = IndexFactory::CreateQuantizer("PqInt8Quantizer");
-  if (!quantizer_) {
-    LOG_ERROR("Create PqInt8Quantizer failed");
-    return IndexError_NoExist;
-  }
-
-  ailego::Params qp;
-  qp.set("num_chunk", pq_chunk_num_);
-  qp.set("thread_count", build_thread_count_);
-  qp.set("use_zero_mean", false);
-  int ret = quantizer_->init(build_meta_, qp);
+  int ret = candidate_quantizer_.train(holder_, max_train_sample_count_,
+                                       std::move(threads));
   if (ret != 0) {
-    LOG_ERROR("PqInt8Quantizer init failed, ret=%d", ret);
-    return ret;
-  }
-
-  // Keep the legacy prefix and sample order without materializing a second
-  // training holder. The quantizer copies only its selected training rows.
-  IndexHolder::Pointer training_holder = std::make_shared<PrefixIndexHolder>(
-      holder_, max_train_sample_count_, build_meta_);
-  ret = quantizer_->train(std::move(training_holder));
-  if (ret != 0) {
-    LOG_ERROR("PqInt8Quantizer train failed, ret=%d", ret);
+    LOG_ERROR("Candidate quantizer train failed, ret=%d", ret);
     return ret;
   }
 
   std::string &quantizer_meta_buffer = entity_.pq_quantizer_meta_buffer();
-  ret = quantizer_->serialize(&quantizer_meta_buffer);
+  ret = candidate_quantizer_.get()->serialize(&quantizer_meta_buffer);
   if (ret != 0) {
-    LOG_ERROR("PqInt8Quantizer serialize failed, ret=%d", ret);
+    LOG_ERROR("Candidate quantizer serialize failed, ret=%d", ret);
     return ret;
   }
 
@@ -418,25 +346,25 @@ int DiskAnnBuilder::train_quantized_data(IndexThreads::Pointer /*threads*/) {
 
   (*entity_.mutable_pq_meta()).quantizer_meta_buffer_size =
       quantizer_meta_buffer.size();
-  (*entity_.mutable_pq_meta()).chunk_num = pq_chunk_num_;
+  (*entity_.mutable_pq_meta()).chunk_num = code_size_;
 
   return 0;
 }
 
 int DiskAnnBuilder::generate_quantized_data(IndexThreads::Pointer threads) {
   LOG_INFO("Starting PQ Generate: Query Memory Limit: %lf, Chunk Num: %u",
-           memory_limit_, pq_chunk_num_);
+           memory_limit_, code_size_);
 
   ailego::ElapsedTime timer;
 
-  if (!quantizer_) {
+  if (!candidate_quantizer_.get()) {
     LOG_ERROR("Quantizer not exist");
     return IndexError_NoReady;
   }
 
   size_t num_vecs = holder_->count();
   auto &codes = entity_.block_compressed_data();
-  codes.resize(num_vecs * pq_chunk_num_);
+  codes.resize(num_vecs * code_size_);
 
   auto iter = holder_->create_iterator();
   if (!iter) {
@@ -510,9 +438,9 @@ void DiskAnnBuilder::encode_pq_batch(const uint8_t *block_data,
   const size_t elem_size = build_meta_.element_size();
   auto &codes = entity_.block_compressed_data();
   for (uint64_t i = begin; i < end; ++i) {
-    quantizer_->quantize_data(
+    candidate_quantizer_.get()->quantize_data(
         block_data + i * elem_size,
-        codes.data() + (block_start_id + i) * pq_chunk_num_);
+        codes.data() + (block_start_id + i) * code_size_);
   }
 }
 
@@ -537,8 +465,8 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
-                      pq_chunk_num_, build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_, code_size_,
+                      build_meta_.element_size());
   if (ailego_unlikely(ret != 0)) {
     if (!error_.exchange(true)) {
       LOG_ERROR("Failed to initialize build context");
@@ -549,6 +477,7 @@ void DiskAnnBuilder::do_build(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
+    if (error_.load(std::memory_order_acquire)) return;
     ctx->reset_query(entity_.get_vector(id));
     ret = algo_->add_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
@@ -584,8 +513,8 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   }
 
   DiskAnnContext::Pointer auto_ptr(ctx);
-  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_,
-                      pq_chunk_num_, build_meta_.element_size());
+  int ret = ctx->init(DiskAnnContext::kBuilderContext, max_degree_, code_size_,
+                      build_meta_.element_size());
   if (ailego_unlikely(ret != 0)) {
     if (!error_.exchange(true)) {
       LOG_ERROR("Failed to initialize prune context");
@@ -596,6 +525,7 @@ void DiskAnnBuilder::do_prune(uint64_t idx, size_t step_size,
   ctx->set_list_size(list_size_);
 
   for (uint64_t id = idx; id < entity_.doc_cnt(); id += step_size) {
+    if (error_.load(std::memory_order_acquire)) return;
     ctx->reset_query(entity_.get_vector(id));
     ret = algo_->prune_node(id, ctx);
     if (ailego_unlikely(ret != 0)) {
@@ -645,12 +575,6 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
 
   holder_ = std::move(holder);
 
-  LOG_INFO("Start to calculate chunk num");
-  int ret = calculate_pq_chunk_num();
-  if (ailego_unlikely(ret != 0)) {
-    return ret;
-  }
-
   if (!threads) {
     threads =
         std::make_shared<SingleQueueIndexThreads>(build_thread_count_, false);
@@ -659,7 +583,16 @@ int DiskAnnBuilder::train(IndexThreads::Pointer threads,
     }
   }
 
-  ret = train_quantized_data(threads);
+  const auto quantizer_threads = static_cast<uint32_t>(std::max<size_t>(
+      1, std::min<size_t>(build_thread_count_, threads->count())));
+  int ret = candidate_quantizer_.prepare(
+      holder_->count(), memory_limit_set_,
+      static_cast<size_t>(get_memory_in_bytes(memory_limit_)),
+      quantizer_threads);
+  if (ret != 0) return ret;
+  code_size_ = candidate_quantizer_.code_size();
+
+  ret = train_quantized_data(std::move(threads));
   if (ailego_unlikely(ret != 0)) {
     return ret;
   }
@@ -686,7 +619,7 @@ int DiskAnnBuilder::do_norm(const void *data_ptr, std::string *norm_data) {
   std::memcpy(output_buf, float_data_ptr, dimension * sizeof(float));
 
   float norm = 0.0f;
-  ailego::Normalizer<float>::L2(output_buf, dimension, &norm);
+  turbo::Normalizer<float>::L2(output_buf, dimension, &norm);
 
   return 0;
 }
@@ -716,12 +649,6 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
-  auto iter = holder->create_iterator();
-  if (!iter) {
-    LOG_ERROR("Create iterator for holder failed");
-    return IndexError_Runtime;
-  }
-
   if (!holder->is_matched(raw_meta_) || !holder->multipass() ||
       holder->count() > std::numeric_limits<uint32_t>::max()) {
     return IndexError_Mismatch;
@@ -731,22 +658,55 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return IndexError_Runtime;
   }
 
-  int ret = entity_.reserve_space(holder->count());
+  // The graph may need an owned snapshot of temporary iterator buffers.
+  // Keep holder_ as the original source for PQ encoding and deferred dump
+  // reads.
+  IndexHolder::Pointer graph_holder = holder;
+  std::shared_ptr<const void> lifetime;
+  auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+  int ret = stable ? stable->retain_stable_data(&lifetime)
+                   : IndexError_NotImplemented;
+  if (ret == 0) {
+    if (!lifetime) return IndexError_Runtime;
+    LOG_INFO(
+        "Using stable source vectors for graph: count=%zu, saved_bytes=%zu",
+        holder->count(), holder->count() * raw_meta_.element_size());
+  } else if (ret == IndexError_NotImplemented) {
+    OwnedVectorHolder::Pointer owned;
+    ret = OwnedVectorHolder::CopyFrom(holder, &owned);
+    if (ret != 0) return ret;
+    ret = owned->retain_stable_data(&lifetime);
+    if (ret != 0) return ret;
+    graph_holder = std::move(owned);
+    LOG_INFO("Copied source vectors into owned graph holder: count=%zu",
+             graph_holder->count());
+  } else {
+    return ret;
+  }
+  if (!lifetime) return IndexError_Runtime;
+  auto iter = graph_holder->create_iterator();
+  if (!iter) {
+    LOG_ERROR("Create iterator for holder failed");
+    return IndexError_Runtime;
+  }
+  ret = entity_.reserve_space(holder->count(), std::move(lifetime));
   if (ret != 0) return ret;
-
   error_ = false;
   while (iter->is_valid()) {
+    if (iter->status() != 0) return iter->status();
     if (entity_.doc_cnt() >= holder->count()) return IndexError_Mismatch;
-    ret = entity_.add_vector(iter->key(), iter->data());
-    if (ailego_unlikely(ret != 0)) {
-      return ret;
-    }
-
+    const uint64_t key = iter->key();
+    if (iter->status() != 0) return iter->status();
+    const void *data = iter->data();
+    if (iter->status() != 0) return iter->status();
+    ret = entity_.add_vector(key, data);
+    if (ret != 0) return ret;
     iter->next();
   }
-
+  if (iter->status() != 0) return iter->status();
   if (entity_.doc_cnt() != holder->count()) return IndexError_Mismatch;
   iter.reset();
+  graph_holder.reset();
   LOG_INFO("Finished saving vector");
 
   LOG_INFO("Start to calculate entrypoint");
@@ -767,8 +727,13 @@ int DiskAnnBuilder::build(IndexThreads::Pointer threads,
     return ret;
   }
 
+  ret = entity_.compact_neighbors();
+  if (ret != 0) {
+    return ret;
+  }
+
   // All graph workers have joined. Subsequent stages consume holder_, so
-  // release the full vector copy before allocating PQ buffers.
+  // release the vector copy or borrowed view before allocating PQ buffers.
   entity_.release_vectors();
   LOG_INFO("Start to generate quantized data");
   ret = generate_quantized_data(threads);

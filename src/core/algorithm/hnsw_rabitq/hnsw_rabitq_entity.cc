@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 #include "hnsw_rabitq_entity.h"
-#include <rabitqlib/index/query.hpp>
+#include <rabitqlib/core/data_layout.hpp>
 #include "utility/sparse_utility.h"
 #include "zvec/core/framework/index_stats.h"
 

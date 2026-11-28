@@ -114,6 +114,11 @@ class VamanaStreamerEntity : public VamanaEntity {
   int open(IndexStorage::Pointer stg, uint64_t max_index_size, bool check_crc);
   int close();
 
+  //! Whether vectors have been modified since opening the entity.
+  bool dirty() const {
+    return broker_->dirty();
+  }
+
   int set_index_meta(const IndexMeta &meta) const {
     return IndexHelper::SerializeToStorage(meta, broker_->storage().get());
   }
@@ -353,13 +358,13 @@ VamanaStreamerEntity::get_neighbors_typed<MmapMemoryBlock>(node_id_t id) const {
   ailego_assert_with(chunk_idx < node_chunks_.size(), "invalid chunk idx");
   ailego_assert_with(offset < node_chunks_[chunk_idx]->data_size(),
                      "invalid chunk offset");
-  const void *ptr = nullptr;
-  size_t ret = node_chunks_[chunk_idx]->read(offset, &ptr, neighbor_size_);
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = node_chunks_[chunk_idx]->read(offset, ptr, neighbor_size_);
   if (ailego_unlikely(ret != neighbor_size_)) {
     LOG_ERROR("Read neighbor header failed, ret=%zu", ret);
     return NeighborsT<MmapMemoryBlock>();
   }
-  MmapMemoryBlock block(const_cast<void *>(ptr));
+  MmapMemoryBlock block(const_cast<void *>(ptr.data()));
   return NeighborsT<MmapMemoryBlock>(std::move(block));
 }
 
@@ -390,13 +395,13 @@ inline int VamanaStreamerEntity::get_vector_typed<MmapMemoryBlock>(
   for (auto i = 0U; i < count; ++i) {
     auto loc = get_vector_chunk_loc(ids[i]);
     ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-    const void *ptr = nullptr;
-    size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, vector_size());
+    IndexStorage::MemoryBlock ptr;
+    size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, vector_size());
     if (ailego_unlikely(ret != vector_size())) {
       LOG_ERROR("Read vector failed, ret=%zu", ret);
       return IndexError_ReadData;
     }
-    vec_blocks[i].reset(const_cast<void *>(ptr));
+    vec_blocks[i].reset(const_cast<void *>(ptr.data()));
   }
   return 0;
 }
@@ -427,13 +432,13 @@ inline key_t VamanaStreamerEntity::get_key_typed<MmapMemoryBlock>(
   if (!use_key_info_map_) return id;
   auto loc = get_key_chunk_loc(id);
   ailego_assert_with(loc.first < node_chunks_.size(), "invalid chunk idx");
-  const void *ptr = nullptr;
-  size_t ret = node_chunks_[loc.first]->read(loc.second, &ptr, sizeof(key_t));
+  IndexStorage::MemoryBlock ptr;
+  size_t ret = node_chunks_[loc.first]->read(loc.second, ptr, sizeof(key_t));
   if (ailego_unlikely(ret != sizeof(key_t))) {
     LOG_ERROR("Read key failed, ret=%zu", ret);
     return kInvalidKey;
   }
-  return *reinterpret_cast<const key_t *>(ptr);
+  return *reinterpret_cast<const key_t *>(ptr.data());
 }
 
 template <>
@@ -543,9 +548,9 @@ class VamanaMmapStreamerEntity : public VamanaStreamerEntity {
     sync_node_chunks(chunk_idx);
     const auto &chunks = node_chunks_;
     for (size_t i = node_chunk_bases_.size(); i <= chunk_idx; ++i) {
-      const void *ptr = nullptr;
-      chunks[i]->read(0, &ptr, 1);
-      node_chunk_bases_.push_back(static_cast<const char *>(ptr));
+      IndexStorage::MemoryBlock ptr;
+      chunks[i]->read(0, ptr, 1);
+      node_chunk_bases_.push_back(static_cast<const char *>(ptr.data()));
     }
   }
 
@@ -624,8 +629,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   //! Per-entry stride of the flat vector array (0 if no contiguous build).
-  //! Padded up to kVectorAlignment (64B), so it is also the amount that
-  //! should be prefetched per vector.
+  //! Padded up to the configured cache-line alignment.
   size_t vector_stride() const {
     return vector_stride_;
   }
@@ -704,9 +708,8 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   }
 
   //! Direct vector pointer from flat vector array.
-  //! Stride is padded up to kVectorAlignment (64B) to preserve cache-line
-  //! alignment even when vector_size is not a multiple of 64.  The padding is
-  //! purely in-memory and does NOT affect the on-disk index file layout.
+  //! Stride is padded up to the configured cache-line alignment. The padding
+  //! is purely in-memory and does NOT affect the on-disk index file layout.
   ailego_force_inline const void *get_vector_ptr(node_id_t id) const {
     if (ailego_likely(vector_base_ != nullptr && id < graph_capacity_)) {
       return vector_base_ + static_cast<size_t>(id) * vector_stride_;
@@ -744,7 +747,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   };
 
   //! Flat vector array: vector bodies stored with per-vector stride
-  //! padded up to kVectorAlignment (64B) to keep each vector's starting
+  //! padded up to kVectorAlignment to keep each vector's starting
   //! address cache-line aligned. Base is page-aligned by the allocator.
   std::shared_ptr<char> vector_memory_{};
   char *vector_base_{nullptr};
@@ -765,7 +768,7 @@ class VamanaContiguousStreamerEntity : public VamanaMmapStreamerEntity {
   size_t extra_values_stride_{0};
 
   //! Cache-line alignment used for per-vector stride in the flat array.
-  static constexpr size_t kVectorAlignment = 64;
+  static constexpr size_t kVectorAlignment = AILEGO_CACHE_LINE_SIZE;
 
  private:
   static char *allocate_contiguous(size_t size);

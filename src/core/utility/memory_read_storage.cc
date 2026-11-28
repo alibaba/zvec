@@ -79,16 +79,6 @@ class MemoryReadStorage : public IndexStorage {
     }
 
     //! Read data from segment
-    size_t read(size_t offset, const void **data, size_t len) override {
-      if (ailego_unlikely(offset + len > region_size_)) {
-        if (offset > region_size_) {
-          offset = region_size_;
-        }
-        len = region_size_ - offset;
-      }
-      return block_->read(data_offset_ + offset, data, len);
-    }
-
     size_t read(size_t offset, MemoryBlock &data, size_t len) override {
       if (ailego_unlikely(offset + len > region_size_)) {
         if (offset > region_size_) {
@@ -170,7 +160,7 @@ class MemoryReadStorage : public IndexStorage {
   }
 
   //! Load a index file into container
-  int open(const std::string &path, bool) override {
+  int open(const std::string &path, bool) override try {
     rope_ = IndexMemory::Instance()->open(path);
     if (!rope_) {
       LOG_ERROR("Failed to open memory rope %s", path.c_str());
@@ -193,6 +183,9 @@ class MemoryReadStorage : public IndexStorage {
     segments_ = std::move(*unpacker.mutable_segments());
     magic_ = unpacker.magic();
     return 0;
+  } catch (const std::bad_alloc &) {
+    close();
+    return IndexError_NoMemory;
   }
 
   //! Unload all indexes
@@ -239,7 +232,7 @@ class MemoryReadStorage : public IndexStorage {
  private:
   bool checksum_validation_{false};
   uint32_t magic_{0};
-  std::map<std::string, IndexUnpacker::SegmentMeta> segments_{};
+  IndexUnpacker::SegmentMap segments_{};
   IndexMemory::Rope::Pointer rope_{};
 };
 

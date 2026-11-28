@@ -202,11 +202,11 @@ TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCount) {
   ASSERT_EQ(0, storage->open(path, false));
   auto pq_meta_segment = storage->get(DiskAnnEntity::kDiskAnnPqMetaSegmentId);
   ASSERT_NE(pq_meta_segment, nullptr);
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   ASSERT_EQ(sizeof(DiskAnnPqMeta),
-            pq_meta_segment->read(0, &data, sizeof(DiskAnnPqMeta)));
+            pq_meta_segment->read(0, data, sizeof(DiskAnnPqMeta)));
   DiskAnnPqMeta pq_meta{};
-  std::memcpy(&pq_meta, data, sizeof(pq_meta));
+  std::memcpy(&pq_meta, data.data(), sizeof(pq_meta));
   EXPECT_EQ(2U, pq_meta.chunk_num);
 }
 
@@ -240,11 +240,11 @@ TEST_F(DiskAnnBuilderTest, PrimeDimensionPreservesDefaultPqChunkCount) {
   ASSERT_EQ(0, storage->open(path, false));
   auto segment = storage->get(DiskAnnEntity::kDiskAnnPqMetaSegmentId);
   ASSERT_NE(segment, nullptr);
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   ASSERT_EQ(sizeof(DiskAnnPqMeta),
-            segment->read(0, &data, sizeof(DiskAnnPqMeta)));
+            segment->read(0, data, sizeof(DiskAnnPqMeta)));
   DiskAnnPqMeta pq_meta{};
-  std::memcpy(&pq_meta, data, sizeof(pq_meta));
+  std::memcpy(&pq_meta, data.data(), sizeof(pq_meta));
   EXPECT_EQ(8U, pq_meta.chunk_num);
 }
 
@@ -387,10 +387,10 @@ TEST_F(DiskAnnBuilderTest, MemoryLimitCapsPqChunkCountTurbo) {
   ASSERT_EQ(0, storage->open(path, false));
   auto pq_meta_segment = storage->get(DiskAnnEntity::kDiskAnnPqMetaSegmentId);
   ASSERT_NE(pq_meta_segment, nullptr);
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   ASSERT_EQ(sizeof(DiskAnnPqMeta),
-            pq_meta_segment->read(0, &data, sizeof(DiskAnnPqMeta)));
+            pq_meta_segment->read(0, data, sizeof(DiskAnnPqMeta)));
   DiskAnnPqMeta pq_meta{};
-  std::memcpy(&pq_meta, data, sizeof(pq_meta));
+  std::memcpy(&pq_meta, data.data(), sizeof(pq_meta));
   EXPECT_EQ(2U, pq_meta.chunk_num);
 }

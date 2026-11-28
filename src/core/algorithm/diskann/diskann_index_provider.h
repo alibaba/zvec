@@ -170,12 +170,8 @@ class DiskAnnIndexProvider : public IndexProvider {
     Iterator(const IndexMeta &meta, const IndexMetric::Pointer &measure,
              const DiskAnnEntity::Pointer &entity,
              const DiskAnnIndexer::Pointer &indexer)
-        : meta_(meta),
-          measure_(measure),
-          entity_(entity),
-          indexer_(indexer),
-          cur_id_(0U) {
-      cur_id_ = next_valid_id(0U);
+        : meta_(meta), measure_(measure), entity_(entity), indexer_(indexer) {
+      advance(0U);
     }
 
     bool ready() const {
@@ -190,30 +186,32 @@ class DiskAnnIndexProvider : public IndexProvider {
         // Context setup owns aligned I/O scratch space and platform resources;
         // iterators that are only inspected should not pay that cost.
         if (!context_) {
-          context_ =
-              DiskAnnContext::create_fetch_context(meta_, measure_, entity_);
+          context_ = DiskAnnContext::create_fetch_context(meta_, measure_,
+                                                          entity_, &status_);
+          if (!context_) return nullptr;
         }
-        if (!context_) {
-          return nullptr;
-        }
-        if (indexer_->get_vector(cur_id_, context_, vector_buffer_) != 0) {
-          return nullptr;
-        }
+        status_ = indexer_->get_vector(cur_id_, context_, vector_buffer_);
+        if (status_ != 0) return nullptr;
         data_loaded_ = true;
       }
       return vector_buffer_.data();
     }
 
     bool is_valid() const override {
-      return cur_id_ < static_cast<diskann_id_t>(entity_->doc_cnt());
+      return status_ == 0 && cur_id_ < entity_->doc_cnt();
+    }
+
+    int status() const override {
+      return status_;
     }
 
     uint64_t key() const override {
-      return static_cast<uint64_t>(entity_->get_key(cur_id_));
+      return current_key_;
     }
 
     void next() override {
-      cur_id_ = next_valid_id(cur_id_ + 1);
+      if (!is_valid()) return;
+      advance(cur_id_ + 1);
       data_loaded_ = false;
       vector_buffer_.clear();
     }
@@ -221,15 +219,15 @@ class DiskAnnIndexProvider : public IndexProvider {
    private:
     friend class DiskAnnProviderTestPeer;
 
-    //! Skip ids that map to ``kInvalidKey`` (deleted / never populated slots).
-    diskann_id_t next_valid_id(diskann_id_t start_id) const {
+    // Read each key once. A failed read terminates the iterator with a sticky
+    // error, while a successfully read deletion marker skips just that row.
+    void advance(diskann_id_t start_id) {
       const auto total = static_cast<diskann_id_t>(entity_->doc_cnt());
-      for (diskann_id_t i = start_id; i < total; ++i) {
-        if (entity_->get_key(i) != kInvalidKey) {
-          return i;
-        }
+      current_key_ = kInvalidKey;
+      for (cur_id_ = start_id; cur_id_ < total; ++cur_id_) {
+        status_ = entity_->read_key(cur_id_, &current_key_);
+        if (status_ != 0 || current_key_ != kInvalidKey) return;
       }
-      return total;
     }
 
     IndexMeta meta_;
@@ -239,7 +237,9 @@ class DiskAnnIndexProvider : public IndexProvider {
     mutable IndexContext::Pointer context_;
     mutable std::string vector_buffer_;
     mutable bool data_loaded_{false};
-    diskann_id_t cur_id_;
+    mutable int status_{0};
+    diskann_id_t cur_id_{0};
+    diskann_key_t current_key_{kInvalidKey};
   };
 
   IndexMeta meta_;

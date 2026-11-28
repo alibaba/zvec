@@ -17,6 +17,7 @@
 #include <memory>
 #include <ailego/parallel/lock.h>
 #include <zvec/core/framework/index_streamer.h>
+#include <zvec/core/interface/vector_source.h>
 #include "flat_streamer_entity.h"
 #include "flat_utility.h"
 
@@ -97,6 +98,14 @@ class FlatStreamer : public IndexStreamer {
                                const IndexQueryMeta &qmeta, uint32_t count,
                                Context::UPointer &context) const override;
 
+  // Candidate-only output for a contiguous reference. Returns NotImplemented
+  // without writing output if the request or storage needs full-result search.
+  int search_by_p_keys_fast(const void *query,
+                            const std::vector<uint64_t> &keys,
+                            int64_t *output_ids, float *output_scores,
+                            size_t topk, const IndexQueryMeta &qmeta,
+                            Context::UPointer &context) const;
+
   int group_by_search_impl(const void *query, const IndexQueryMeta &qmeta,
                            uint32_t count, Context::UPointer &context) const;
 
@@ -129,6 +138,10 @@ class FlatStreamer : public IndexStreamer {
 
   const FlatStreamerEntity &entity() const {
     return *entity_;
+  }
+
+  bool use_external_vector() const {
+    return use_external_vector_;
   }
 
   //! Retrieve the turbo quantizer
@@ -176,6 +189,11 @@ class FlatStreamer : public IndexStreamer {
   }
 
  private:
+  int search_external(const void *query, const IndexQueryMeta &qmeta,
+                      uint32_t count,
+                      const std::vector<std::vector<uint64_t>> *keys,
+                      Context::Pointer &context) const;
+
   //! Constants
   static constexpr uint32_t kDefaultBlockVecCount = 32u;
   static constexpr uint32_t kDefaultSegmentSize = 4 * 1024 * 1024u;
@@ -198,6 +216,7 @@ class FlatStreamer : public IndexStreamer {
   bool use_key_info_map_{true};
   uint32_t read_block_size_{0};
   bool use_contiguous_memory_{false};
+  bool use_external_vector_{false};
   std::shared_ptr<zvec::turbo::Quantizer> quantizer_{};
   std::unique_ptr<FlatStreamerEntity> entity_{};
 };

@@ -27,6 +27,7 @@
 #include <zvec/core/framework/index_factory.h>
 #include "mixed_reducer/mixed_reducer_params.h"
 #include "mixed_reducer/mixed_streamer_reducer.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -567,9 +568,8 @@ class ReadFailureReformer : public IndexReformer {
 
 class RetainingTestBuilder : public IndexBuilder {
  public:
-  explicit RetainingTestBuilder(
-      const std::string &name = "SnapshotTestBuilder",
-      ailego::ThreadPool *expected_pool = nullptr)
+  explicit RetainingTestBuilder(const std::string &name = "SnapshotTestBuilder",
+                                ailego::ThreadPool *expected_pool = nullptr)
       : expected_pool_(expected_pool) {
     set_name(name);
   }
@@ -579,7 +579,8 @@ class RetainingTestBuilder : public IndexBuilder {
     train_used_expected_pool = uses_expected_pool(threads);
     return 0;
   }
-  int build(IndexThreads::Pointer threads, IndexHolder::Pointer input) override {
+  int build(IndexThreads::Pointer threads,
+            IndexHolder::Pointer input) override {
     build_thread_count = threads ? threads->count() : 0;
     build_used_expected_pool = uses_expected_pool(threads);
     holder = std::move(input);
@@ -616,6 +617,60 @@ class RetainingTestBuilder : public IndexBuilder {
   }
 
   ailego::ThreadPool *expected_pool_{nullptr};
+  Stats stats_;
+};
+
+class ThreadRecordingConverter : public IndexConverter {
+ public:
+  ThreadRecordingConverter(IndexMeta meta, ailego::ThreadPool *expected_pool)
+      : meta_(std::move(meta)), expected_pool_(expected_pool) {}
+
+  int init(const IndexMeta &, const ailego::Params &) override {
+    return 0;
+  }
+  int cleanup() override {
+    result_.reset();
+    return 0;
+  }
+  int train(IndexHolder::Pointer) override {
+    legacy_train_called = true;
+    return IndexError_Runtime;
+  }
+  int train(IndexHolder::Pointer, IndexThreads::Pointer threads) override {
+    train_thread_count = threads->count();
+    auto group = threads->make_group();
+    group->submit(ailego::Closure::New([this]() {
+      used_expected_pool.store(expected_pool_->indexof_this() >= 0,
+                               std::memory_order_relaxed);
+    }));
+    group->wait_finish();
+    return 0;
+  }
+  int transform(IndexHolder::Pointer holder) override {
+    result_ = std::move(holder);
+    return 0;
+  }
+  int dump(const IndexDumper::Pointer &) override {
+    return 0;
+  }
+  const Stats &stats() const override {
+    return stats_;
+  }
+  IndexHolder::Pointer result() const override {
+    return result_;
+  }
+  const IndexMeta &meta() const override {
+    return meta_;
+  }
+
+  size_t train_thread_count{0};
+  std::atomic<bool> used_expected_pool{false};
+  bool legacy_train_called{false};
+
+ private:
+  IndexMeta meta_;
+  ailego::ThreadPool *expected_pool_;
+  IndexHolder::Pointer result_;
   Stats stats_;
 };
 
@@ -726,8 +781,7 @@ TEST(MergedProviderIndexHolderTest,
      IvfBuilderUsesProviderBackedInputAndReducerThreadPool) {
   auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
   ailego::ThreadPool pool(2, false);
-  auto builder =
-      std::make_shared<RetainingTestBuilder>("IVFBuilder", &pool);
+  auto builder = std::make_shared<RetainingTestBuilder>("IVFBuilder", &pool);
   MixedStreamerReducer reducer;
   ailego::Params params;
   params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
@@ -748,6 +802,29 @@ TEST(MergedProviderIndexHolderTest,
   ASSERT_NE(nullptr, merged);
   EXPECT_EQ((std::vector<std::pair<uint64_t, float>>{{0, 0.0F}, {1, 1.0F}}),
             ReadAll(merged));
+}
+
+TEST(MergedProviderIndexHolderTest, ConverterUsesReducerThreadPool) {
+  auto source = MakeStreamer({{0, 0.0F}, {1, 1.0F}});
+  ailego::ThreadPool pool(2, false);
+  auto converter =
+      std::make_shared<ThreadRecordingConverter>(source->meta(), &pool);
+  auto builder = std::make_shared<RetainingTestBuilder>("IVFBuilder", &pool);
+  MixedStreamerReducer reducer;
+  ailego::Params params;
+  params.set(PARAM_MIXED_STREAMER_REDUCER_NUM_OF_ADD_THREADS, 1);
+  ASSERT_EQ(0, reducer.init(params));
+  reducer.set_thread_pool(&pool);
+  ASSERT_EQ(0, reducer.set_target_streamer_wiht_info(
+                   builder, source, converter, nullptr,
+                   IndexQueryMeta(IndexMeta::DataType::DT_FP32, kDimension)));
+  ASSERT_EQ(0, reducer.feed_streamer_with_reformer(source, nullptr));
+  ASSERT_EQ(0, reducer.reduce({}));
+  EXPECT_EQ(pool.count(), converter->train_thread_count);
+  EXPECT_TRUE(converter->used_expected_pool);
+  EXPECT_FALSE(converter->legacy_train_called);
+  EXPECT_TRUE(builder->train_used_expected_pool);
+  EXPECT_TRUE(builder->build_used_expected_pool);
 }
 
 TEST(MergedProviderIndexHolderTest, PlainTurboFp32KeepsOrdinalReads) {
@@ -1044,9 +1121,11 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsReleaseBlocksBeforeNextRead) {
 TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   struct RestorePoolBudget {
     ~RestorePoolBudget() {
-      EXPECT_EQ(0, ailego::MemoryLimitPool::get_instance().init(capacity));
+      EXPECT_EQ(
+          0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(capacity));
     }
-    const size_t capacity{ailego::MemoryLimitPool::get_instance().capacity()};
+    const size_t capacity{
+        ::zvec::ailego::PoolPayloadBudget::get_instance().capacity()};
   } restore_budget;
   struct BackingFile {
     ~BackingFile() {
@@ -1055,9 +1134,11 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
     const std::string path{"merged_provider_ordinal_read_test.bin"};
   } backing;
   constexpr size_t kPageCount = 2;
+  // Fit both data pages and the slab header so the pin assertions do not
+  // depend on eviction between reads.
   ASSERT_EQ(
-      0, ailego::MemoryLimitPool::get_instance().init(
-             kPageCount * ailego::kVectorPageSize +
+      0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+             (kPageCount + 1) * ailego::kVectorPageSize +
              ailego::VecBufferPool::metadata_bytes_for_page_count(kPageCount)));
   {
     ailego::File file;
@@ -1083,6 +1164,7 @@ TEST(MergedProviderIndexHolderTest, OrdinalReadsDoNotAccumulatePagePins) {
   uint64_t key = 99;
   const void *data = nullptr;
   for (size_t ordinal : {0u, 1u, 1u, 0u}) {
+    SCOPED_TRACE(ordinal);
     ASSERT_EQ(0, reader->read(ordinal, &key, &data));
     EXPECT_EQ(ordinal, key);
     ASSERT_NE(nullptr, data);

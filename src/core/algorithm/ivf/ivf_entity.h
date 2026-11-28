@@ -13,9 +13,11 @@
 // limitations under the License.
 #pragma once
 
-#include <core/quantizer/quantizer_params.h>
+#include <functional>
+#include <string_view>
+#include <turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h>
+#include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_framework.h>
-#include "metric/metric_params.h"
 #include "ivf_distance_calculator.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
@@ -44,22 +46,92 @@ class IVFEntity {
   //! load the index from container
   virtual int load(const IndexStorage::Pointer &container);
 
+  //! Prepare the posting distance once per query, after centroid selection.
+  int bind_query(const void *query, const IndexQueryMeta &qmeta);
+
+  const turbo::DistanceImpl &query_distance() const {
+    return query_distance_;
+  }
+
+  //! Match the bound posting kernel without changing its layout or arithmetic.
+  turbo::ManyToManyDistanceFunc many_distance() const;
+
+  bool column_many_supported() const {
+    return !quantizer_ && calculator_ && calculator_->column_many_supported();
+  }
+
+  turbo::DistanceImpl column_query(const void *query,
+                                   const IndexQueryMeta &qmeta) const {
+    return calculator_->column_query(query, qmeta);
+  }
+
+  //! Scan one list for queries sharing the same next centroid. Column-major
+  //! blocks retain their matrix kernel and do not require a Turbo row kernel.
+  int search_many(size_t inverted_list_id,
+                  const std::vector<const turbo::DistanceImpl *> &queries,
+                  const turbo::ManyToManyDistanceFunc &distance,
+                  const std::vector<IndexDocumentHeap *> &heaps,
+                  const std::vector<IndexContext::Stats *> &stats,
+                  uint32_t *scan_count) const;
+
+  const turbo::Quantizer::Pointer &quantizer() const {
+    return quantizer_;
+  }
+
+  // Diagnostic A/B switch: keep the same codes, candidates and distance
+  // estimators, but refine every unfiltered candidate when disabled.
+  void set_packed_scan_pruning(bool enabled) {
+    packed_scan_pruning_ = enabled;
+  }
+
+  void set_packed_scan_reuse_dot(bool enabled) {
+    packed_scan_reuse_dot_ = enabled;
+  }
+
+  struct CandidateVisitor {
+    std::function<void(uint64_t, float)> consume;
+    // Threshold in internal distance units for this candidate's group.
+    // An absent callback disables pruning by the grouped result collector.
+    std::function<float(uint64_t)> threshold;
+    explicit operator bool() const {
+      return bool(consume);
+    }
+    void operator()(uint64_t key, float score) const {
+      consume(key, score);
+    }
+  };
+
   //! search in inverted list with filter
   int search(size_t inverted_list_id, const void *query,
              const IndexFilter &filter, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search in inverted list without filter
   int search(size_t inverted_list_id, const void *query, uint32_t *scan_count,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search all inverted list with filter
   int search(const void *query, const IndexFilter &filter,
-             IndexDocumentHeap *heap, IndexContext::Stats *context_stats) const;
+             IndexDocumentHeap *heap, IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
 
   //! search all inverted list without filter
   int search(const void *query, IndexDocumentHeap *heap,
-             IndexContext::Stats *context_stats) const;
+             IndexContext::Stats *context_stats,
+             const CandidateVisitor &visitor = {}) const;
+
+  //! Score only the requested IDs in this index's posting score space.
+  int search_by_keys(const std::vector<uint64_t> &keys,
+                     const IndexFilter &filter, IndexDocumentHeap *heap,
+                     IndexContext::Stats *stats) const;
+
+  //! Search only the specified primary keys, using posting-space distances.
+  int search_by_p_keys(const void *query, const std::vector<uint64_t> &p_keys,
+                       const IndexFilter &filter, IndexDocumentHeap *heap,
+                       IndexContext::Stats *context_stats,
+                       const CandidateVisitor &visitor = {}) const;
 
   //! Clone the entity
   virtual IVFEntity::Pointer clone() const;
@@ -107,8 +179,10 @@ class IVFEntity {
 
   //! Retrieve a block of vectors
   const void *read_block(size_t inverted_list_id, size_t local_block_id,
-                         size_t *vecs_count) const {
-    auto iv_meta = this->inverted_list_meta(inverted_list_id);
+                         size_t *vecs_count,
+                         IndexStorage::MemoryBlock &data) const {
+    IndexStorage::MemoryBlock meta_block;
+    auto iv_meta = this->inverted_list_meta(inverted_list_id, meta_block);
     if (!iv_meta || local_block_id >= iv_meta->block_count) {
       LOG_ERROR("Failed to read inverted list, listId=%zu blockIdx=%zu",
                 inverted_list_id, local_block_id);
@@ -121,54 +195,54 @@ class IVFEntity {
     ailego_assert_with(*vecs_count <= header_.block_vector_count,
                        "invalid vecs");
     const size_t off = iv_meta->offset + local_block_id * header_.block_size;
-    const size_t size = *vecs_count * meta_.element_size();
-    const void *data = nullptr;
-    if (inverted_->read(off, &data, size) != size) {
+    const size_t size = packed_quantizer_ ? header_.block_size
+                                          : *vecs_count * meta_.element_size();
+    if (inverted_->read(off, data, size) != size) {
       LOG_ERROR("Failed to read block off=%zu size=%zu", off, size);
       return nullptr;
     }
 
-    return data;
+    return data.data();
   }
 
-  //! Retrieve the inverted list meta
-  const InvertedListMeta *inverted_list_meta(size_t inverted_list_id) const {
-    const void *data = nullptr;
+  //! Retrieve the inverted list meta; the caller owns its read lifetime.
+  const InvertedListMeta *inverted_list_meta(
+      size_t inverted_list_id, IndexStorage::MemoryBlock &data) const {
     const size_t size = sizeof(InvertedListMeta);
     const size_t offset = inverted_list_id * size;
-    if (inverted_meta_->read(offset, &data, size) != size) {
+    if (inverted_meta_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read inverted meta, id=%zu, size=%zu",
                 inverted_list_id, size);
       return nullptr;
     }
 
-    return static_cast<const InvertedListMeta *>(data);
+    return static_cast<const InvertedListMeta *>(data.data());
   }
 
-  //! Retrieve the keys by consecutive local ids
-  const uint64_t *get_keys(size_t id, size_t count) const {
-    const void *data = nullptr;
+  //! Retrieve consecutive keys; the caller owns their read lifetime.
+  const uint64_t *get_keys(size_t id, size_t count,
+                           IndexStorage::MemoryBlock &data) const {
     const size_t offset = id * sizeof(uint64_t);
     const size_t size = count * sizeof(uint64_t);
-    if (keys_->read(offset, &data, size) != size) {
+    if (keys_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read keys, id=%zu, size=%zu", id, size);
       return nullptr;
     }
 
-    return static_cast<const uint64_t *>(data);
+    return static_cast<const uint64_t *>(data.data());
   }
 
   //! Retrieve the key by local id
   uint64_t get_key(size_t id) const {
-    const void *data = nullptr;
+    IndexStorage::MemoryBlock data;
     const size_t offset = id * sizeof(uint64_t);
     const size_t size = sizeof(uint64_t);
-    if (keys_->read(offset, &data, size) != size) {
+    if (keys_->read(offset, data, size) != size) {
       LOG_ERROR("Failed to read key, id=%zu", id);
       return kInvalidKey;
     }
 
-    return *static_cast<const uint64_t *>(data);
+    return *static_cast<const uint64_t *>(data.data());
   }
 
   //! Test whether the sorted-rank to local-id mapping is available.
@@ -189,13 +263,9 @@ class IVFEntity {
   }
 
   //! Retrieve vector by local id
-  const void *get_vector(size_t id) const;
-
-  //! Retrieve vector by local id
-  const void *get_vector_by_key(uint64_t key) const;
-
   int get_vector(size_t id, IndexStorage::MemoryBlock &block) const;
 
+  //! Retrieve vector by primary key
   int get_vector_by_key(uint64_t key, IndexStorage::MemoryBlock &block) const;
 
   uint32_t key_to_id(uint64_t key) const;
@@ -203,37 +273,54 @@ class IVFEntity {
   //! Transform a query
   int transform(const void *query, const IndexQueryMeta &qmeta,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, out, ometa);
   }
 
   //! Transform queries
   int transform(const void *query, const IndexQueryMeta &qmeta, uint32_t count,
                 const void **out, IndexQueryMeta *ometa) const {
+    if (quantizer_) {
+      *out = query;
+      *ometa = qmeta;
+      return 0;
+    }
     return reformer_.transform(query, qmeta, count, out, ometa);
   }
 
   //! Normalize the score in query part
   void normalize(size_t qidx, IndexDocumentHeap *heap) const {
+    if (quantizer_) {
+      return;
+    }
     return reformer_.normalize(qidx, heap);
   }
 
   //! Retrieve the value for each inverted list to multiply for normalizing
   float inverted_list_normalize_value(size_t inverted_list_id) const {
+    if (quantizer_) {
+      return 1.0f;
+    }
     if (norm_value_ != 0.0f) {
       return norm_value_;
     }
 
     // ailego_assert_with(integer_quantizer_params_, "nullptr");
     if (integer_quantizer_params_ != nullptr) {
-      const void *data = nullptr;
+      IndexStorage::MemoryBlock data;
       size_t size = sizeof(InvertedIntegerQuantizerParams);
       size_t off = inverted_list_id * size;
-      if (integer_quantizer_params_->read(off, &data, size) != size) {
+      if (integer_quantizer_params_->read(off, data, size) != size) {
         LOG_ERROR("Failed to read data from segment, off=%zu", off);
         return 1.0f;
       }
       auto scale =
-          static_cast<const InvertedIntegerQuantizerParams *>(data)->scale;
+          static_cast<const InvertedIntegerQuantizerParams *>(data.data())
+              ->scale;
       return this->convert_to_normalize_value(scale);
     }
 
@@ -339,6 +426,31 @@ class IVFEntity {
   //! Load the header segment
   int load_header(const IndexStorage::Pointer &container);
 
+  int load_quantizer(const IndexStorage::Pointer &container);
+
+  size_t posting_read_size(size_t offset, size_t blocks, size_t items) const;
+
+  //! Unlike fetch, distance evaluation must not read retained original vectors.
+  int read_posting_vector(size_t id, IndexStorage::MemoryBlock &block) const;
+
+  //! Distinguish missing keys from storage read failures.
+  int key_to_id(uint64_t key, uint32_t *id) const;
+
+  int key_normalize_value(uint32_t id, float *value) const;
+
+  void query_features_distance(const void *query, const void *features,
+                               size_t count, float *out) const {
+    if (packed_quantizer_) {
+      packed_quantizer_->calc_distance_packed_block(features, count,
+                                                    packed_query_.data(), out);
+    } else if (quantizer_ || distance_quantizer_) {
+      calculator_->query_features_distance(query_distance_, features, count,
+                                           out);
+    } else {
+      calculator_->query_features_distance(query, features, count, out);
+    }
+  }
+
   //! Convert the int8 quantizer scale to normalize value
   float convert_to_normalize_value(float scale) const {
     auto v = scale == 0.0 ? 1.0 : (1.0 / scale);
@@ -352,7 +464,34 @@ class IVFEntity {
   //! Members
   IndexMeta meta_{};
   mutable IVFReformerWrapper reformer_{};
+  mutable IndexStorage::Segment::ScatterBlock scatter_data_{};
   IVFDistanceCalculator::Pointer calculator_{};
+  turbo::Quantizer::Pointer quantizer_{};
+  // Legacy rows are already encoded. This helper only supplies distance
+  // kernels; it must not change query transformation or provider decoding.
+  turbo::Quantizer::Pointer distance_quantizer_{};
+  // Each context owns its entity clone and therefore its query buffer/LUT.
+  std::string query_encoding_{};
+  turbo::DistanceImpl query_distance_{};
+  std::unique_ptr<turbo::BlockScanner> block_scanner_{};
+  IndexStorage::Segment::Pointer scan_blocks_{};
+  std::shared_ptr<const std::vector<size_t>> scan_list_offsets_{};
+  int search_packed(size_t list_id, const IndexFilter *filter,
+                    uint32_t *scan_count, IndexDocumentHeap *heap,
+                    IndexContext::Stats *stats,
+                    const CandidateVisitor &visitor) const;
+  template <bool HasFilter, bool HasVisitor>
+  int search_packed_impl(size_t list_id, const IndexFilter *filter,
+                         uint32_t *scan_count, IndexDocumentHeap *heap,
+                         IndexContext::Stats *stats,
+                         const CandidateVisitor &visitor) const;
+  bool packed_scan_pruning_{true};
+  bool packed_scan_reuse_dot_{false};
+  mutable std::vector<uint64_t> scan_keys_{};
+  mutable std::vector<char> scan_buffer_{};
+  turbo::PackedCodeQuantizer *packed_quantizer_{nullptr};
+  // Non-owning view into query_encoding_; both belong to this context.
+  std::string_view packed_query_{};
   IndexStorage::Pointer container_{};
   IndexStorage::Segment::Pointer inverted_{};
   IndexStorage::Segment::Pointer inverted_meta_{};
@@ -364,6 +503,7 @@ class IVFEntity {
   mutable std::string vector_{};  // temporary buffer for colomn major order
   //! Temporary buffer for one row-major vector split across storage pages.
   mutable std::vector<uint8_t> scatter_vector_{};
+  mutable std::vector<float> scatter_distances_{};
   float norm_value_{0.0f};  // normalize the inverted vector to orignal score
   bool norm_value_sqrt_{false};  // does the norm value need to sqrt
   InvertedIndexHeader header_;

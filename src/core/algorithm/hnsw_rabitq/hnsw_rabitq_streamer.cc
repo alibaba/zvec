@@ -17,6 +17,7 @@
 #include <ailego/internal/cpu_features.h>
 #include <ailego/pattern/defer.h>
 #include <ailego/utility/memory_helper.h>
+#include <zvec/core/interface/constants.h>
 #include "algorithm/hnsw_rabitq/rabitq_reformer.h"
 #include "zvec/ailego/container/params.h"
 #include "zvec/ailego/logger/logger.h"
@@ -173,7 +174,7 @@ int HnswRabitqStreamer::init(const IndexMeta &imeta,
   uint32_t total_bits = 0;
   params.get(PARAM_RABITQ_TOTAL_BITS, &total_bits);
   if (total_bits == 0) {
-    total_bits = kDefaultRabitqTotalBits;
+    total_bits = core_interface::kDefaultRabitqTotalBits;
   }
   if (total_bits < 1 || total_bits > 9) {
     LOG_ERROR("Invalid total_bits: %zu, must be in [1, 9]", (size_t)total_bits);
@@ -419,7 +420,10 @@ int HnswRabitqStreamer::close() {
 
   stats_.clear();
   meta_.set_metric(metric_->name(), 0, metric_->params());
-  entity_.set_index_meta(meta_);
+  if (entity_.dirty()) {
+    int ret = entity_.set_index_meta(meta_);
+    if (ret != 0) return ret;
+  }
   int ret = entity_.close();
   if (ret != 0) {
     return ret;

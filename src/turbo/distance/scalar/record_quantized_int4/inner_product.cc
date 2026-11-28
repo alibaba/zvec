@@ -14,6 +14,7 @@
 
 #include "scalar/record_quantized_int4/inner_product.h"
 #include <cstdint>
+#include "common/record_metadata.h"
 #include "scalar/record_quantized_int4/common.h"
 
 namespace zvec::turbo::scalar {
@@ -25,10 +26,8 @@ static void minus_inner_product_int4_impl(const void *a, const void *b,
   const size_t p = original_dim >> 1;  // params offset in bytes
   float ip = internal::ip_int4_scalar(a, b, original_dim);
 
-  const float *a_tail =
-      reinterpret_cast<const float *>(reinterpret_cast<const uint8_t *>(a) + p);
-  const float *b_tail =
-      reinterpret_cast<const float *>(reinterpret_cast<const uint8_t *>(b) + p);
+  const record::Metadata a_tail(reinterpret_cast<const uint8_t *>(a) + p);
+  const record::Metadata b_tail(reinterpret_cast<const uint8_t *>(b) + p);
 
   float ma = a_tail[0];
   float mb = a_tail[1];

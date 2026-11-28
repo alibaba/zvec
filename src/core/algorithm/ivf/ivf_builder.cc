@@ -17,6 +17,8 @@
 #include <ailego/pattern/defer.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "algorithm/cluster/cluster_params.h"
+#include "turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h"
+#include "turbo/quantizer/quantizer.h"
 #include "ivf_dumper.h"
 
 namespace zvec {
@@ -171,6 +173,76 @@ int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params) {
   return 0;
 }
 
+int IVFBuilder::init(const IndexMeta &meta, const ailego::Params &params,
+                     const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) {
+  if (!quantizer) {
+    return this->init(meta, params);
+  }
+  if (state_ != INIT) {
+    LOG_ERROR("IVFBuilder state wrong. state=%d", state_);
+    return IndexError_Logic;
+  }
+  if (meta.major_order() == IndexMeta::MO_COLUMN ||
+      quantizer->meta().major_order() == IndexMeta::MO_COLUMN) {
+    LOG_ERROR("Turbo IVF postings require row major order");
+    return IndexError_Unsupported;
+  }
+  if (params.has(PARAM_IVF_BUILDER_QUANTIZER_CLASS) ||
+      params.has(PARAM_IVF_BUILDER_QUANTIZER_PARAMS) ||
+      params.get_as_bool(PARAM_IVF_BUILDER_QUANTIZE_BY_CENTROID)) {
+    LOG_ERROR("Turbo IVF cannot combine legacy posting quantizers");
+    return IndexError_Unsupported;
+  }
+
+  // The descriptor is required to reconstruct the quantizer when loading.
+  IndexMeta raw_meta = meta;
+  if (raw_meta.quantizer_name().empty()) {
+    raw_meta.set_quantizer(quantizer->meta().quantizer_name(),
+                           quantizer->meta().quantizer_revision(),
+                           quantizer->meta().quantizer_params());
+  }
+  if (raw_meta.quantizer_name().empty()) {
+    LOG_ERROR("Turbo IVF requires a quantizer descriptor in index metadata");
+    return IndexError_InvalidArgument;
+  }
+
+  bool matched_input =
+      (meta.data_type() == IndexMeta::DT_FP32 &&
+       quantizer->input_data_type() == turbo::DataType::kFp32) ||
+      (meta.data_type() == IndexMeta::DT_FP16 &&
+       quantizer->input_data_type() == turbo::DataType::kFp16);
+  if (!matched_input || quantizer->dim() <= 0 ||
+      meta.dimension() != static_cast<uint32_t>(quantizer->dim()) ||
+      meta.extra_meta_size() != 0 ||
+      meta.metric_name() != quantizer->meta().metric_name() ||
+      quantizer->quantized_datapoint_vector_length() == 0 ||
+      quantizer->meta().element_size() !=
+          quantizer->quantized_datapoint_vector_length()) {
+    LOG_ERROR("Turbo quantizer does not match IVF input metadata");
+    return IndexError_Mismatch;
+  }
+
+  turbo_quantizer_ = quantizer;
+  ailego::Params posting_params = params;
+  if (dynamic_cast<turbo::PackedCodeQuantizer *>(quantizer.get())) {
+    posting_params.set(PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT, uint32_t{32});
+    posting_params.set(PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES, true);
+  }
+  int ret = this->init(raw_meta, posting_params);
+  if (ret != 0) {
+    turbo_quantizer_.reset();
+    return ret;
+  }
+  quantized_meta_ = quantizer->meta();
+  quantized_meta_.set_quantizer(meta_.quantizer_name(),
+                                meta_.quantizer_revision(),
+                                meta_.quantizer_params());
+  quantized_meta_.set_reformer(std::string(), 0, ailego::Params());
+  quantized_meta_.set_converter(std::string(), 0, ailego::Params());
+  quantized_meta_.set_major_order(IndexMeta::MO_ROW);
+  return 0;
+}
+
 int IVFBuilder::cleanup() {
   LOG_INFO("Begin IVFBuilder::cleanup");
 
@@ -191,6 +263,7 @@ int IVFBuilder::cleanup() {
 
   labels_.clear();
   centroid_index_.reset();
+  searcher_centroid_index_.reset();
   holder_.reset();
   source_reader_.reset();
   source_holder_.reset();
@@ -198,6 +271,7 @@ int IVFBuilder::cleanup() {
   converter_.reset();
   quantized_meta_ = meta_;
   quantizers_.clear();
+  turbo_quantizer_.reset();
 
   error_ = false;
   err_code_ = 0;
@@ -207,6 +281,7 @@ int IVFBuilder::cleanup() {
   cluster_auto_tuning_ = false;
   store_original_features_ = false;
   quantize_by_centroid_ = false;
+  block_vector_count_ = kDefaultBlockCount;
 
   LOG_INFO("End IVFBuilder::cleanup");
 
@@ -243,6 +318,9 @@ int IVFBuilder::train(IndexThreads::Pointer threads,
                        converter_->name().c_str());
     converted_meta_ = converter_->meta();
     holder = converter_->result();
+  }
+  if (turbo_quantizer_) {
+    converted_meta_.set_quantizer(std::string(), 0, ailego::Params());
   }
 
   ailego::Params train_params;
@@ -305,6 +383,9 @@ int IVFBuilder::train(const IndexTrainer::Pointer &trainer) {
     converted_meta_ = meta;
   }
 
+  if (turbo_quantizer_) {
+    converted_meta_.set_quantizer(std::string(), 0, ailego::Params());
+  }
   centroid_index_ = std::make_shared<IVFCentroidIndex>();
   if (!centroid_index_) {
     return IndexError_NoMemory;
@@ -360,6 +441,9 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     LOG_ERROR("Input holder doesn't match index meta while building index");
     return IndexError_Mismatch;
   }
+  if (holder->count() > std::numeric_limits<uint32_t>::max()) {
+    return IndexError_Mismatch;
+  }
   if (!threads) {
     threads = std::make_shared<SingleQueueIndexThreads>(thread_count_, false);
     if (!threads) {
@@ -395,7 +479,20 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
 
   IndexHolder::Pointer converted_holder = source_holder_;
   if (!source_holder_) {
-    holder_ = std::make_shared<RandomAccessIndexHolder>(meta_);
+    std::shared_ptr<const void> lifetime;
+    auto *stable = dynamic_cast<StableVectorHolder *>(holder.get());
+    int ret = stable ? stable->retain_stable_data(&lifetime)
+                     : IndexError_NotImplemented;
+    if (ret == 0) {
+      if (!lifetime) return IndexError_Runtime;
+      LOG_INFO(
+          "Using stable source vectors for IVF: count=%zu, saved_bytes=%zu",
+          holder->count(), holder->count() * meta_.element_size());
+    } else if (ret != IndexError_NotImplemented) {
+      return ret;
+    }
+    holder_ =
+        std::make_shared<RandomAccessIndexHolder>(meta_, std::move(lifetime));
     if (!holder_) {
       return IndexError_NoMemory;
     }
@@ -407,6 +504,8 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
       return IndexError_NoMemory;
     }
     for (; iter->is_valid(); iter->next()) {
+      if (iter->status() != 0) return iter->status();
+      if (holder_->count() >= holder->count()) return IndexError_Mismatch;
       const uint64_t key = iter->key();
       if (iter->status() != 0) {
         return iter->status();
@@ -423,6 +522,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     if (iter->status() != 0) {
       return iter->status();
     }
+    if (holder_->count() != holder->count()) return IndexError_Mismatch;
     converted_holder = holder_;
   }
 
@@ -448,7 +548,7 @@ int IVFBuilder::build(IndexThreads::Pointer threads,
     }
   }
 
-  ret = this->prepare_quantizer(threads.get());
+  ret = this->prepare_quantizer(threads);
   ivf_check_error_code(ret);
 
   stats_.set_built_costtime(timer.milli_seconds());
@@ -581,7 +681,8 @@ int IVFBuilder::parse_clustering_params(const ailego::Params &params) {
   cluster_class_ = params.get_as_string(PARAM_IVF_BUILDER_CLUSTER_CLASS);
   if (cluster_class_.empty()) {
     // OptKmeansCluster does not support custom metric
-    cluster_class_ = meta_.metric_name() == kMipsMetricName
+    cluster_class_ = (meta_.metric_name() == kMipsMetricName ||
+                      (turbo_quantizer_ && meta_.metric_name() == "Cosine"))
                          ? "KmeansCluster"
                          : "OptKmeansCluster";
     LOG_INFO("Using [%s] as default cluster class", cluster_class_.c_str());
@@ -609,6 +710,12 @@ int IVFBuilder::parse_general_params(const ailego::Params &params) {
   //! Prepare Converter for training
   if (meta_.metric_name() == kIPMetricName) {
     converter_class_ = kMipsConverterName;
+  } else if (turbo_quantizer_ && meta_.metric_name() == "Cosine") {
+    // The centroid metric expects normalized components followed by the
+    // original norm. Posting quantization still receives the raw holder.
+    converter_class_ = meta_.data_type() == IndexMeta::DT_FP16
+                           ? "CosineHalfFloatConverter"
+                           : "CosineFp32Converter";
   }
   params.get(PARAM_IVF_BUILDER_CONVERTER_CLASS, &converter_class_);
   if (!converter_class_.empty()) {
@@ -617,6 +724,12 @@ int IVFBuilder::parse_general_params(const ailego::Params &params) {
     converter_ =
         CreateAndInitConverter(meta_, converter_class_, converter_params);
     ivf_assert(converter_, IndexError_NoExist);
+    if (turbo_quantizer_ && meta_.metric_name() == "Cosine") {
+      // Validate externally supplied trainers against the centroid layout,
+      // rather than accepting a trainer fitted to unnormalized raw vectors.
+      converted_meta_ = converter_->meta();
+      converted_meta_.set_quantizer(std::string(), 0, ailego::Params());
+    }
   }
 
   params_.get(PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT, &block_vector_count_);
@@ -628,7 +741,8 @@ int IVFBuilder::parse_general_params(const ailego::Params &params) {
     LOG_ERROR("block_vector_count only can be [1|2|4|8|16|32].");
     return IndexError_InvalidArgument;
   }
-  if (block_vector_count_ * meta_.element_size() % 32 != 0) {
+  if (!turbo_quantizer_ &&
+      block_vector_count_ * meta_.element_size() % 32 != 0) {
     LOG_ERROR("block_vector_count * element_size not align with 32 bytes.");
     return IndexError_InvalidArgument;
   }
@@ -752,25 +866,50 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
       source_reader_->reset();
     }
   });
-  int ret = check_and_update_major_order(quantized_meta_);
-  ivf_check_error_code(ret);
+  int ret = 0;
+  if (!turbo_quantizer_) {
+    ret = check_and_update_major_order(quantized_meta_);
+    ivf_check_error_code(ret);
+  }
 
+  IndexMeta posting_meta = quantized_meta_;
+  posting_meta.mutable_attributes()->erase(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE);
+  if (turbo_quantizer_) {
+    posting_meta.mutable_attributes()->set(IVF_TURBO_FORMAT_VERSION_ATTRIBUTE,
+                                           kIVFTurboFormatVersion);
+  }
   IVFDumper::Pointer ivf_dumper = std::make_shared<IVFDumper>(
-      quantized_meta_, dumper, centroid_index_->centroids_count(),
-      block_vector_count_);
+      posting_meta, dumper, centroid_index_->centroids_count(),
+      block_vector_count_, turbo_quantizer_);
   if (!ivf_dumper) {
     LOG_ERROR("Alloc IVFDumper failed");
     return IndexError_NoMemory;
   }
 
   //! Dump inverted vectors
+  ivf_dumper->enable_block_scan(turbo_quantizer_);
   std::vector<uint32_t> dumped_ids;
   std::function<void(uint32_t)> record_dumped_id = [&](uint32_t) {};
   if (store_original_features_) {
     dumped_ids.reserve(stats_.built_count());
     record_dumped_id = [&](uint32_t id) { dumped_ids.emplace_back(id); };
   }
-  if (quantizers_.size() == 0) {
+  if (turbo_quantizer_) {
+    std::string code(turbo_quantizer_->quantized_datapoint_vector_length(),
+                     '\0');
+    for (size_t i = 0; i < labels_.size(); ++i) {
+      for (auto id : labels_[i]) {
+        uint64_t key = 0;
+        const void *data = nullptr;
+        ret = read_vector(id, &key, &data);
+        ivf_check_error_code(ret);
+        turbo_quantizer_->quantize_data(data, &code[0]);
+        record_dumped_id(id);
+        ret = ivf_dumper->dump_inverted_vector(i, key, code.data());
+        ivf_check_error_code(ret);
+      }
+    }
+  } else if (quantizers_.size() == 0) {
     //! No quantizer for inverted vectors
     for (size_t i = 0; i < centroid_index_->centroids_count(); ++i) {
       ailego_assert_with(i < labels_.size(), "Index Overflow");
@@ -826,6 +965,11 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
   ret = ivf_dumper->dump_quantizer_params(quantizers_);
   ivf_check_error_code(ret);
 
+  if (turbo_quantizer_) {
+    ret = ivf_dumper->dump_turbo_quantizer(turbo_quantizer_);
+    ivf_check_error_code(ret);
+  }
+
   auto centroid_index =
       searcher_centroid_index_ ? searcher_centroid_index_ : centroid_index_;
   ret = ivf_dumper->dump_centroid_index(centroid_index->data(),
@@ -848,7 +992,31 @@ int IVFBuilder::dump_index(const IndexDumper::Pointer &dumper) {
   return 0;
 }
 
-int IVFBuilder::prepare_quantizer(IndexThreads *threads) {
+int IVFBuilder::prepare_quantizer(const IndexThreads::Pointer &threads) {
+  if (turbo_quantizer_) {
+    if (turbo_quantizer_->require_train()) {
+      IndexHolder::Pointer training_data =
+          source_holder_ ? source_holder_ : holder_;
+      int ret = turbo_quantizer_->type() == turbo::QuantizeType::kRabit
+                    ? turbo_quantizer_->train(training_data, threads)
+                    : turbo_quantizer_->train(training_data, thread_count_);
+      ivf_check_with_msg(ret, "Failed to train Turbo IVF posting quantizer");
+    }
+    quantized_meta_ = turbo_quantizer_->meta();
+    if (quantized_meta_.element_size() !=
+        turbo_quantizer_->quantized_datapoint_vector_length()) {
+      LOG_ERROR("Turbo IVF posting metadata does not match encoded length");
+      return IndexError_Mismatch;
+    }
+    quantized_meta_.set_quantizer(meta_.quantizer_name(),
+                                  meta_.quantizer_revision(),
+                                  meta_.quantizer_params());
+    quantized_meta_.set_reformer(std::string(), 0, ailego::Params());
+    quantized_meta_.set_converter(std::string(), 0, ailego::Params());
+    quantized_meta_.set_major_order(IndexMeta::MO_ROW);
+    return 0;
+  }
+
   std::string quantizer_name;
   params_.get(PARAM_IVF_BUILDER_QUANTIZER_CLASS, &quantizer_name);
   if (quantizer_name.empty()) {

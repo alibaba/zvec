@@ -16,6 +16,7 @@
 #include <zvec/core/framework/index_builder.h>
 #include <zvec/core/framework/index_meta.h>
 #include "utility/ordinal_access_holder.h"
+#include "utility/stable_vector_holder.h"
 #include "ivf_centroid_index.h"
 
 namespace zvec {
@@ -38,6 +39,13 @@ class IVFBuilder : public IndexBuilder {
  public:
   //! Initialize the builder
   int init(const IndexMeta &meta, const ailego::Params &params) override;
+
+  //! Initialize with an initialized Turbo quantizer for row-major postings.
+  //! Meta describes raw input vectors, retained for centroid training and
+  //! assignment. Meta (or quantizer->meta()) must carry the matching factory
+  //! name and initialization params in its quantizer descriptor for reload.
+  int init(const IndexMeta &meta, const ailego::Params &params,
+           const std::shared_ptr<zvec::turbo::Quantizer> &quantizer) override;
 
   //! Cleanup the builder
   int cleanup() override;
@@ -113,12 +121,14 @@ class IVFBuilder : public IndexBuilder {
     };
 
     //! Constructor
-    RandomAccessIndexHolder(const IndexMeta &meta)
-        : features_(std::make_shared<CompactIndexFeatures>(meta)) {}
+    RandomAccessIndexHolder(const IndexMeta &meta,
+                            std::shared_ptr<const void> lifetime = {})
+        : features_(std::make_shared<CompactIndexFeatures>(meta)),
+          lifetime_(std::move(lifetime)) {}
 
     //! Retrieve count of elements in holder (-1 indicates unknown)
     size_t count() const override {
-      return features_->count();
+      return keys_.size();
     }
 
     //! Retrieve dimension
@@ -148,18 +158,30 @@ class IVFBuilder : public IndexBuilder {
     }
 
     void reserve(size_t elems) {
-      features_->reserve(elems);
+      if (lifetime_) {
+        vectors_.reserve(elems);
+      } else {
+        features_->reserve(elems);
+      }
       keys_.reserve(elems);
     }
 
     //! Append an element into holder
     void emplace(uint64_t pkey, const void *vec) {
-      features_->emplace(vec);
+      if (lifetime_) {
+        vectors_.emplace_back(vec);
+      } else {
+        features_->emplace(vec);
+      }
       keys_.emplace_back(pkey);
     }
 
     //! Retrieve feature via local id
     const void *element(size_t id) const {
+      if (lifetime_) {
+        ailego_assert_with(id < vectors_.size(), "Index Overflow");
+        return vectors_[id];
+      }
       return features_->element(id);
     }
 
@@ -177,6 +199,10 @@ class IVFBuilder : public IndexBuilder {
     //! Members
     CompactIndexFeatures::Pointer features_{};
     std::vector<uint64_t> keys_{};
+    std::vector<const void *> vectors_{};
+    // Keep borrowed addresses valid through quantizer training and repeat
+    // dumps.
+    std::shared_ptr<const void> lifetime_{};
   };
 
  private:
@@ -230,7 +256,7 @@ class IVFBuilder : public IndexBuilder {
   int read_vector(size_t id, uint64_t *key, const void **data);
 
   //! Prepare the quantizer for inverted index
-  int prepare_quantizer(IndexThreads *threads);
+  int prepare_quantizer(const IndexThreads::Pointer &threads);
 
   //! Quantize the centrods list
   int quantize_centroids();
@@ -307,6 +333,7 @@ class IVFBuilder : public IndexBuilder {
   IndexConverter::Pointer converter_{};
   IndexMeta quantized_meta_{};
   std::vector<IndexConverter::Pointer> quantizers_{};
+  std::shared_ptr<zvec::turbo::Quantizer> turbo_quantizer_{};
 
   std::atomic_bool error_{false};
   int err_code_{0};

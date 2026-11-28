@@ -14,6 +14,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <zvec/ailego/container/heap.h>
 #include <zvec/core/framework/index_storage.h>
@@ -86,7 +87,7 @@ class IndexDocument {
                 IndexStorage::MemoryBlock vec_block)
       : key_(k), score_(v), index_(i), vec_mem_block_(vec_block) {
     vector_ = vec_mem_block_.data();
-    has_vec_mem_block_ = true;
+    vector_backing_ = VectorBacking::kMemoryBlock;
   }
 
   //! Constructor
@@ -104,6 +105,17 @@ class IndexDocument {
         score_(v),
         index_(i),
         vector_string_(std::move(vector_string)) {}
+
+  //! Construct a result with independently owned vector storage.
+  IndexDocument(uint64_t k, float v, uint32_t i,
+                std::shared_ptr<std::string> vector_payload)
+      : key_(k),
+        score_(v),
+        index_(i),
+        vector_backing_(vector_payload ? VectorBacking::kSharedString
+                                       : VectorBacking::kNone),
+        vec_mem_block_(IndexStorage::MemoryBlock::MakeSharedView(
+            vector_payload.get(), vector_payload)) {}
 
   //! Constructor
   IndexDocument(uint64_t k, float v, uint32_t i, std::string vector_string,
@@ -123,7 +135,7 @@ class IndexDocument {
         index_(i),
         vec_mem_block_(vec_block),
         sparse_doc_(std::move(sparse_doc)) {
-    has_vec_mem_block_ = true;
+    vector_backing_ = VectorBacking::kMemoryBlock;
     vector_ = vec_mem_block_.data();
   }
 
@@ -133,11 +145,13 @@ class IndexDocument {
         score_(rhs.score_),
         index_(rhs.index_),
         vector_(rhs.vector_),
-        vector_string_(std::move(rhs.vector_string_)),
+        vector_string_(rhs.vector_string_),
+        vector_backing_(rhs.vector_backing_),
         sparse_doc_{rhs.sparse_doc_} {
-    if (rhs.has_vec_mem_block_) {
+    if (vector_backing_ != VectorBacking::kNone) {
       vec_mem_block_ = rhs.vec_mem_block_;
-      has_vec_mem_block_ = true;
+      if (vector_backing_ == VectorBacking::kMemoryBlock)
+        vector_ = vec_mem_block_.data();
     }
   }
 
@@ -149,9 +163,13 @@ class IndexDocument {
       index_ = rhs.index_;
       vector_ = rhs.vector_;
       vector_string_ = rhs.vector_string_;
-      if (rhs.has_vec_mem_block_) {
+      vector_backing_ = rhs.vector_backing_;
+      if (vector_backing_ != VectorBacking::kNone) {
         vec_mem_block_ = rhs.vec_mem_block_;
-        has_vec_mem_block_ = true;
+        if (vector_backing_ == VectorBacking::kMemoryBlock)
+          vector_ = vec_mem_block_.data();
+      } else {
+        vec_mem_block_.reset();
       }
       sparse_doc_ = rhs.sparse_doc_;
     }
@@ -190,6 +208,8 @@ class IndexDocument {
 
   //! Retrieve vec string
   const std::string &vector_string() const {
+    if (vector_backing_ == VectorBacking::kSharedString)
+      return *static_cast<const std::string *>(vec_mem_block_.data());
     return vector_string_;
   }
 
@@ -235,7 +255,8 @@ class IndexDocument {
   uint32_t index_{0u};
   const void *vector_{nullptr};
   std::string vector_string_{};
-  bool has_vec_mem_block_{false};
+  enum class VectorBacking : uint8_t { kNone, kMemoryBlock, kSharedString };
+  VectorBacking vector_backing_{VectorBacking::kNone};
   mutable IndexStorage::MemoryBlock vec_mem_block_{};
   IndexSparseDocument sparse_doc_{};
 };

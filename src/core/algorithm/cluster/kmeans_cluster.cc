@@ -11,6 +11,8 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+#include <cmath>
+#include <cstring>
 #include <ailego/container/reservoir.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/ailego/utility/time_helper.h>
@@ -155,6 +157,8 @@ class KmeansCluster : public IndexCluster {
   uint32_t thread_count_{0u};
   bool batch_{false};
   bool purge_empty_{false};
+  //! Effective dimensions for Cosine centroid normalization (0 disables)
+  size_t cosine_normalize_dim_{0u};
 };
 
 /*! Centroid Features
@@ -382,9 +386,93 @@ static inline void PurgeCentroids(IndexCluster::CentroidList &cents,
   }
 }
 
+// Cosine features store normalized components followed by the original norm;
+// CosineDistanceMatrix scores 1 - dot over the leading components only.
+// Re-normalizes the mean over those effective dimensions and refreshes the
+// trailing norm metadata. Returns false for degenerate (zero-norm) means.
+static bool NormalizeCosineCentroid(void *feature, size_t bytes,
+                                    size_t effective_dim,
+                                    IndexMeta::DataType type) {
+  static constexpr float kUnitNorm = 1.0f;
+
+  switch (type) {
+    case IndexMeta::DataType::DT_FP32: {
+      if (bytes != (effective_dim + 1) * sizeof(float)) {
+        return false;
+      }
+      auto *vec = static_cast<float *>(feature);
+      double accum = 0.0;
+      for (size_t i = 0; i < effective_dim; ++i) {
+        accum += static_cast<double>(vec[i]) * vec[i];
+      }
+      const float norm = static_cast<float>(std::sqrt(accum));
+      if (!(norm > 0.0f) || !std::isfinite(norm)) {
+        return false;
+      }
+      const float scale = 1.0f / norm;
+      for (size_t i = 0; i < effective_dim; ++i) {
+        vec[i] *= scale;
+      }
+      std::memcpy(vec + effective_dim, &kUnitNorm, sizeof(kUnitNorm));
+      return true;
+    }
+
+    case IndexMeta::DataType::DT_FP16: {
+      if (bytes != (effective_dim + 2) * sizeof(ailego::Float16)) {
+        return false;
+      }
+      auto *vec = static_cast<ailego::Float16 *>(feature);
+      double accum = 0.0;
+      for (size_t i = 0; i < effective_dim; ++i) {
+        const double value = static_cast<float>(vec[i]);
+        accum += value * value;
+      }
+      const float norm = static_cast<float>(std::sqrt(accum));
+      if (!(norm > 0.0f) || !std::isfinite(norm)) {
+        return false;
+      }
+      const float scale = 1.0f / norm;
+      for (size_t i = 0; i < effective_dim; ++i) {
+        vec[i] = static_cast<float>(vec[i]) * scale;
+      }
+      std::memcpy(reinterpret_cast<char *>(vec) +
+                      effective_dim * sizeof(ailego::Float16),
+                  &kUnitNorm, sizeof(kUnitNorm));
+      return true;
+    }
+
+    default:
+      return false;
+  }
+}
+
 int KmeansCluster::init(const IndexMeta &meta, const ailego::Params &params) {
   meta_ = meta;
   this->update_params(params);
+
+  // Spherical kmeans for Cosine: the mean of unit features is not unit-length,
+  // so it is re-normalized every iteration over the dimensions the metric
+  // scores; the trailing norm metadata mirrors the metric's ignored extra
+  // dimension (sizeof(float) worth of storage units).
+  cosine_normalize_dim_ = 0u;
+  if (meta_.metric_name() == "Cosine") {
+    size_t extra_dim = 0u;
+    switch (meta_.data_type()) {
+      case IndexMeta::DataType::DT_FP32:
+        extra_dim = 1u;
+        break;
+
+      case IndexMeta::DataType::DT_FP16:
+        extra_dim = sizeof(float) / sizeof(ailego::Float16);
+        break;
+
+      default:
+        break;
+    }
+    if (extra_dim != 0u && meta_.dimension() > extra_dim) {
+      cosine_normalize_dim_ = meta_.dimension() - extra_dim;
+    }
+  }
 
   return this->init_seeker();
 }
@@ -853,7 +941,26 @@ void KmeansCluster::update_centroid_thread(size_t column,
   IndexCluster::Centroid *centroid = &(out->at(column));
   centroid->set_score(cluster_score);
   centroid->set_follows(accum->count());
-  accum->mean(centroid->mutable_buffer());
+
+  if (cosine_normalize_dim_ == 0u) {
+    accum->mean(centroid->mutable_buffer());
+    return;
+  }
+
+  // Normalizing every iteration keeps the 1 - dot assignment meaningful:
+  // unnormalized means shrink with cluster spread and skew the ranking
+  // across clusters of different tightness. Empty clusters and zero-norm
+  // means keep the previous feature instead of collapsing to NaN.
+  if (accum->count() == 0u) {
+    return;
+  }
+  std::string feature(centroid->size(), '\0');
+  if (!accum->mean(feature.data(), feature.size()) ||
+      !NormalizeCosineCentroid(feature.data(), feature.size(),
+                               cosine_normalize_dim_, meta_.data_type())) {
+    return;
+  }
+  *centroid->mutable_buffer() = std::move(feature);
 }
 
 void KmeansCluster::update_cluster_thread(size_t index_begin, size_t index_end,

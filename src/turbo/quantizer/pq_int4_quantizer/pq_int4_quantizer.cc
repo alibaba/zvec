@@ -20,8 +20,8 @@
 #include <limits>
 #include <random>
 #include <vector>
-#include <ailego/algorithm/kmeans.h>
-#include <ailego/math/normalizer.h>
+#include <turbo/algorithm/kmeans.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/framework/index_threads.h>
 
@@ -51,6 +51,7 @@ int PqInt4Quantizer::setup_functions() {
   auto pq_k = get_pq_kernels(DataType::kInt4);
   adc_fn_ = pq_k.asymmetric_distance;
   sdc_fn_ = pq_k.symmetric_distance;
+  batch_sdc_fn_ = pq_k.batch_symmetric_distance;
   batch_adc_fn_ = pq_k.batch_asymmetric_distance;
 
   // L2-only batch distance for encoding and KMeans training: the PQ codebook
@@ -179,7 +180,7 @@ void PqInt4Quantizer::train_subquantizer(const T *data, size_t num,
 
   // Non-spherical L2 KMeans: the PQ codebook must minimize L2 reconstruction
   // error, so centroids are the true (magnitude-preserving) means.
-  ailego::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
+  turbo::NumericalKmeans<T, SingleQueueIndexThreads> algorithm(k, d);
 
   // Append sub-vectors (NumericalKmeans handles transpose internally)
   for (size_t i = 0; i < num; ++i) {
@@ -194,8 +195,8 @@ void PqInt4Quantizer::train_subquantizer(const T *data, size_t num,
   auto local_threads = std::make_shared<SingleQueueIndexThreads>(1, false);
 
   // KMC2 centroid initialization.
-  ailego::Kmc2CentroidsGenerator<
-      ailego::NumericalKmeans<T, SingleQueueIndexThreads>,
+  turbo::Kmc2CentroidsGenerator<
+      turbo::NumericalKmeans<T, SingleQueueIndexThreads>,
       SingleQueueIndexThreads>
       gen;
   gen.set_chain_length(markov_chain_length_);
@@ -654,7 +655,7 @@ int PqInt4Quantizer::quantize(const void *query, const IndexQueryMeta &qmeta,
   quantize_query(query, &(*out)[0]);
 
   *ometa = qmeta;
-  ometa->set_meta(IndexMeta::DataType::DT_INT4, num_chunk_,
+  ometa->set_meta(IndexMeta::DataType::DT_FP32, original_dim_,
                   static_cast<uint32_t>(type_), 0);
   return 0;
 }
@@ -967,9 +968,17 @@ DistanceImpl PqInt4Quantizer::sym_distance(const void *query,
   size_t code_bytes = quantized_datapoint_vector_length();
   std::string code_storage(static_cast<const char *>(query), code_bytes);
 
-  // SDC has no batch kernel — use the 3-arg constructor.
-  return DistanceImpl(std::move(sdc_func), std::move(code_storage),
-                      static_cast<size_t>(num_chunk_));
+  BatchDistanceFunc batch_func;
+  if (batch_sdc_fn_) {
+    batch_func = [batch_sdc = batch_sdc_fn_, dt](
+                     const void *const *vectors, const void *query_code,
+                     size_t count, size_t chunks, float *out,
+                     const void *const *) {
+      batch_sdc(vectors, query_code, dt, count, chunks, out);
+    };
+  }
+  return DistanceImpl(std::move(sdc_func), std::move(batch_func),
+                      std::move(code_storage), static_cast<size_t>(num_chunk_));
 }
 
 // ---------------------------------------------------------------------------
@@ -1100,8 +1109,10 @@ int PqInt4Quantizer::deserialize(const void *data, size_t len) {
       payload.rotate_type, original_dim_, ptr,
       len - static_cast<size_t>(ptr - reinterpret_cast<const char *>(data)));
   if (opq_ret != 0) return opq_ret;
-  // dist_table_ is intentionally not restored: SDC is only needed during
-  // offline build, not after deserialization (search uses ADC).
+  // ADC search only needs the codebook and a query LUT. Leave the SDC table
+  // empty; prepare_build() restores it before graph construction or inserts
+  // into a reopened index.
+  dist_table_.clear();
 
   // Re-dispatch kernels and batch distance functions.
   if (setup_functions() != 0) {
@@ -1132,7 +1143,7 @@ template <typename T>
 void PqInt4Quantizer::normalize(T *data, size_t num) const {
   for (size_t i = 0; i < num; ++i) {
     float norm = 0.0f;
-    ailego::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
+    turbo::Normalizer<T>::L2(data + i * original_dim_, original_dim_, &norm);
   }
 }
 
@@ -1159,7 +1170,7 @@ void PqInt4Quantizer::compute_and_subtract_center(T *data, size_t num) {
 template <typename T>
 void PqInt4Quantizer::normalize(T *vec, float *norm_out) const {
   float norm = 0.0f;
-  ailego::Normalizer<T>::L2(vec, original_dim_, &norm);
+  turbo::Normalizer<T>::L2(vec, original_dim_, &norm);
   if (norm_out) {
     *norm_out = norm;
   }

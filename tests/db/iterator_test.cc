@@ -30,6 +30,7 @@
 #include <zvec/db/status.h>
 #include "db/common/file_helper.h"
 #include "index/utils/utils.h"
+#include "../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::test;
@@ -39,8 +40,8 @@ static std::string iter_test_path = "test_iterator_collection";
 class IteratorTest : public ::testing::Test {
  protected:
   void SetUp() override {
-    zvec::ailego::MemoryLimitPool::get_instance().init(2 * 1024ll * 1024ll *
-                                                       1024ll);
+    ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024ll * 1024ll *
+                                                           1024ll);
     FileHelper::RemoveDirectory(iter_test_path);
   }
 
@@ -48,6 +49,78 @@ class IteratorTest : public ::testing::Test {
     FileHelper::RemoveDirectory(iter_test_path);
   }
 };
+
+TEST_F(IteratorTest, ConcurrentIteratorCreation) {
+  constexpr int kThreads = 8;
+  constexpr int kRounds = 20;
+  constexpr int kDocs = 20;
+  auto schema = TestHelper::CreateNormalSchema();
+  for (bool enable_mmap : {true, false}) {
+    FileHelper::RemoveDirectory(iter_test_path);
+    CollectionOptions options;
+    options.enable_mmap_ = enable_mmap;
+    auto created = Collection::CreateAndOpen(iter_test_path, *schema, options);
+    ASSERT_TRUE(created.has_value()) << created.error().message();
+    auto writer = std::move(created.value());
+    std::vector<Doc> docs;
+    for (int i = 0; i < kDocs; ++i) {
+      docs.push_back(TestHelper::CreateDoc(i, *schema));
+    }
+    ASSERT_TRUE(writer->insert(docs).has_value());
+    ASSERT_TRUE(writer->close().ok());
+
+    for (bool read_only : {true, false}) {
+      SCOPED_TRACE(testing::Message()
+                   << "read_only=" << read_only << " mmap=" << enable_mmap);
+      options.read_only_ = read_only;
+      auto opened = Collection::Open(iter_test_path, options);
+      ASSERT_TRUE(opened.has_value()) << opened.error().message();
+      auto collection = std::move(opened.value());
+      std::atomic<int> ready{0};
+      std::atomic<bool> start{false};
+      std::vector<std::string> errors(kThreads);
+      std::vector<int> completed(kThreads, 0);
+      std::vector<std::thread> threads;
+      for (int t = 0; t < kThreads; ++t) {
+        threads.emplace_back([&, t] {
+          ++ready;
+          while (!start.load()) std::this_thread::yield();
+          for (int round = 0; round < kRounds; ++round) {
+            auto result = collection->create_iterator();
+            if (!result.has_value()) {
+              errors[t] = result.error().message();
+              return;
+            }
+            auto iter = std::move(result.value());
+            std::set<std::string> pks;
+            while (true) {
+              auto next = iter->next();
+              if (!next.has_value()) {
+                errors[t] = next.error().message();
+                return;
+              }
+              if (next.value() == nullptr) break;
+              pks.insert(next.value()->pk());
+            }
+            iter->close();
+            if (pks.size() != kDocs) {
+              errors[t] = "incomplete iterator snapshot";
+              return;
+            }
+            ++completed[t];
+          }
+        });
+      }
+      while (ready.load() != kThreads) std::this_thread::yield();
+      start.store(true);
+      for (auto &thread : threads) thread.join();
+      for (int t = 0; t < kThreads; ++t) {
+        EXPECT_EQ(kRounds, completed[t]) << errors[t];
+      }
+      ASSERT_TRUE(collection->close().ok());
+    }
+  }
+}
 
 // Basic iteration — insert 100 docs, iterate, verify count + PK
 TEST_F(IteratorTest, BasicIteration) {

@@ -16,7 +16,6 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
 #include <zvec/ailego/pattern/singleton.h>
 #include <zvec/db/status.h>
@@ -106,10 +105,6 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     // CPU binding is opt-in at the DB layer.
     bool optimize_thread_binding;
 
-    // FTS jieba tokenizer default dict dir (lowest-priority fallback;
-    // per-field config > ZVEC_JIEBA_DICT_DIR > this). Empty by default.
-    std::string jieba_dict_dir;
-
     ConfigData();
   };
 
@@ -117,11 +112,6 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
   Status initialize(const ConfigData &config);
 
   Status validate(const ConfigData &config) const;
-
-  // Set the process-wide default jieba dict dir. Thread-safe and decoupled
-  // from initialize() so language SDKs can call it on module load.
-  // initialize() with a non-empty config.jieba_dict_dir overrides this.
-  void set_default_jieba_dict_dir(const std::string &dir);
 
   // Read-only accessors
   uint64_t memory_limit_bytes() const noexcept;
@@ -201,18 +191,12 @@ class ZVEC_API GlobalConfig : public ailego::Singleton<GlobalConfig> {
     return config_.optimize_thread_binding;
   }
 
-  //! Effective jieba dict dir. Thread-safe.
-  std::string jieba_dict_dir() const;
-
  private:
   // Configuration data
   ConfigData config_;
 
   // Atomic flag to ensure initialization happens only once
   std::atomic<bool> initialized_{false};
-
-  // Guards config_ fields that may be written outside initialize().
-  mutable std::mutex mutex_;
 };
 
 }  // namespace zvec

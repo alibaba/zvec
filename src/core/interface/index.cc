@@ -16,6 +16,9 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <new>
+#include <thread>
 #include <magic_enum/magic_enum.hpp>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/core/framework/index_error.h>
@@ -230,7 +233,71 @@ core::IndexContext::Pointer &Index::acquire_context() {
   return context_list[context_index_];
 }
 
+// An idle DiskANN context belongs to its index and thread. Active contexts
+// are owned by individual calls, including calls made from a query callback.
+struct Index::DiskAnnContextRegistry {
+  std::mutex mutex;
+  std::map<std::thread::id, core::IndexContext::Pointer> idle;
+};
+
+struct Index::ThreadDiskAnnContexts {
+  std::weak_ptr<DiskAnnContextRegistry> latest;
+
+  void release(const std::shared_ptr<DiskAnnContextRegistry> &registry) {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    registry->idle.erase(std::this_thread::get_id());
+  }
+
+  ~ThreadDiskAnnContexts() {
+    if (auto owner = latest.lock()) release(owner);
+  }
+};
+
+Index::ThreadDiskAnnContexts &Index::thread_diskann_contexts() {
+  thread_local ThreadDiskAnnContexts cache;
+  return cache;
+}
+
+Index::QueryContext::QueryContext(Index &index) : index_(index) {
+  const auto &registry = index_.diskann_contexts_;
+  if (!registry) {
+    context_ = &index_.acquire_context();
+    status_ = *context_ ? 0 : core::IndexError_Runtime;
+    return;
+  }
+  auto &cache = Index::thread_diskann_contexts();
+  if (auto previous = cache.latest.lock(); previous && previous != registry) {
+    cache.release(previous);
+  }
+  cache.latest = registry;
+  {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto slot = registry->idle.find(std::this_thread::get_id());
+    if (slot != registry->idle.end()) diskann_ = std::move(slot->second);
+  }
+  status_ =
+      diskann_ ? 0 : index_.streamer_->create_context_with_status(diskann_);
+}
+
+Index::QueryContext::~QueryContext() {
+  const auto &registry = index_.diskann_contexts_;
+  if (!reusable_ || !diskann_ || !registry ||
+      Index::thread_diskann_contexts().latest.lock() != registry)
+    return;
+  try {
+    std::lock_guard<std::mutex> lock(registry->mutex);
+    auto &slot = registry->idle[std::this_thread::get_id()];
+    if (!slot) slot = std::move(diskann_);
+  } catch (const std::bad_alloc &) {
+    // Reuse is optional. The result has already succeeded.
+  }
+}
+
 int Index::train() {
+  if (pending_quantizer_training_ ||
+      (turbo_quantizer_ && turbo_quantizer_->requires_original_vectors() &&
+       turbo_quantizer_->require_train()))
+    return core::IndexError_NoReady;
   is_trained_ = true;
   return 0;
 }
@@ -244,6 +311,7 @@ bool Index::is_trained() const {
 }
 
 uint32_t Index::get_doc_count() const {
+  if (pending_quantizer_training_) return 0;
   if (streamer_ == nullptr) {
     return -1;
   }
@@ -258,6 +326,7 @@ core::IndexStreamer::Pointer Index::index_searcher() {
 }
 
 core::IndexProvider::Pointer Index::create_index_provider() const {
+  if (pending_quantizer_training_) return nullptr;
   return streamer_->create_provider();
 }
 
@@ -425,6 +494,32 @@ int Index::create_and_init_converter_reformer(
   return init_converter_reformer(converter_name, converter_params);
 }
 
+int Index::init_pq_quantizer(const QuantizerParam &param,
+                             const BaseIndexParam &index_param,
+                             std::shared_ptr<turbo::Quantizer> *quantizer) {
+  const auto *pq = dynamic_cast<const PqQuantizerParam *>(&param);
+  if (!pq || pq->num_chunk <= 0 || pq->num_chunk > index_param.dimension ||
+      (pq->num_bits != 4 && pq->num_bits != 8) ||
+      (pq->fast_scan &&
+       (pq->num_bits != 4 || index_param.index_type != IndexType::kIVF)) ||
+      (pq->num_bits == 4 && index_param.dimension % pq->num_chunk != 0) ||
+      (pq->enable_rotate && (pq->opq_iter == 0 || pq->opq_pq_iter == 0))) {
+    return core::IndexError_InvalidArgument;
+  }
+  const char *name = pq->fast_scan ? "PqFastQuantizer"
+                                   : (pq->num_bits == 4 ? "PqInt4Quantizer"
+                                                        : "PqInt8Quantizer");
+  ailego::Params params;
+  params.set("num_chunk", static_cast<uint32_t>(pq->num_chunk));
+  params.set("rotate_type", std::string(pq->enable_rotate ? "opq" : "none"));
+  params.set("opq_iter", pq->opq_iter);
+  params.set("opq_pq_iter", pq->opq_pq_iter);
+  proxima_index_meta_.set_quantizer(name, 0, params);
+  *quantizer = core::IndexFactory::CreateQuantizer(name);
+  return *quantizer ? (*quantizer)->init(proxima_index_meta_, params)
+                    : core::IndexError_NoExist;
+}
+
 int Index::init_converter_reformer(const std::string &converter_name,
                                    const ailego::Params &converter_params) {
   proxima_index_meta_.set_converter(converter_name, 0, converter_params);
@@ -455,7 +550,33 @@ int Index::init_converter_reformer(const std::string &converter_name,
 }
 
 int Index::init(const BaseIndexParam &param) {
+  if (param.quantizer_param &&
+      param.quantizer_param->type == QuantizerType::kRabitq) {
+    switch (param.index_type) {
+      case IndexType::kHNSW:
+      case IndexType::kIVF:
+      case IndexType::kDiskAnn:
+        if (param.quantizer_param->enable_rotate) {
+          LOG_ERROR("RABITQ does not support additional enable_rotate");
+          return core::IndexError_Unsupported;
+        }
+        break;
+      case IndexType::kHNSWRabitq:
+      case IndexType::kIVFRabitq:
+        break;  // Preserve the dedicated indexes' parameter handling.
+      default:
+        LOG_ERROR("RABITQ is unsupported for this index type");
+        return core::IndexError_Unsupported;
+    }
+  }
   param_ = param;  // will lose the original type info
+  if (param.index_type == IndexType::kDiskAnn && !diskann_contexts_) {
+    try {
+      diskann_contexts_ = std::make_shared<DiskAnnContextRegistry>();
+    } catch (const std::bad_alloc &) {
+      return core::IndexError_NoMemory;
+    }
+  }
 
   is_sparse_ = param.is_sparse;
   is_huge_page_ = param.is_huge_page;
@@ -502,11 +623,28 @@ int Index::init(const BaseIndexParam &param) {
 }
 
 
+int Index::open_streamer(const StorageOptions &options) {
+  if (!pending_quantizer_training_ &&
+      (!streamer_ || streamer_->open(storage_, options.read_only) != 0)) {
+    return core::IndexError_Runtime;
+  }
+  return finish_streamer_open(options);
+}
+
 int Index::open(const std::string &file_path, StorageOptions storage_options) {
+  if (storage_options.read_only && storage_options.create_new) {
+    LOG_ERROR("Cannot create storage for a read-only index");
+    return core::IndexError_Runtime;
+  }
   ailego::Params storage_params;
-  // storage_params.set("proxima.mmap_file.storage.memory_warmup", true);
-  // storage_params.set("proxima.mmap_file.storage.segment_meta_capacity",
-  // 1024);
+  if (storage_options.create_new &&
+      storage_options.type == StorageOptions::StorageType::kMMAP &&
+      param_.index_type == IndexType::kFlat) {
+    // Flat indexes only need a small initial directory. DB segments can keep
+    // many Flat blocks open, and each padded directory counts against the
+    // shared memory budget. The directory can still grow through splits.
+    storage_params.set(core::MMAPFILE_STORAGE_SEGMENT_META_CAPACITY, 4096u);
+  }
 
   storage_params.set(core::MMAPFILE_STORAGE_COPY_ON_WRITE,
                      storage_options.copy_on_write);
@@ -519,14 +657,16 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
 
   switch (storage_options.type) {
     case StorageOptions::StorageType::kMMAP: {
-      storage_ = core::IndexFactory::CreateStorage("MMapFileStorage");
+      const char *storage_name =
+          storage_options.read_only ? "MMapFileReadStorage" : "MMapFileStorage";
+      storage_ = core::IndexFactory::CreateStorage(storage_name);
       if (storage_ == nullptr) {
-        LOG_ERROR("Failed to create MMapFileStorage");
+        LOG_ERROR("Failed to create %s", storage_name);
         return core::IndexError_Runtime;
       }
       int ret = storage_->init(storage_params);
       if (ret != 0) {
-        LOG_ERROR("Failed to init MMapFileStorage, path: %s, err: %s",
+        LOG_ERROR("Failed to init %s, path: %s, err: %s", storage_name,
                   file_path.c_str(), core::IndexError::What(ret));
         return ret;
       }
@@ -551,22 +691,33 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
       return core::IndexError_Unsupported;
   }
 
-  // read_options.create_new
-  int ret = storage_->open(file_path, storage_options.create_new);
+  const core::IndexStorage::OpenOptions open_options{storage_options.create_new,
+                                                     storage_options.read_only};
+  int ret = storage_options.type == StorageOptions::StorageType::kBufferPool
+                ? storage_->open(file_path, open_options)
+                : storage_->open(file_path, storage_options.create_new);
   if (ret != 0) {
     LOG_ERROR("Failed to open storage, path: %s, err: %s", file_path.c_str(),
               core::IndexError::What(ret));
-    return core::IndexError_Runtime;
+    return ret;
   }
   ret = prepare_streamer_open(storage_options);
   if (ret != 0) {
     return ret;
   }
-  if (streamer_ == nullptr || streamer_->open(storage_) != 0) {
-    LOG_ERROR("Failed to open streamer, path: %s", file_path.c_str());
-    return core::IndexError_Runtime;
+  ret = open_streamer(storage_options);
+  if (ret != 0) {
+    LOG_ERROR("Failed to open streamer, path: %s, ret=%d", file_path.c_str(),
+              ret);
+    return ret;
   }
 
+  is_open_ = true;
+  is_read_only_ = storage_options.read_only;
+  return 0;
+}
+
+int Index::finish_streamer_open(const StorageOptions &storage_options) {
   // If a converter exists but reformer was not created during init() because
   // its params are only available after training, create it now from the
   // persisted meta loaded by the streamer. When there is no converter
@@ -604,24 +755,23 @@ int Index::open(const std::string &file_path, StorageOptions storage_options) {
     if (storage_options.create_new && converter_ != nullptr) {
       if (converter_->dump_to_storage(storage_) != 0) {
         LOG_ERROR("Failed to dump converter to storage, path: %s",
-                  file_path.c_str());
+                  storage_->file_path().c_str());
         return core::IndexError_Runtime;
       }
     }
     if (reformer_->load(storage_) != 0) {
-      LOG_ERROR("Failed to load reformer, path: %s", file_path.c_str());
+      LOG_ERROR("Failed to load reformer, path: %s",
+                storage_->file_path().c_str());
       return core::IndexError_Runtime;
     }
   }
 
   // TODO: context pool
-  if (!init_context()) {  // to validate if any error, will be overwritten
+  if (!pending_quantizer_training_ && !init_context()) {
     LOG_ERROR("Failed to init context");
     return core::IndexError_Runtime;
   }
 
-  is_open_ = true;
-  is_read_only_ = storage_options.read_only;
   return 0;
 }
 
@@ -631,7 +781,7 @@ int Index::close() {
     return core::IndexError_Runtime;
   }
 
-  if (!is_read_only_) {
+  if (!is_read_only_ && !pending_quantizer_training_) {
     if (ailego_unlikely(flush() != 0)) {
       LOG_ERROR("Failed to cleanup streamer");
       return core::IndexError_Runtime;
@@ -649,6 +799,10 @@ int Index::close() {
     context_list[context_index_].reset();
     context_index_ = std::numeric_limits<size_t>::max();
   }
+  if (diskann_contexts_) {
+    std::lock_guard<std::mutex> lock(diskann_contexts_->mutex);
+    diskann_contexts_->idle.clear();
+  }
   if (ailego_unlikely(storage_->close() != 0)) {
     LOG_ERROR("Failed to close storage");
     return core::IndexError_Runtime;
@@ -658,6 +812,7 @@ int Index::close() {
 }
 
 int Index::flush() {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -686,6 +841,7 @@ bool Index::is_dirty() const {
 }
 
 int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -697,6 +853,7 @@ int Index::fetch(const uint32_t doc_id, VectorDataBuffer *vector_data_buffer) {
 }
 
 int Index::add(const VectorData &vector_data, const uint32_t doc_id) {
+  if (pending_quantizer_training_) return core::IndexError_NoReady;
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
@@ -739,14 +896,14 @@ int Index::search_with_source(
 
 int Index::search(const VectorData &vector_data,
                   const BaseIndexQueryParam::Pointer &search_param,
-                  SearchResult *result) {
+                  SearchResult *result) try {
   if (!is_open_) {
     LOG_ERROR("Index is not open");
     return core::IndexError_Runtime;
   }
 
   const bool has_group_by = has_group_by_search(search_param);
-  if (has_group_by && is_group_by_unsupported_index(param_.index_type)) {
+  if (has_group_by && !supports_group_by()) {
     LOG_ERROR("group_by search is not supported for this index type");
     return core::IndexError_Unsupported;
   }
@@ -756,16 +913,21 @@ int Index::search(const VectorData &vector_data,
     return core::IndexError_Unsupported;
   }
 
-  if (!is_trained_ && this->train() != 0) {
-    LOG_ERROR("Failed to train index");
-    return core::IndexError_Runtime;
+  if (!is_trained_) {
+    const int status = this->train();
+    if (status != 0) {
+      LOG_ERROR("Failed to train index");
+      return status == core::IndexError_NoMemory ? status
+                                                 : core::IndexError_Runtime;
+    }
   }
 
-  auto &context = acquire_context();
-  if (!context) {
-    LOG_ERROR("Failed to acquire context");
-    return core::IndexError_Runtime;
-  }
+  QueryContext acquired(*this);
+  auto &context = acquired.get();
+  if (acquired.status() != 0 || !context) return acquired.status();
+  SearchResult diskann_result;
+  SearchResult *output = result;
+  if (diskann_contexts_) result = &diskann_result;
 
   int prepare_ret = _prepare_for_search(vector_data, search_param, context);
   if (prepare_ret != 0) {
@@ -793,9 +955,9 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return core::IndexError_Runtime;
     }
-    // TODO: tackle query_param's type info loss to loosen the constraint
-    if (reference_index->param_.index_type != IndexType::kFlat) {
-      LOG_ERROR("Reference index is not flat");
+    if (reference_index->param_.index_type != IndexType::kFlat &&
+        reference_index->param_.index_type != IndexType::kIVF) {
+      LOG_ERROR("Reference index must be Flat or IVF");
       context->reset();
       return core::IndexError_Runtime;
     }
@@ -805,37 +967,54 @@ int Index::search(const VectorData &vector_data,
       context->reset();
       return coarse_topk;
     }
-    context->set_topk(coarse_topk);
-    context->set_fetch_vector(false);  // no need to fetch vector
-    std::string transformed_vector;
-    const void *query = nullptr;
-    core::IndexQueryMeta query_meta;
-    ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
-                               &query_meta);
-    if (ret != 0) {
-      context->reset();
-      return ret;
-    }
-    // Refine replaces the coarse scores; only candidate membership and order
-    // cross this boundary, not document/vector materialization or
-    // normalization.
-    std::vector<std::vector<uint64_t>> keys(1);
-    if (_execute_dense_search(query, query_meta, search_param, context,
-                              &keys[0]) != 0) {
-      LOG_ERROR("Failed to search");
+    try {
+      context->set_topk(coarse_topk);
+      context->set_fetch_vector(false);  // no need to fetch vector
+      std::string transformed_vector;
+      const void *query = nullptr;
+      core::IndexQueryMeta query_meta;
+      ret = _prepare_dense_query(vector_data, &transformed_vector, &query,
+                                 &query_meta);
+      if (ret != 0) {
+        context->reset();
+        return ret;
+      }
+      // Refine replaces the coarse scores; only candidate membership and order
+      // cross this boundary, not document/vector materialization or
+      // normalization.
+      std::vector<std::vector<uint64_t>> keys(1);
+      ret = _execute_dense_search(query, query_meta, search_param, context,
+                                  &keys[0]);
+      if (ret != 0) {
+        LOG_ERROR("Failed to search");
+        if (context) context->reset();
+        return ret == core::IndexError_NoMemory ? ret
+                                                : core::IndexError_Runtime;
+      }
+      result->reverted_vector_list_.clear();
+      ret = reference_index->_refine_dense_candidates(vector_data, search_param,
+                                                      keys, result);
+    } catch (const std::bad_alloc &) {
+      // A huge scale factor (topk * SF up to INT_MAX) passes validation but
+      // the coarse result heap cannot be allocated; surface it as an error
+      // instead of terminating the process.
+      LOG_ERROR("Failed to allocate coarse result heap for %d candidates",
+                coarse_topk);
       if (context) {
         context->reset();
       }
-      return core::IndexError_Runtime;
+      return core::IndexError_NoMemory;
     }
-    result->reverted_vector_list_.clear();
-    ret = reference_index->_refine_dense_candidates(vector_data, search_param,
-                                                    keys, result);
   }
   if (context) {
     context->reset();
   }
+  if (diskann_contexts_ && ret == 0) *output = std::move(diskann_result);
+  acquired.keep_on_success(ret);
   return ret;
+} catch (const std::bad_alloc &) {
+  if (!diskann_contexts_) throw;
+  return core::IndexError_NoMemory;
 }
 
 
@@ -845,7 +1024,7 @@ int Index::_dense_fetch(const uint32_t doc_id,
   int ret = streamer_->get_vector_by_id(doc_id, vector_block);
   if (ret != 0) {
     LOG_ERROR("Failed to fetch vector, doc_id: %u", doc_id);
-    return core::IndexError_Runtime;
+    return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
   }
   const void *vector = vector_block.data();
 
@@ -911,12 +1090,19 @@ int Index::_dense_add(const VectorData &vector_data, const uint32_t doc_id,
   }
   const DenseVector &dense_vector = std::get<DenseVector>(vector_data.vector);
   if (turbo_quantizer_ != nullptr) {
-    core::IndexQueryMeta new_meta;
     auto *new_vector = context->mutable_features();
-    if (turbo_quantizer_->quantize(dense_vector.data, input_vector_meta_,
-                                   new_vector, &new_meta) != 0) {
-      LOG_ERROR("Failed to quantize vector with turbo quantizer");
-      return core::IndexError_Runtime;
+    core::IndexQueryMeta new_meta;
+    if (turbo_quantizer_->requires_original_vectors()) {
+      if (turbo_quantizer_->quantize_datapoint(dense_vector.data,
+                                               input_vector_meta_, new_vector,
+                                               &new_meta) != 0) {
+        LOG_ERROR("Failed to quantize vector with turbo quantizer");
+        return core::IndexError_Runtime;
+      }
+    } else {
+      new_vector->resize(turbo_quantizer_->quantized_datapoint_vector_length());
+      turbo_quantizer_->quantize_data(dense_vector.data, new_vector->data());
+      new_meta = streamer_vector_meta_;
     }
     if (streamer_->add_with_id_impl(doc_id, new_vector->data(), new_meta,
                                     context) != 0) {
@@ -1049,24 +1235,27 @@ int Index::_execute_dense_search(
     std::vector<uint64_t> *candidate_keys) {
   if (candidate_keys) candidate_keys->clear();
   if (search_param->bf_pks != nullptr) {
-    if (streamer_->search_bf_by_p_keys_impl(
-            vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
-            new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_bf_by_p_keys_impl(
+        vector, std::vector<std::vector<uint64_t>>{*search_param->bf_pks},
+        new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search_bf_by_p_keys_impl vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   } else if (search_param->is_linear) {
-    if (streamer_->search_bf_impl(vector, new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_bf_impl(vector, new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   } else if (candidate_keys) {
     return streamer_->search_candidates_impl(vector, new_meta, *candidate_keys,
                                              context);
   } else {
-    if (streamer_->search_impl(vector, new_meta, 1, context) != 0) {
+    const int ret = streamer_->search_impl(vector, new_meta, 1, context);
+    if (ret != 0) {
       LOG_ERROR("Failed to search vector");
-      return core::IndexError_Runtime;
+      return ret == core::IndexError_NoMemory ? ret : core::IndexError_Runtime;
     }
   }
 
@@ -1084,6 +1273,7 @@ int Index::_refine_dense_candidates(
     const VectorData &vector_data,
     const BaseIndexQueryParam::Pointer &search_param,
     const std::vector<std::vector<uint64_t>> &keys, SearchResult *result) {
+  if (param_.use_external_vector) return core::IndexError_Unsupported;
   if (!is_open_ || is_sparse_) {
     LOG_ERROR("Reference index must be open and dense");
     return core::IndexError_Runtime;
@@ -1098,7 +1288,7 @@ int Index::_refine_dense_candidates(
   context->set_topk(search_param->topk);
   context->set_fetch_vector(search_param->fetch_vector);
   if (search_param->filter && search_param->filter->is_valid()) {
-    context->set_filter(std::move(*search_param->filter));
+    context->set_filter(*search_param->filter);
   } else {
     context->reset_filter();
   }
@@ -1137,6 +1327,13 @@ int Index::_collect_dense_result(
     const BaseIndexQueryParam::Pointer &search_param, SearchResult *result,
     core::IndexContext::Pointer &context) {
   const auto &dense_vector = std::get<DenseVector>(vector_data.vector);
+  const auto result_vector =
+      [](const core::IndexDocument &doc) -> const void * {
+    if (const void *vector = doc.vector()) return vector;
+    // DiskANN owns fetched bytes in a string payload rather than a raw view.
+    const auto &bytes = doc.vector_string();
+    return bytes.empty() ? nullptr : bytes.data();
+  };
 
   // Retrieve group_by results if applicable
   bool has_group_by =
@@ -1192,6 +1389,10 @@ int Index::_collect_dense_result(
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
+        if (!vec) {
+          revert_err = core::IndexError_ReadData;
+          return;
+        }
         std::string reverted_vector;
         if (turbo_quantizer_->dequantize(vec, streamer_vector_meta_,
                                          &reverted_vector) != 0) {
@@ -1204,7 +1405,7 @@ int Index::_collect_dense_result(
       auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
         out.reserve(docs.size());
         for (auto &doc : docs) {
-          revert_one(doc.vector(), &out);
+          revert_one(result_vector(doc), &out);
         }
       };
       if (has_group_by) {
@@ -1244,6 +1445,10 @@ int Index::_collect_dense_result(
       int revert_err = 0;
       auto revert_one = [&](const void *vec, std::vector<std::string> *out) {
         if (revert_err) return;
+        if (!vec) {
+          revert_err = core::IndexError_ReadData;
+          return;
+        }
         std::string reverted_vector;
         reverted_vector.resize(input_vector_meta_.dimension() *
                                input_vector_meta_.unit_size());
@@ -1257,7 +1462,7 @@ int Index::_collect_dense_result(
       auto revert_docs = [&](auto &docs, std::vector<std::string> &out) {
         out.reserve(docs.size());
         for (auto &doc : docs) {
-          revert_one(doc.vector(), &out);
+          revert_one(result_vector(doc), &out);
         }
       };
       if (has_group_by) {
@@ -1415,8 +1620,22 @@ int Index::_sparse_search(const VectorData &vector_data,
 
 int Index::merge(const std::vector<Index::Pointer> &indexes,
                  const IndexFilter &filter, const MergeOptions &options) {
+  if (!is_open_ || is_read_only_) {
+    LOG_ERROR("Cannot merge into an index that is closed or read-only");
+    return core::IndexError_Runtime;
+  }
   if (indexes.empty()) {
     return core::IndexError_Success;
+  }
+  // External Flat providers contain IDs only; merge has no bound source.
+  if (param_.index_type == IndexType::kFlat && param_.use_external_vector) {
+    return core::IndexError_Unsupported;
+  }
+  for (const auto &index : indexes) {
+    if (index && index->param_.index_type == IndexType::kFlat &&
+        index->param_.use_external_vector) {
+      return core::IndexError_Unsupported;
+    }
   }
   // ivf need builder
   auto reducer =
@@ -1454,7 +1673,8 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
     LOG_ERROR("Failed to init reducer");
     return core::IndexError_Runtime;
   }
-  if (converter_ != nullptr && reformer_ == nullptr) {
+  if (pending_quantizer_training_ ||
+      (converter_ != nullptr && reformer_ == nullptr)) {
     std::vector<MergeSourceIndexHolder::Source> sources;
     sources.reserve(indexes.size());
     for (const auto &index : indexes) {
@@ -1489,19 +1709,36 @@ int Index::merge(const std::vector<Index::Pointer> &indexes,
                                                            input_vector_meta_);
     if (holder->error() != 0) return holder->error();
     if (holder->count() == 0) {
-      LOG_ERROR("No vectors available to train converter");
+      LOG_ERROR("No vectors available to train quantization");
       return core::IndexError_InvalidArgument;
     }
-    int ret = converter_->train(holder);
+    int ret = pending_quantizer_training_ ? turbo_quantizer_->train(holder)
+                                          : converter_->train(holder);
     if (holder->error() != 0) return holder->error();
     if (ret != 0) {
-      LOG_ERROR("Failed to train converter from merge sources");
+      LOG_ERROR("Failed to train quantization from merge sources");
       return ret;
     }
-    ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
-                                          &streamer_vector_meta_, &reformer_);
-    if (ret != 0) return ret;
-    streamer_->merge_trained_meta(proxima_index_meta_);
+    if (pending_quantizer_training_) {
+      // Training may change the code layout. Persist the codebook before any
+      // graph nodes are inserted, using the normal streamer open path.
+      proxima_index_meta_ = turbo_quantizer_->meta();
+      streamer_vector_meta_.set_meta(
+          proxima_index_meta_.data_type(), proxima_index_meta_.dimension(),
+          static_cast<uint32_t>(turbo_quantizer_->type()),
+          proxima_index_meta_.extra_meta_size());
+      ret = streamer_->init(proxima_index_meta_, proxima_index_params_,
+                            turbo_quantizer_);
+      if (ret != 0) return ret;
+      ret = streamer_->open(storage_);
+      if (ret != 0) return ret;
+      pending_quantizer_training_ = false;
+    } else {
+      ret = CreateReformerFromConverterMeta(converter_, &proxima_index_meta_,
+                                            &streamer_vector_meta_, &reformer_);
+      if (ret != 0) return ret;
+      streamer_->merge_trained_meta(proxima_index_meta_);
+    }
   }
   if (reducer->set_target_streamer_wiht_info(builder_, streamer_, converter_,
                                              reformer_, input_vector_meta_,

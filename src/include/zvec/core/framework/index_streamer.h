@@ -36,6 +36,12 @@ class IndexStreamer : public IndexRunner {
   //! Destructor
   ~IndexStreamer() override = default;
 
+  //! Report a failed query context admission with its original status.
+  virtual int create_context_with_status(Context::Pointer &context) const {
+    context = create_context();
+    return context ? 0 : IndexError_Runtime;
+  }
+
   //! Initialize the streamer
   virtual int init(const IndexMeta & /*meta*/,
                    const ailego::Params & /*params*/) {
@@ -56,8 +62,19 @@ class IndexStreamer : public IndexRunner {
     return IndexError_NotImplemented;
   }
 
+  //! Original build vectors keyed by destination ID, when supplied.
+  virtual IndexProvider::Pointer original_provider() const {
+    return nullptr;
+  }
+
   //! Open a index from storage
   virtual int open(IndexStorage::Pointer stg) = 0;
+
+  //! Open with explicit access intent. Legacy streamers retain their open
+  //! behavior; implementations may skip build-only state for read-only use.
+  virtual int open(IndexStorage::Pointer stg, bool /*read_only*/) {
+    return open(stg);
+  }
 
   //! Flush index
   virtual int flush(uint64_t check_point) = 0;

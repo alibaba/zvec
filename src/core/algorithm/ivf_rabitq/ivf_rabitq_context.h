@@ -15,12 +15,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 #include <zvec/ailego/logger/logger.h>
+#include <zvec/core/interface/constants.h>
 #include "zvec/ailego/container/params.h"
 #include "zvec/core/framework/index_context.h"
 #include "zvec/core/framework/index_document.h"
@@ -43,6 +45,8 @@ struct IvfRabitqProbeCentroid {
 // SplitBatchQuery object (via type-erased shared_ptr).
 struct IvfRabitqQueryState {
   std::vector<float> rotated_query;
+  std::vector<float> lut_scratch;
+  std::vector<uint16_t> hacc_scratch;
   float query_norm_sq{0.0f};
   // Opaque pointer to rabitqlib::SplitBatchQuery<float>, managed by reformer
   std::shared_ptr<void> batch_query;
@@ -117,6 +121,8 @@ class IvfRabitqContext : public IndexContext {
     result_heap_.clear();
     result_heap_.set_threshold(this->threshold());
     query_state.rotated_query.clear();
+    query_state.lut_scratch.clear();
+    query_state.hacc_scratch.clear();
     query_state.query_norm_sq = 0.0f;
     query_state.batch_query.reset();
     probe_centroids.clear();
@@ -359,7 +365,7 @@ class IvfRabitqContext : public IndexContext {
   std::unique_ptr<GroupSearchState> group_state_;
 
   uint32_t topk_{10};
-  uint32_t nprobe_{10};
+  uint32_t nprobe_{core_interface::kDefaultIvfRabitqNumProbes};
   uint32_t max_scan_count_{0};
   float scan_ratio_{kDefaultIvfRabitqScanRatio};
   uint32_t bruteforce_threshold_{kDefaultIvfRabitqBruteForceThreshold};

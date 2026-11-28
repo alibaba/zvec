@@ -13,34 +13,33 @@
 // limitations under the License.
 #pragma once
 
+#include <cstdint>
 #include <string>
 
 namespace zvec {
 namespace core {
 
 // IVF RabitQ specific params
-static const std::string PARAM_IVF_RABITQ_NLIST("proxima.ivf_rabitq.nlist");
-static const std::string PARAM_IVF_RABITQ_NPROBE("proxima.ivf_rabitq.nprobe");
-static const std::string PARAM_IVF_RABITQ_SCAN_RATIO(
+inline const std::string PARAM_IVF_RABITQ_NLIST("proxima.ivf_rabitq.nlist");
+inline const std::string PARAM_IVF_RABITQ_NPROBE("proxima.ivf_rabitq.nprobe");
+inline const std::string PARAM_IVF_RABITQ_SCAN_RATIO(
     "proxima.ivf_rabitq.scan_ratio");
-static const std::string PARAM_IVF_RABITQ_BRUTE_FORCE_THRESHOLD(
+inline const std::string PARAM_IVF_RABITQ_BRUTE_FORCE_THRESHOLD(
     "proxima.ivf_rabitq.brute_force_threshold");
-static const std::string PARAM_IVF_RABITQ_BUILDER_THREAD_COUNT(
+inline const std::string PARAM_IVF_RABITQ_BUILDER_THREAD_COUNT(
     "proxima.ivf_rabitq.builder.thread_count");
 
 // Segment IDs
-static const std::string IVF_RABITQ_HEADER_SEG_ID{"ivf_rabitq.header"};
-static const std::string IVF_RABITQ_BATCH_DATA_SEG_ID{"ivf_rabitq.batch_data"};
-static const std::string IVF_RABITQ_EX_DATA_SEG_ID{"ivf_rabitq.ex_data"};
-static const std::string IVF_RABITQ_CLUSTER_META_SEG_ID{
+inline const std::string IVF_RABITQ_HEADER_SEG_ID{"ivf_rabitq.header"};
+inline const std::string IVF_RABITQ_BATCH_DATA_SEG_ID{"ivf_rabitq.batch_data"};
+inline const std::string IVF_RABITQ_EX_DATA_SEG_ID{"ivf_rabitq.ex_data"};
+inline const std::string IVF_RABITQ_CLUSTER_META_SEG_ID{
     "ivf_rabitq.cluster_meta"};
-static const std::string IVF_RABITQ_KEYS_SEG_ID{"ivf_rabitq.keys"};
-static const std::string IVF_RABITQ_MAPPING_SEG_ID{"ivf_rabitq.mapping"};
-static const std::string IVF_RABITQ_CENTROID_SEG_ID{"ivf_rabitq.centroid"};
+inline const std::string IVF_RABITQ_KEYS_SEG_ID{"ivf_rabitq.keys"};
+inline const std::string IVF_RABITQ_MAPPING_SEG_ID{"ivf_rabitq.mapping"};
+inline const std::string IVF_RABITQ_CENTROID_SEG_ID{"ivf_rabitq.centroid"};
 
 // Defaults
-constexpr uint32_t kDefaultIvfRabitqNlist = 1024;
-constexpr uint32_t kDefaultIvfRabitqNprobe = 10;
 constexpr float kDefaultIvfRabitqScanRatio = 0.1f;
 constexpr uint32_t kDefaultIvfRabitqBruteForceThreshold = 1000;
 

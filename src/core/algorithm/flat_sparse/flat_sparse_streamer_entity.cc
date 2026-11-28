@@ -22,6 +22,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/time_helper.h>
 #include <zvec/core/framework/index_error.h>
+#include "utility/legacy_read_buffer.h"
 #include "flat_sparse_index_format.h"
 #include "flat_sparse_utility.h"
 
@@ -940,8 +941,8 @@ int FlatSparseStreamerEntity::get_sparse_vector_ptr_by_id(
 
   auto offset_chunk = sparse_offset_chunks_[offset_chunk_index];
 
-  const void *offset_info = nullptr;
-  size_t read_len = offset_chunk->read(offset_chunk_offset, &offset_info,
+  IndexStorage::MemoryBlock offset_info;
+  size_t read_len = offset_chunk->read(offset_chunk_offset, offset_info,
                                        offset_size_per_node());
   if (ailego_unlikely(read_len != offset_size_per_node())) {
     LOG_ERROR("Read offset info failed, offset=%u, read_len=%zu, expect=%u",
@@ -950,9 +951,9 @@ int FlatSparseStreamerEntity::get_sparse_vector_ptr_by_id(
   };
 
   // sparse offset
-  uint64_t sparse_offset = *(uint64_t *)offset_info;
+  uint64_t sparse_offset = *(uint64_t *)offset_info.data();
   uint32_t sparse_vector_len =
-      *(uint32_t *)((uint8_t *)offset_info + sizeof(uint64_t));
+      *(uint32_t *)((uint8_t *)offset_info.data() + sizeof(uint64_t));
 
   uint32_t sparse_data_chunk_index =
       static_cast<uint32_t>((sparse_offset >> 32) & 0xFFFFFFFF);
@@ -1049,8 +1050,10 @@ int FlatSparseStreamerEntity::write_sparse_vector_data(uint32_t chunk_index,
 
 const void *FlatSparseStreamerEntity::get_sparse_vector_data(
     uint32_t chunk_index, uint64_t offset, uint32_t length) const {
-  const void *data;
-  auto size = sparse_data_chunks_[chunk_index]->read(offset, &data, length);
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock data;
+  auto size = sparse_data_chunks_[chunk_index]->read(offset, data, length);
   if (size != length) {
     LOG_ERROR(
         "read sparse vector data failed: chunk_index=%u, offset=%zu, "
@@ -1062,7 +1065,7 @@ const void *FlatSparseStreamerEntity::get_sparse_vector_data(
   //     "get_sparse_vector_data: chunk_index=%u, offset=%lu, length=%u, "
   //     "data=%p",
   //     chunk_index, offset, length, data);
-  return data;
+  return buffer.assign(data, length);
 }
 
 int FlatSparseStreamerEntity::get_sparse_vector_data(

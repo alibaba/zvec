@@ -24,6 +24,13 @@ namespace core {
 
 class HnswStreamer : public IndexStreamer {
  public:
+  // Internal bulk-build mode: source vectors already have meta()'s stored
+  // encoding. Keep the source immutable and alive through dump_with_vectors().
+  virtual int open_with_borrowed_vectors(IndexStorage::Pointer storage,
+                                         const VectorSource *source);
+  virtual int dump_with_vectors(const IndexDumper::Pointer &dumper);
+  size_t packed_segment_count() const;
+
   using ContextPointer = IndexStreamer::Context::Pointer;
 
   HnswStreamer();
@@ -90,10 +97,23 @@ class HnswStreamer : public IndexStreamer {
     return entity_->storage_mode();
   }
 
+  IndexProvider::Pointer original_provider() const override {
+    return provider_;
+  }
+
+  const std::shared_ptr<zvec::turbo::Quantizer> &quantizer() const {
+    return quantizer_;
+  }
+
   //! Whether the active search distance path is backed by a turbo quantizer.
   bool uses_turbo_distance() const {
     return quantizer_ != nullptr;
   }
+
+  //! Reconstruct the persisted quantizer, sharing it with the interface layer.
+  static int RestoreQuantizer(
+      const IndexStorage::Pointer &storage, const IndexMeta &meta,
+      std::shared_ptr<zvec::turbo::Quantizer> *quantizer);
 
   //! Whether graph construction is backed by a turbo quantizer. Compatible
   //! FP32 providers use a dedicated quantizer; other providers use a metric.
@@ -136,9 +156,10 @@ class HnswStreamer : public IndexStreamer {
   int search_impl(const void *query, const IndexQueryMeta &qmeta,
                   uint32_t count, Context::Pointer &context) const override;
 
-  int search_candidates_impl(const void *query, const IndexQueryMeta &qmeta,
-                             std::vector<uint64_t> &keys,
-                             Context::Pointer &context) const override;
+  int search_candidates_impl(
+      const void *query, const IndexQueryMeta &qmeta,
+      std::vector<uint64_t> &keys, Context::Pointer &context,
+      std::vector<float> *scores = nullptr) const override;
 
   //! Similarity brute force search
   int search_bf_impl(const void *query, const IndexQueryMeta &qmeta,
@@ -184,6 +205,7 @@ class HnswStreamer : public IndexStreamer {
 
   //! Open index from file path
   int open(IndexStorage::Pointer stg) override;
+  int open(IndexStorage::Pointer stg, bool read_only) override;
 
   //! Close file
   int close() override;
@@ -207,20 +229,11 @@ class HnswStreamer : public IndexStreamer {
   void print_debug_info() override;
 
  private:
-  inline int check_params(const void *query,
-                          const IndexQueryMeta &qmeta) const {
-    if (ailego_unlikely(!query)) {
-      LOG_ERROR("null query");
-      return IndexError_InvalidArgument;
-    }
-    if (ailego_unlikely(qmeta.dimension() != meta_.dimension() ||
-                        qmeta.data_type() != meta_.data_type() ||
-                        qmeta.element_size() != meta_.element_size())) {
-      LOG_ERROR("Unsupported query meta");
-      return IndexError_Mismatch;
-    }
-    return 0;
-  }
+  bool valid_original_provider(int dimension) const;
+  int create_quantizer_segment(const IndexStorage::Pointer &storage);
+
+  int check_params(const void *query, const IndexQueryMeta &qmeta,
+                   bool search = false) const;
 
   inline int check_sparse_count_is_zero(const uint32_t *sparse_count,
                                         uint32_t count) const {
@@ -308,6 +321,7 @@ class HnswStreamer : public IndexStreamer {
 
   uint32_t magic_{0U};
   State state_{STATE_INIT};
+  bool read_only_{false};
   bool bf_enabled_{false};
   bool check_crc_enabled_{false};
   bool filter_same_key_{false};
@@ -316,6 +330,7 @@ class HnswStreamer : public IndexStreamer {
   bool use_id_map_{true};
   bool use_contiguous_memory_{false};
   bool use_external_vector_{false};
+  const VectorSource *build_vector_source_{nullptr};
 
   //! avoid add vector while dumping index
   ailego::SharedMutex shared_mutex_{};

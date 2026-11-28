@@ -19,12 +19,19 @@
 #include <limits>
 #include <string>
 #include <thread>
+#include <ailego/pattern/defer.h>
+#include <ailego/utility/memory_helper.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/buffer/budgeted_buffer.h>
+#include <zvec/ailego/buffer/budgeted_mapped_buffer.h>
+#include <zvec/ailego/buffer/memory_reservation.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
+#include <zvec/ailego/io/file.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include "utility/utility_params.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec;
 using namespace zvec::core;
@@ -36,7 +43,7 @@ constexpr size_t kPoolSize = 16UL * 1024UL * 1024UL;
 class BufferReadStorageTest : public testing::Test {
  protected:
   void SetUp() override {
-    ailego::MemoryLimitPool::get_instance().init(kPoolSize);
+    ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(kPoolSize));
 
     auto dumper = IndexFactory::CreateDumper("FileDumper");
     ASSERT_NE(dumper, nullptr);
@@ -54,6 +61,7 @@ class BufferReadStorageTest : public testing::Test {
   }
 
   void TearDown() override {
+    EXPECT_EQ(0u, ailego::PoolPayloadBudget::get_instance().used());
     std::remove(file_path_.c_str());
   }
 
@@ -79,7 +87,7 @@ TEST_F(BufferReadStorageTest, NoneDefersPagePopulationUntilFirstRead) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
   EXPECT_EQ(0u, pool.stats().page_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_TRUE(storage->vec_buffer_pool()->cache_enabled());
@@ -98,7 +106,7 @@ TEST_F(BufferReadStorageTest, SequentialPreservesExistingWarmupBehavior) {
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
 
-  EXPECT_GT(ailego::MemoryLimitPool::get_instance().stats().page_used, 0u);
+  EXPECT_GT(ailego::PoolPayloadBudget::get_instance().stats().page_used, 0u);
 
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
@@ -144,7 +152,8 @@ TEST_F(BufferReadStorageTest, ColdScatterReadKeepsContiguousFallback) {
   ASSERT_EQ(length, segment->read_scatter(0, block, length));
   ASSERT_EQ(1u, block.spans.size());
   EXPECT_EQ(length, block.spans[0].size);
-  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.fallback.type_);
+  EXPECT_EQ(IndexStorage::MemoryBlock::MBT_REUSABLE_SCRATCH,
+            block.fallback.type_);
   EXPECT_EQ(nullptr, block.lease);
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.spans[0].data, length));
 }
@@ -160,12 +169,15 @@ TEST_F(BufferReadStorageTest, RejectsUnknownWarmupMode) {
 
 TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   const size_t kTooSmall = ailego::kVectorPageSize - 1;
-  ASSERT_EQ(0, ailego::MemoryLimitPool::get_instance().init(kTooSmall));
+  ASSERT_EQ(0,
+            ::zvec::ailego::PoolPayloadBudget::get_instance().init(kTooSmall));
 
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  EXPECT_EQ(
+      0u,
+      ::zvec::ailego::PoolPayloadBudget::get_instance().stats().metadata_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
   EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
@@ -175,17 +187,19 @@ TEST_F(BufferReadStorageTest, PoolSmallerThanOnePageFallsBackToBypass) {
   std::string actual(payload_.size(), '\0');
   ASSERT_EQ(actual.size(), segment->fetch(0, actual.data(), actual.size()));
   EXPECT_EQ(payload_, actual);
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(
+      0u, ::zvec::ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
-  ASSERT_EQ(
-      0, ailego::MemoryLimitPool::get_instance().init(ailego::kVectorPageSize));
+  ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                   ailego::kVectorPageSize));
 
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().metadata_used);
+  EXPECT_EQ(0u,
+            ailego::PoolPayloadBudget::get_instance().stats().metadata_used);
   ASSERT_NE(nullptr, storage->vec_buffer_pool());
   EXPECT_FALSE(storage->vec_buffer_pool()->cache_enabled());
   EXPECT_GE(storage->vec_buffer_pool()->file_descriptor(), 0);
@@ -193,10 +207,18 @@ TEST_F(BufferReadStorageTest, PoolWithoutRoomForMetadataFallsBackToBypass) {
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
   IndexStorage::MemoryBlock block;
+  if (ailego::PoolPayloadBudget::get_instance().available() < 4096) {
+    // The segment's scratch-owner control block is charged too. On a 4 KiB
+    // native-page platform, this one-page pool cannot also fit a 4 KiB copy.
+    EXPECT_EQ(0u, segment->read(0, block, 64));
+    EXPECT_EQ(IndexError_NoMemory, segment->read_error());
+    EXPECT_EQ(nullptr, block.data());
+    return;
+  }
   ASSERT_EQ(64u, segment->read(0, block, 64));
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.data(), 64));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(0u, ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {
@@ -206,16 +228,16 @@ TEST_F(BufferReadStorageTest, CachePressureFallsBackToOwnedRead) {
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
 
-  auto &pool = ailego::MemoryLimitPool::get_instance();
-  const size_t external_charge = pool.available();
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  const size_t external_charge = pool.available() - 4096;
   ASSERT_GT(external_charge, 0u);
   ASSERT_TRUE(pool.try_charge_external(external_charge));
+  AILEGO_DEFER([&] { pool.release_external(external_charge); });
 
   IndexStorage::MemoryBlock block;
   ASSERT_EQ(64u, segment->read(0, block, 64));
   EXPECT_EQ(0, std::memcmp(payload_.data(), block.data(), 64));
   EXPECT_EQ(IndexStorage::MemoryBlock::MBT_HEAP_SCRATCH, block.type_);
-  pool.release_external(external_charge);
 }
 
 TEST_F(BufferReadStorageTest, MemoryBlockKeepsPoolAliveAfterStorageClose) {
@@ -240,7 +262,7 @@ TEST_F(BufferReadStorageTest, MemoryBlockKeepsPoolAliveAfterStorageClose) {
   block.reset();
   EXPECT_EQ(0, std::memcmp(payload_.data(), copy.data(), 64));
   copy.reset();
-  EXPECT_EQ(0u, ailego::MemoryLimitPool::get_instance().stats().page_used);
+  EXPECT_EQ(0u, ailego::PoolPayloadBudget::get_instance().stats().page_used);
 }
 
 TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
@@ -262,25 +284,59 @@ TEST_F(BufferReadStorageTest, BorrowedReadAvoidsOwningHandleOnResidentPage) {
   block.reset();
 }
 
-TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
+TEST_F(BufferReadStorageTest, CrossPageReadReusesExclusiveScratchAtFullBudget) {
+  auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_SEQUENTIAL);
+  ASSERT_EQ(0, storage->open(file_path_, false));
+  auto segment = storage->get("payload");
+  const size_t offset = ailego::kVectorPageSize - segment->data_offset() + 1;
+  const size_t length = ailego::kVectorPageSize;
+  IndexStorage::MemoryBlock block;
+  ASSERT_EQ(length, segment->read(offset, block, length));
+  ASSERT_EQ(IndexStorage::MemoryBlock::MBT_REUSABLE_SCRATCH, block.type_);
+  const void *scratch = block.data();
+  auto copy = block;
+  std::array<IndexStorage::MemoryBlock, 5> pins;
+  for (size_t i = 0; i < pins.size(); ++i) {
+    ASSERT_EQ(1u, segment->read(std::min(i * ailego::kVectorPageSize,
+                                         payload_.size() - 1),
+                                pins[i], 1));
+  }
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
+  ailego::MemoryReservation pressure;
+  pressure.add(pool.available());
+  const size_t charged = pool.external_used();
+  ASSERT_EQ(length, segment->read(offset + 7, block, length));
+  EXPECT_EQ(scratch, block.data());
+  EXPECT_EQ(charged, pool.external_used());
+  EXPECT_EQ(0, std::memcmp(payload_.data() + offset + 7, block.data(), length));
+  EXPECT_EQ(0, std::memcmp(payload_.data() + offset, copy.data(), length));
+}
+
+TEST_F(BufferReadStorageTest, MemoryBlockPinsUntilReset) {
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
   auto segment = storage->get("payload");
   ASSERT_NE(segment, nullptr);
-  const void *data = nullptr;
-  ASSERT_EQ(64u, segment->read(0, &data, 64));
-  ASSERT_NE(data, nullptr);
-  EXPECT_EQ(0, std::memcmp(payload_.data(), data, 64));
-  auto &pool = ailego::MemoryLimitPool::get_instance();
+  IndexStorage::MemoryBlock data;
+  ASSERT_EQ(64u, segment->read(0, data, 64));
+  ASSERT_NE(data.data(), nullptr);
+  EXPECT_EQ(0, std::memcmp(payload_.data(), data.data(), 64));
+  auto &pool = ailego::PoolPayloadBudget::get_instance();
   const size_t external_charge = pool.available();
   ASSERT_GT(external_charge, 0u);
   ASSERT_TRUE(pool.try_charge_external(external_charge));
   EXPECT_FALSE(pool.try_charge_external(1));
 
   IndexStorage::SegmentData copied(0, 64);
-  ASSERT_TRUE(segment->read(&copied, 1));
-  EXPECT_EQ(0, std::memcmp(payload_.data(), copied.data, 64));
+  const bool copied_ok = segment->read(&copied, 1);
+  // The batch-copy scratch must also be admitted while the page stays pinned.
+  EXPECT_FALSE(copied_ok);
+  if (copied_ok) {
+    EXPECT_EQ(0, std::memcmp(payload_.data(), copied.data, 64));
+  }
+  EXPECT_EQ(0, std::memcmp(payload_.data(), data.data(), 64));
+  data.reset();
   bool charged_after_pin_release = false;
   for (size_t attempt = 0; attempt < 100 && !charged_after_pin_release;
        ++attempt) {
@@ -294,9 +350,13 @@ TEST_F(BufferReadStorageTest, PointerReadPinsUntilNextPointerRead) {
   }
   pool.release_external(external_charge);
   EXPECT_TRUE(charged_after_pin_release);
+  if (!copied_ok) {
+    ASSERT_TRUE(segment->read(&copied, 1));
+    EXPECT_EQ(0, std::memcmp(payload_.data(), copied.data, 64));
+  }
 }
 
-TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
+TEST_F(BufferReadStorageTest, MemoryBlockReadsAreIndependentAcrossThreads) {
   auto storage = create_storage(BUFFER_READ_STORAGE_WARMUP_NONE);
   ASSERT_NE(storage, nullptr);
   ASSERT_EQ(0, storage->open(file_path_, false));
@@ -310,9 +370,9 @@ TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
   std::array<std::thread, 2> readers;
   for (size_t i = 0; i < readers.size(); ++i) {
     readers[i] = std::thread([&, i] {
-      const void *data = nullptr;
-      if (segment->read(kOffsets[i], &data, kReadSize) != kReadSize ||
-          data == nullptr) {
+      IndexStorage::MemoryBlock data;
+      if (segment->read(kOffsets[i], data, kReadSize) != kReadSize ||
+          data.data() == nullptr) {
         failed.store(true, std::memory_order_release);
         ready.fetch_add(1, std::memory_order_release);
         return;
@@ -321,7 +381,8 @@ TEST_F(BufferReadStorageTest, PointerReadsUsePerThreadScratchBuffers) {
       while (ready.load(std::memory_order_acquire) != readers.size()) {
         std::this_thread::yield();
       }
-      if (std::memcmp(data, payload_.data() + kOffsets[i], kReadSize) != 0) {
+      if (std::memcmp(data.data(), payload_.data() + kOffsets[i], kReadSize) !=
+          0) {
         failed.store(true, std::memory_order_release);
       }
     });

@@ -9,17 +9,7 @@ endif()
 
 set(UTF8_ACP_LIBS
     zvec
-    core_knn_flat
-    core_knn_flat_sparse
-    core_knn_hnsw
-    core_knn_hnsw_rabitq
-    core_knn_hnsw_sparse
-    core_knn_ivf
-    core_knn_diskann
-    core_mix_reducer
-    core_metric
-    core_utility
-    core_quantizer
+    zvec_core
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
 )
@@ -50,6 +40,7 @@ foreach(UTF8_ACP_VARIANT ${UTF8_ACP_VARIANTS})
     INCS ${CMAKE_CURRENT_SOURCE_DIR}/..
     DEFS ZVEC_TEST_EXPECTED_ACP=${ZVEC_ACP_CODE}
   )
+  db_test_force_load_core(${ZVEC_ACP_TARGET})
 
   # CMake otherwise performs another mt.exe pass for incremental linking. The
   # manifest is already embedded explicitly, so disable that redundant pass.

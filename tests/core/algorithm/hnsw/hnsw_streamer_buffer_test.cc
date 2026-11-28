@@ -13,6 +13,7 @@
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/framework/index_streamer.h>
 #include "tests/test_util.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 using namespace zvec::core;
 using namespace zvec::ailego;
@@ -65,6 +66,60 @@ TEST_F(HnswStreamerTest, MaxDegreeIsNeighborCountNotSerializedBytes) {
             entity.upper_neighbors_size());
 }
 
+TEST_F(HnswStreamerTest, LegacyReadsReleaseStorageBeforeThreadExit) {
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
+  memory_pool.init(64UL * 1024 * 1024);
+  const auto initial_pages = memory_pool.stats().page_used;
+  auto storage = IndexFactory::CreateStorage("BufferStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "LegacyReadLifetime", true));
+
+  IndexStreamer::Stats stats;
+  auto entity = std::make_shared<HnswBufferPoolStreamerEntity>(stats);
+  entity->set_vector_size(dim * sizeof(float));
+  entity->set_l0_neighbor_cnt(2);
+  entity->set_upper_neighbor_cnt(2);
+  entity->set_scaling_factor(5);
+  ASSERT_EQ(0, entity->init(4));
+  ASSERT_EQ(0, entity->open(storage, 8UL * 1024 * 1024, false));
+  NumericalVector<float> vector(dim);
+  for (node_id_t id = 0; id < 3; ++id) {
+    for (size_t d = 0; d < dim; ++d) vector[d] = id * 100 + d;
+    node_id_t inserted;
+    ASSERT_EQ(0, entity->add_vector(0, 100 + id, vector.data(), &inserted));
+    ASSERT_EQ(id, inserted);
+  }
+
+  // Both legacy adapters used to retain owning MemoryBlocks in TLS. Exercise
+  // both on this still-running thread, including the resident-page path.
+  const auto *single = static_cast<const float *>(entity->get_vector(1));
+  ASSERT_NE(nullptr, single);
+  const node_id_t ids[] = {0, 2};
+  const void *vectors[2];
+  ASSERT_EQ(0, entity->get_vector(ids, 2, vectors));
+  for (size_t d = 0; d < dim; ++d) {
+    EXPECT_FLOAT_EQ(100 + d, single[d]);
+    EXPECT_FLOAT_EQ(d, static_cast<const float *>(vectors[0])[d]);
+    EXPECT_FLOAT_EQ(200 + d, static_cast<const float *>(vectors[1])[d]);
+  }
+  EXPECT_GT(memory_pool.stats().page_used, initial_pages);
+  IndexStorage::MemoryBlock retained;
+  ASSERT_EQ(0, entity->get_vector(2, retained));
+  ASSERT_EQ(IndexStorage::MemoryBlock::MBT_BUFFERPOOL, retained.type_);
+  ASSERT_EQ(0, entity->close());
+  entity.reset();
+  ASSERT_EQ(0, storage->close());
+  storage.reset();
+  // Explicit ownership must still keep the page alive after storage close.
+  EXPECT_GT(memory_pool.stats().page_used, initial_pages);
+  for (size_t d = 0; d < dim; ++d) {
+    EXPECT_FLOAT_EQ(200 + d, static_cast<const float *>(retained.data())[d]);
+  }
+  retained.reset();
+  EXPECT_EQ(initial_pages, memory_pool.stats().page_used);
+}
+
 TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
   // Four fixed level-0 nodes make both pruning paths deterministic: the
   // existing triangle has full two-neighbor lists, and the new node must
@@ -84,7 +139,8 @@ TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
     mutable std::vector<uint64_t> requested_keys;
   };
 
-  MemoryLimitPool::get_instance().init(64UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(64UL * 1024UL *
+                                                         1024UL);
   auto storage = IndexFactory::CreateStorage("BufferStorage");
   ASSERT_NE(nullptr, storage);
   ASSERT_EQ(0, storage->init(Params()));
@@ -167,7 +223,8 @@ TEST_F(HnswStreamerTest, BufferPruningUsesOriginalProviderVectors) {
 }
 
 TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   constexpr uint32_t kDocCount = 128;
   const std::string path = dir_ + "SearchDispatch";
   Params params;
@@ -262,7 +319,8 @@ TEST_F(HnswStreamerTest, BufferSearchDispatchReusesContextAcrossVisitModes) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearch) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -461,7 +519,8 @@ TEST_F(HnswStreamerTest, TestHnswSearch) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);
@@ -585,7 +644,8 @@ TEST_F(HnswStreamerTest, TestHnswSearchBuffer) {
 }
 
 TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
-  MemoryLimitPool::get_instance().init(512UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(512UL * 1024UL *
+                                                         1024UL);
   auto streamer = IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_NE(nullptr, streamer);
 
@@ -659,7 +719,8 @@ TEST_F(HnswStreamerTest, TestWideMConcurrentBuildBuffer) {
 }
 
 TEST_F(HnswStreamerTest, TestHnswSearchBufferMMap) {
-  MemoryLimitPool::get_instance().init(2 * 1024UL * 1024UL * 1024UL);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(2 * 1024UL * 1024UL *
+                                                         1024UL);
   IndexStreamer::Pointer write_streamer =
       IndexFactory::CreateStreamer("HnswStreamer");
   ASSERT_TRUE(write_streamer != nullptr);

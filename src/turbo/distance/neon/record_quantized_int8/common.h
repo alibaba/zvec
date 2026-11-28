@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <zvec/ailego/internal/platform.h>
 
 #if defined(AILEGO_ARM64_NEON)
@@ -27,6 +28,32 @@
 namespace zvec::turbo::neon::internal {
 
 #if defined(AILEGO_ARM64_NEON)
+// Load 1..15 bytes with zeroed inactive lanes and no out-of-bounds access.
+inline int8x16_t load_partial_int8(const int8_t *values, size_t count) {
+  if (count >= 8) {
+    const int8x8_t low = vld1_s8(values);
+    const uint64x1_t last = vreinterpret_u64_s8(vld1_s8(values + count - 8));
+    const uint64x1_t high =
+        vshl_u64(last, vdup_n_s64(-static_cast<int64_t>((16 - count) * 8)));
+    return vcombine_s8(low, vreinterpret_s8_u64(high));
+  }
+  uint64_t low = 0;
+  if (count >= 4) {
+    uint32_t first, last;
+    std::memcpy(&first, values, sizeof(first));
+    std::memcpy(&last, values + count - 4, sizeof(last));
+    low = first | ((static_cast<uint64_t>(last) >> ((8 - count) * 8)) << 32);
+  } else if (count >= 2) {
+    uint16_t first;
+    std::memcpy(&first, values, sizeof(first));
+    low = first;
+    if (count == 3) low |= static_cast<uint64_t>(uint8_t(values[2])) << 16;
+  } else if (count == 1) {
+    low = static_cast<uint8_t>(values[0]);
+  }
+  return vcombine_s8(vcreate_s8(low), vdup_n_s8(0));
+}
+
 inline int64x2_t accumulate_int8_products(int64x2_t sum, int8x16_t lhs,
                                           int8x16_t rhs) {
   const int16x8_t product_low = vmull_s8(vget_low_s8(lhs), vget_low_s8(rhs));
@@ -48,11 +75,11 @@ inline float ip_int8_neon(const void *a, const void *b, size_t size) {
     sum = accumulate_int8_products(sum, vld1q_s8(lhs + i), vld1q_s8(rhs + i));
   }
 
-  int64_t result = vaddvq_s64(sum);
-  for (; i < size; ++i) {
-    result += static_cast<int64_t>(lhs[i]) * rhs[i];
+  if (i < size) {
+    sum = accumulate_int8_products(sum, load_partial_int8(lhs + i, size - i),
+                                   load_partial_int8(rhs + i, size - i));
   }
-  return static_cast<float>(result);
+  return static_cast<float>(vaddvq_s64(sum));
 #else
   return scalar::internal::ip_int8_scalar(a, b, size);
 #endif

@@ -31,6 +31,7 @@
 #include <vector>
 #include <ailego/io/io_backend_def.h>
 #include <zvec/ailego/io/io_backend.h>
+#include <zvec/core/interface/constants.h>
 #include <zvec/db/collection.h>
 #include <zvec/db/config.h>
 #include <zvec/db/doc.h>
@@ -674,28 +675,6 @@ uint32_t zvec_config_data_get_optimize_thread_count(
   return cpp_config->optimize_thread_count;
 }
 
-zvec_error_code_t zvec_config_data_set_jieba_dict_dir(
-    zvec_config_data_t *config, const char *dir) {
-  if (!config) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Config pointer is null");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
-  auto *cpp_config = reinterpret_cast<zvec::GlobalConfig::ConfigData *>(config);
-  cpp_config->jieba_dict_dir = (dir != nullptr) ? std::string(dir) : "";
-  return ZVEC_OK;
-}
-
-const char *zvec_config_data_get_jieba_dict_dir(
-    const zvec_config_data_t *config) {
-  if (!config) {
-    return "";
-  }
-  auto *cpp_config =
-      reinterpret_cast<const zvec::GlobalConfig::ConfigData *>(config);
-  return cpp_config->jieba_dict_dir.c_str();
-}
-
-
 // =============================================================================
 // Initialization and cleanup interface implementation
 // =============================================================================
@@ -748,18 +727,6 @@ zvec_error_code_t zvec_shutdown(void) {
 
 bool zvec_is_initialized(void) {
   return g_initialized.load();
-}
-
-void zvec_set_default_jieba_dict_dir(const char *dir) {
-  zvec::GlobalConfig::Instance().set_default_jieba_dict_dir(
-      (dir != nullptr) ? std::string(dir) : std::string());
-}
-
-const char *zvec_get_default_jieba_dict_dir(void) {
-  // Thread-local buffer keeps c_str() valid until the next call on this thread.
-  thread_local std::string cached;
-  cached = zvec::GlobalConfig::Instance().jieba_dict_dir();
-  return cached.c_str();
 }
 
 // =============================================================================
@@ -986,9 +953,16 @@ void zvec_free_string(zvec_string_t *str) {
  * @return New string array, or NULL on failure
  */
 zvec_string_array_t *zvec_string_array_create(size_t count) {
+  if (count > SIZE_MAX / sizeof(zvec_string_t)) return nullptr;
+  
   zvec_string_array_t *array = (zvec_string_array_t *)malloc(sizeof(zvec_string_array_t));
+  if (!array) return nullptr;
   array->count = count;
   array->strings = (zvec_string_t *)malloc(sizeof(zvec_string_t) * count);
+  if (!array->strings) {
+    free(array);
+    return nullptr;
+  }
   memset(array->strings, 0, sizeof(zvec_string_t) * count);
   return array;
 }
@@ -1005,6 +979,7 @@ zvec_string_array_t *zvec_string_array_create_from_strings(const char **strings,
     return nullptr;
   }
   zvec_string_array_t *array = zvec_string_array_create(count);
+  if (!array) return nullptr;
   for (size_t i = 0; i < count; ++i) {
     zvec_string_array_add(array, i, strings[i]);
   }
@@ -1019,10 +994,13 @@ zvec_string_array_t *zvec_string_array_create_from_strings(const char **strings,
  */
 void zvec_string_array_add(zvec_string_array_t *array, size_t idx,
                            const char *str) {
+  if (!array || !str) return;
   if (idx >= array->count) return;
   size_t len = strlen(str);
-  array->strings[idx].data = (char *)malloc(len + 1);
-  memcpy(array->strings[idx].data, str, len + 1);
+  char *buf = (char *)malloc(len + 1);
+  if (!buf) return;
+  memcpy(buf, str, len + 1);
+  array->strings[idx].data = buf;
   array->strings[idx].length = len;
   array->strings[idx].capacity = len + 1;
 }
@@ -1357,52 +1335,26 @@ zvec_index_params_t *zvec_index_params_create(zvec_index_type_t index_type) {
           cpp_params = new zvec::FtsIndexParams();
           break;
         case ZVEC_INDEX_TYPE_HNSW:
-          cpp_params =
-              new zvec::HnswIndexParams(
-                  zvec::MetricType::L2,  // metric_type
-                  zvec::core_interface::kDefaultHnswNeighborCnt,  // m
-                  zvec::core_interface::kDefaultHnswEfConstruction,  // ef_construction
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::HnswIndexParams(zvec::MetricType::L2);
+          break;
+        case ZVEC_INDEX_TYPE_HNSW_RABITQ:
+          cpp_params = new zvec::HnswRabitqIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_IVF:
-          cpp_params =
-              new zvec::IVFIndexParams(zvec::MetricType::L2,  // metric_type
-                                       1024,                   // n_list (default)
-                                       10,                    // n_iters (default)
-                                       false,                // use_soar (default)
-                                       zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::IVFIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_IVF_RABITQ:
-          cpp_params = new zvec::IvfRabitqIndexParams(
-              zvec::MetricType::L2, zvec::core_interface::kDefaultIvfRabitqNlist,
-              zvec::core_interface::kDefaultRabitqTotalBits, 0);
+          cpp_params = new zvec::IvfRabitqIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_VAMANA:
-          cpp_params =
-              new zvec::VamanaIndexParams(
-                  zvec::MetricType::L2,  // metric_type
-                  zvec::core_interface::kDefaultVamanaMaxDegree,
-                  zvec::core_interface::kDefaultVamanaSearchListSize,
-                  zvec::core_interface::kDefaultVamanaAlpha,
-                  zvec::core_interface::kDefaultVamanaSaturateGraph,
-                  false,  // use_contiguous_memory
-                  false,  // use_id_map
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::VamanaIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_FLAT:
         default:
-          cpp_params =
-              new zvec::FlatIndexParams(zvec::MetricType::L2,  // metric_type
-                                        zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::FlatIndexParams(zvec::MetricType::L2);
           break;
         case ZVEC_INDEX_TYPE_DISKANN:
-          cpp_params =
-              new zvec::DiskAnnIndexParams(
-                  zvec::MetricType::L2,   // metric_type
-                  100,                     // max_degree (default)
-                  50,                      // list_size (default)
-                  0,                       // pq_chunk_num (default)
-                  zvec::QuantizeType::UNDEFINED);
+          cpp_params = new zvec::DiskAnnIndexParams(zvec::MetricType::L2);
           break;
       }
 
@@ -1571,6 +1523,43 @@ bool zvec_index_params_get_quantizer_enable_rotate(
     }
   }
   return false;
+}
+
+zvec_error_code_t zvec_index_params_set_quantizer_pq(
+    zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq) {
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to set PQ quantizer parameters",
+      auto *ivf = params ? dynamic_cast<zvec::IVFIndexParams *>(
+                              reinterpret_cast<zvec::IndexParams *>(params))
+                        : nullptr;
+      if (!ivf || !pq) {
+        SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                       "IVF index params and PQ params are required");
+        return ZVEC_ERROR_INVALID_ARGUMENT;
+      }
+      zvec::QuantizerParam candidate(
+          pq->enable_rotate, pq->num_chunk, pq->num_bits, pq->fast_scan,
+          pq->opq_iter, pq->opq_pq_iter);
+      auto status = candidate.validate();
+      if (!status.ok()) {
+        return handle_status(status);
+      }
+      ivf->set_quantizer_param(candidate);
+      return ZVEC_OK;)
+}
+
+zvec_error_code_t zvec_index_params_get_quantizer_pq(
+    const zvec_index_params_t *params, zvec_pq_quantizer_params_t *pq) {
+  const auto *ivf = params ? dynamic_cast<const zvec::IVFIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params)) : nullptr;
+  if (!ivf || !pq) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "IVF index params and PQ output are required");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  const auto &qp = ivf->quantizer_param();
+  *pq = {qp.num_chunk(), qp.num_bits(), qp.enable_rotate(), qp.fast_scan(),
+         qp.opq_iter(), qp.opq_pq_iter()};
+  return ZVEC_OK;
 }
 
 /**
@@ -1897,52 +1886,102 @@ zvec_error_code_t zvec_index_params_get_ivf_params(const zvec_index_params_t *pa
   return ZVEC_OK;
 }
 
+// Shared Turbo RaBitQ settings for HNSW, IVF and DiskANN.
+zvec_error_code_t zvec_index_params_set_rabitq_quantizer_params(
+    zvec_index_params_t *params, int total_bits, int num_clusters,
+    int sample_count, int n_iters) {
+  auto *p = dynamic_cast<zvec::VectorIndexParams *>(
+      reinterpret_cast<zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW &&
+             p->type() != zvec::IndexType::IVF &&
+             p->type() != zvec::IndexType::DISKANN) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ ||
+      total_bits < 1 || total_bits > 9 ||
+      !zvec::core_interface::IsValidRabitqClusterCount(num_clusters) ||
+      sample_count < 0 || n_iters <= 0) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Expected HNSW/IVF/DISKANN with RABITQ, total_bits in [1, 9], "
+                   "num_clusters in [1, 65536], positive n_iters, nonnegative sample_count");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  p->set_quantizer_param(zvec::QuantizerParam::ForRabitq(
+      p->enable_rotate(), total_bits, num_clusters, sample_count, n_iters));
+  return ZVEC_OK;
+}
+
+zvec_error_code_t zvec_index_params_get_rabitq_quantizer_params(
+    const zvec_index_params_t *params, int *total_bits, int *num_clusters,
+    int *sample_count, int *n_iters) {
+  const auto *p = dynamic_cast<const zvec::VectorIndexParams *>(
+      reinterpret_cast<const zvec::IndexParams *>(params));
+  if (!p || (p->type() != zvec::IndexType::HNSW &&
+             p->type() != zvec::IndexType::IVF &&
+             p->type() != zvec::IndexType::DISKANN) ||
+      p->quantize_type() != zvec::QuantizeType::RABITQ) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT, "Expected HNSW/IVF/DISKANN with RABITQ");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+  const auto &q = p->quantizer_param();
+  if (total_bits) *total_bits = q.total_bits();
+  if (sample_count) *sample_count = q.sample_count();
+  if (num_clusters) *num_clusters = q.num_clusters();
+  if (n_iters) *n_iters = q.n_iters();
+  return ZVEC_OK;
+}
+
 zvec_error_code_t zvec_index_params_set_ivf_rabitq_params(
     zvec_index_params_t *params, int nlist, int total_bits, int sample_count) {
-  if (!params) {
+  if (!params || nlist <= 0 || total_bits < 0 || total_bits > 9 ||
+      sample_count < 0) {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
+                   "RaBitQ requires non-null params, nlist > 0, total_bits in "
+                   "[0, 9] (0 only for IVF_RABITQ), and sample_count >= 0");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
   auto *cpp_params = reinterpret_cast<zvec::IndexParams *>(params);
-  auto *ivf_rabitq_params =
-      dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params);
-  if (!ivf_rabitq_params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
+  if (auto *legacy = dynamic_cast<zvec::IvfRabitqIndexParams *>(cpp_params)) {
+    legacy->set_nlist(nlist);
+    legacy->set_total_bits(total_bits);
+    legacy->set_sample_count(sample_count);
+    return ZVEC_OK;
   }
-  ivf_rabitq_params->set_nlist(nlist);
-  ivf_rabitq_params->set_total_bits(total_bits);
-  ivf_rabitq_params->set_sample_count(sample_count);
-  return ZVEC_OK;
+  auto *ivf = dynamic_cast<zvec::IVFIndexParams *>(cpp_params);
+  if (ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ && total_bits > 0) {
+    ivf->set_n_list(nlist);
+    auto q = ivf->quantizer_param();
+    q.set_total_bits(total_bits);
+    q.set_sample_count(sample_count);
+    ivf->set_quantizer_param(q);
+    return ZVEC_OK;
+  }
+  SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                 "Expected IVF_RABITQ or IVF with RABITQ quantization");
+  return ZVEC_ERROR_INVALID_ARGUMENT;
 }
 
 zvec_error_code_t zvec_index_params_get_ivf_rabitq_params(
     const zvec_index_params_t *params, int *out_nlist, int *out_total_bits,
     int *out_sample_count) {
-  if (!params) {
-    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
-    return ZVEC_ERROR_INVALID_ARGUMENT;
-  }
   auto *cpp_params = reinterpret_cast<const zvec::IndexParams *>(params);
-  auto *ivf_rabitq_params =
-      dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params);
-  if (!ivf_rabitq_params) {
+  int nlist, total_bits, sample_count;
+  if (auto *legacy =
+          dynamic_cast<const zvec::IvfRabitqIndexParams *>(cpp_params)) {
+    nlist = legacy->nlist();
+    total_bits = legacy->total_bits();
+    sample_count = legacy->sample_count();
+  } else if (auto *ivf = dynamic_cast<const zvec::IVFIndexParams *>(cpp_params);
+             ivf && ivf->quantize_type() == zvec::QuantizeType::RABITQ) {
+    nlist = ivf->n_list();
+    total_bits = ivf->quantizer_param().total_bits();
+    sample_count = ivf->quantizer_param().sample_count();
+  } else {
     SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
-                   "Invalid params or not IVF_RABITQ index type");
+                   "Expected IVF_RABITQ or IVF with RABITQ quantization");
     return ZVEC_ERROR_INVALID_ARGUMENT;
   }
-  if (out_nlist) {
-    *out_nlist = ivf_rabitq_params->nlist();
-  }
-  if (out_total_bits) {
-    *out_total_bits = ivf_rabitq_params->total_bits();
-  }
-  if (out_sample_count) {
-    *out_sample_count = ivf_rabitq_params->sample_count();
-  }
+  if (out_nlist) *out_nlist = nlist;
+  if (out_total_bits) *out_total_bits = total_bits;
+  if (out_sample_count) *out_sample_count = sample_count;
   return ZVEC_OK;
 }
 
@@ -3806,6 +3845,7 @@ const char *zvec_doc_get_pk_copy(const zvec_doc_t *doc) {
   if (pk.empty()) return nullptr;
 
   char *result = static_cast<char *>(malloc(pk.length() + 1));
+  if (!result) return nullptr;
   strcpy(result, pk.c_str());
   return result;
 }
@@ -5047,7 +5087,7 @@ zvec_error_code_t zvec_query_params_hnsw_set_radius(zvec_hnsw_query_params_t *pa
 }
 
 float zvec_query_params_hnsw_get_radius(const zvec_hnsw_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
   return ptr->radius();
 }
@@ -5065,7 +5105,7 @@ zvec_error_code_t zvec_query_params_hnsw_set_is_linear(zvec_hnsw_query_params_t 
 }
 
 bool zvec_query_params_hnsw_get_is_linear(const zvec_hnsw_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::HnswQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5121,7 +5161,7 @@ zvec_error_code_t zvec_query_params_diskann_set_list_size(
 
 int zvec_query_params_diskann_get_list_size(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return 300;  // DiskAnnQueryParams default
+  if (!params) return zvec::core_interface::kDefaultDiskAnnSearchListSize;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->list_size();
 }
@@ -5140,7 +5180,7 @@ zvec_error_code_t zvec_query_params_diskann_set_radius(
 
 float zvec_query_params_diskann_get_radius(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->radius();
 }
@@ -5159,7 +5199,7 @@ zvec_error_code_t zvec_query_params_diskann_set_is_linear(
 
 bool zvec_query_params_diskann_get_is_linear(
     const zvec_diskann_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::DiskAnnQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5216,7 +5256,7 @@ zvec_error_code_t zvec_query_params_ivf_set_nprobe(zvec_ivf_query_params_t *para
 }
 
 int zvec_query_params_ivf_get_nprobe(const zvec_ivf_query_params_t *params) {
-  if (!params) return 10;
+  if (!params) return zvec::core_interface::kDefaultIvfNumProbes;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->nprobe();
 }
@@ -5234,7 +5274,7 @@ zvec_error_code_t zvec_query_params_ivf_set_scale_factor(zvec_ivf_query_params_t
 }
 
 float zvec_query_params_ivf_get_scale_factor(const zvec_ivf_query_params_t *params) {
-  if (!params) return 10.0f;
+  if (!params) return zvec::core_interface::kDefaultIvfRefineScaleFactor;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->scale_factor();
 }
@@ -5252,7 +5292,7 @@ zvec_error_code_t zvec_query_params_ivf_set_radius(zvec_ivf_query_params_t *para
 }
 
 float zvec_query_params_ivf_get_radius(const zvec_ivf_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->radius();
 }
@@ -5270,7 +5310,7 @@ zvec_error_code_t zvec_query_params_ivf_set_is_linear(zvec_ivf_query_params_t *p
 }
 
 bool zvec_query_params_ivf_get_is_linear(const zvec_ivf_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::IVFQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5330,7 +5370,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_nprobe(
 int zvec_query_params_ivf_rabitq_get_nprobe(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return zvec::core_interface::kDefaultIvfRabitqNprobe;
+    return zvec::core_interface::kDefaultIvfRabitqNumProbes;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->nprobe();
@@ -5351,7 +5391,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_scale_factor(
 float zvec_query_params_ivf_rabitq_get_scale_factor(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return 10.0f;
+    return zvec::core_interface::kDefaultIvfRabitqRefineScaleFactor;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->scale_factor();
@@ -5372,7 +5412,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_radius(
 float zvec_query_params_ivf_rabitq_get_radius(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return 0.0f;
+    return zvec::core_interface::kDefaultQueryRadius;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->radius();
@@ -5393,7 +5433,7 @@ zvec_error_code_t zvec_query_params_ivf_rabitq_set_is_linear(
 bool zvec_query_params_ivf_rabitq_get_is_linear(
     const zvec_ivf_rabitq_query_params_t *params) {
   if (!params) {
-    return false;
+    return zvec::core_interface::kDefaultQueryIsLinear;
   }
   auto *ptr = reinterpret_cast<const zvec::IvfRabitqQueryParams *>(params);
   return ptr->is_linear();
@@ -5453,7 +5493,7 @@ zvec_error_code_t zvec_query_params_flat_set_scale_factor(
 
 float zvec_query_params_flat_get_scale_factor(
     const zvec_flat_query_params_t *params) {
-  if (!params) return 10.0f;
+  if (!params) return zvec::core_interface::kDefaultFlatRefineScaleFactor;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->scale_factor();
 }
@@ -5471,7 +5511,7 @@ zvec_error_code_t zvec_query_params_flat_set_radius(zvec_flat_query_params_t *pa
 }
 
 float zvec_query_params_flat_get_radius(const zvec_flat_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->radius();
 }
@@ -5489,7 +5529,7 @@ zvec_error_code_t zvec_query_params_flat_set_is_linear(zvec_flat_query_params_t 
 }
 
 bool zvec_query_params_flat_get_is_linear(const zvec_flat_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::FlatQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -5777,7 +5817,7 @@ zvec_error_code_t zvec_query_params_vamana_set_radius(
 
 float zvec_query_params_vamana_get_radius(
     const zvec_vamana_query_params_t *params) {
-  if (!params) return 0.0f;
+  if (!params) return zvec::core_interface::kDefaultQueryRadius;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->radius();
 }
@@ -5796,7 +5836,7 @@ zvec_error_code_t zvec_query_params_vamana_set_is_linear(
 
 bool zvec_query_params_vamana_get_is_linear(
     const zvec_vamana_query_params_t *params) {
-  if (!params) return false;
+  if (!params) return zvec::core_interface::kDefaultQueryIsLinear;
   auto *ptr = reinterpret_cast<const zvec::VamanaQueryParams *>(params);
   return ptr->is_linear();
 }
@@ -7278,6 +7318,10 @@ zvec_error_code_t convert_document_results(
     const std::vector<std::shared_ptr<zvec::Doc>> &query_results,
     zvec_doc_t ***results, size_t *result_count) {
   *result_count = query_results.size();
+  if (*result_count == 0) {
+    *results = nullptr;
+    return ZVEC_OK;
+  }
   *results =
       static_cast<zvec_doc_t **>(malloc(*result_count * sizeof(zvec_doc_t *)));
 
@@ -7432,6 +7476,69 @@ zvec_error_code_t zvec_collection_query(const zvec_collection_t *collection,
       }
 
       return error_code;)
+}
+
+void zvec_group_results_free(zvec_group_result_t *results, size_t result_count) {
+  if (!results) return;
+  for (size_t i = 0; i < result_count; ++i) {
+    free(results[i].group_by_value);
+    zvec_docs_free(results[i].docs, results[i].doc_count);
+  }
+  free(results);
+}
+
+zvec_error_code_t zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count) {
+  if (results) *results = nullptr;
+  if (result_count) *result_count = 0;
+  if (!collection || !query || !results || !result_count) {
+    SET_LAST_ERROR(ZVEC_ERROR_INVALID_ARGUMENT,
+                   "Collection, query, results or result_count pointer is null");
+    return ZVEC_ERROR_INVALID_ARGUMENT;
+  }
+
+  ZVEC_TRY_RETURN_ERROR(
+      "Failed to execute grouped vector query",
+      auto *coll_ptr =
+          reinterpret_cast<const std::shared_ptr<zvec::Collection> *>(collection);
+      auto *internal_query =
+          reinterpret_cast<const zvec::GroupByVectorQuery *>(query);
+
+      auto result = (*coll_ptr)->group_by_query(*internal_query);
+      auto error_code = handle_expected_result(result);
+      if (error_code != ZVEC_OK) return error_code;
+      auto &groups = result.value();
+      if (groups.empty()) return ZVEC_OK;
+
+      // Keep partially built results owned locally until every group succeeds.
+      // Zero initialization allows the deleter to clean up on any exception.
+      auto cleanup = [&groups](zvec_group_result_t *ptr) {
+        zvec_group_results_free(ptr, groups.size());
+      };
+      std::unique_ptr<zvec_group_result_t, decltype(cleanup)> converted(
+          static_cast<zvec_group_result_t *>(
+              calloc(groups.size(), sizeof(zvec_group_result_t))), cleanup);
+      if (!converted) throw std::bad_alloc();
+      for (size_t i = 0; i < groups.size(); ++i) {
+        auto &group = groups[i];
+        auto &out = converted.get()[i];
+        out.group_by_value = strdup(group.group_by_value_.c_str());
+        if (!out.group_by_value) throw std::bad_alloc();
+        if (group.docs_.empty()) continue;
+        out.docs = static_cast<zvec_doc_t **>(
+            calloc(group.docs_.size(), sizeof(zvec_doc_t *)));
+        if (!out.docs) throw std::bad_alloc();
+        for (auto &doc : group.docs_) {
+          auto owned_doc = std::make_unique<zvec::Doc>(std::move(doc));
+          out.docs[out.doc_count++] =
+              reinterpret_cast<zvec_doc_t *>(owned_doc.release());
+        }
+      }
+      *results = converted.release();
+      *result_count = groups.size();
+      return ZVEC_OK;)
 }
 
 zvec_error_code_t zvec_collection_multi_query(

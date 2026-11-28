@@ -21,6 +21,7 @@
     zvec_collection_get_options;
     zvec_collection_get_schema;
     zvec_collection_get_stats;
+    zvec_collection_group_by_query;
     zvec_collection_insert;
     zvec_collection_insert_with_results;
     zvec_collection_multi_query;
@@ -72,7 +73,6 @@
     zvec_config_data_get_brute_force_by_keys_ratio;
     zvec_config_data_get_fts_brute_force_by_keys_ratio;
     zvec_config_data_get_invert_to_forward_scan_ratio;
-    zvec_config_data_get_jieba_dict_dir;
     zvec_config_data_get_log_type;
     zvec_config_data_get_memory_limit;
     zvec_config_data_get_optimize_thread_count;
@@ -80,7 +80,6 @@
     zvec_config_data_set_brute_force_by_keys_ratio;
     zvec_config_data_set_fts_brute_force_by_keys_ratio;
     zvec_config_data_set_invert_to_forward_scan_ratio;
-    zvec_config_data_set_jieba_dict_dir;
     zvec_config_data_set_log_config;
     zvec_config_data_set_memory_limit;
     zvec_config_data_set_optimize_thread_count;
@@ -169,7 +168,6 @@
     zvec_fts_get_query_string;
     zvec_fts_set_match_string;
     zvec_fts_set_query_string;
-    zvec_get_default_jieba_dict_dir;
     zvec_get_io_backend_description;
     zvec_get_io_backend_type;
     zvec_get_io_backend_type_name;
@@ -203,6 +201,7 @@
     zvec_group_by_vector_query_set_query_vector;
     zvec_group_by_vector_query_set_topk_per_group;
     zvec_group_by_vector_query_set_vamana_params;
+    zvec_group_results_free;
     zvec_index_params_create;
     zvec_index_params_destroy;
     zvec_index_params_get_diskann_list_size;
@@ -214,9 +213,11 @@
     zvec_index_params_get_invert_params;
     zvec_index_params_get_ivf_params;
     zvec_index_params_get_ivf_rabitq_params;
+    zvec_index_params_get_rabitq_quantizer_params;
     zvec_index_params_get_metric_type;
     zvec_index_params_get_quantize_type;
     zvec_index_params_get_quantizer_enable_rotate;
+    zvec_index_params_get_quantizer_pq;
     zvec_index_params_get_type;
     zvec_index_params_get_vamana_params;
     zvec_index_params_get_vamana_two_pass_build;
@@ -226,9 +227,11 @@
     zvec_index_params_set_invert_params;
     zvec_index_params_set_ivf_params;
     zvec_index_params_set_ivf_rabitq_params;
+    zvec_index_params_set_rabitq_quantizer_params;
     zvec_index_params_set_metric_type;
     zvec_index_params_set_quantize_type;
     zvec_index_params_set_quantizer_enable_rotate;
+    zvec_index_params_set_quantizer_pq;
     zvec_index_params_set_vamana_params;
     zvec_index_params_set_vamana_two_pass_build;
     zvec_index_type_to_string;
@@ -324,7 +327,6 @@
     zvec_query_params_vamana_set_is_linear;
     zvec_query_params_vamana_set_is_using_refiner;
     zvec_query_params_vamana_set_radius;
-    zvec_set_default_jieba_dict_dir;
     zvec_shutdown;
     zvec_string_array_add;
     zvec_string_array_create;

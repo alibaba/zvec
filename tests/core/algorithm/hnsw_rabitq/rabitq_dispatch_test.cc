@@ -12,28 +12,30 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <vector>
 #include <gtest/gtest.h>
-#include <rabitqlib/simd/dispatch.hpp>
-#include <rabitqlib/simd/space_dispatch.hpp>
-#include <rabitqlib/utils/cpu_features.hpp>
+#include <rabitqlib/core/data_layout.hpp>
+#include <rabitqlib/utils/space.hpp>
 
 namespace zvec {
 namespace core {
 
-TEST(RabitqDispatchTest, SelectsBestAvailableExcodeImplementation) {
-  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2()) {
-    GTEST_SKIP() << "CPU does not support AVX2/FMA or AVX512F/BW/DQ";
-  }
-
+TEST(RabitqDispatchTest, ScoresPackedExcodesThroughPublicDispatch) {
   constexpr size_t kExBits = 2;
-  const auto table = rabitqlib::simd::resolve_excode_ip_table();
-
-  if (rabitqlib::cpu::has_avx512_core()) {
-    EXPECT_EQ(table[kExBits],
-              &rabitqlib::simd::excode_ipimpl::ip64_fxu2_avx512);
-  } else {
-    ASSERT_TRUE(rabitqlib::cpu::has_avx2());
-    EXPECT_EQ(table[kExBits], &rabitqlib::simd::excode_ipimpl::ip64_fxu2_avx2);
+  const auto kernel = rabitqlib::select_excode_ipfunc(kExBits);
+  ASSERT_NE(nullptr, kernel);
+  for (size_t dim : {64U, 96U, 128U}) {
+    // Every two-bit code is one, independent of the packing permutation.
+    std::vector<char> storage(
+        rabitqlib::ExDataMap<float>::data_bytes(dim, kExBits), 0x55);
+    rabitqlib::ExDataMap<float> record(storage.data(), dim, kExBits);
+    std::vector<float> query(dim);
+    float expected = 0;
+    for (size_t i = 0; i < dim; ++i) {
+      query[i] = static_cast<float>(i % 11) * 0.25f;
+      expected += query[i];
+    }
+    EXPECT_FLOAT_EQ(expected, kernel(query.data(), record.ex_code(), dim));
   }
 }
 

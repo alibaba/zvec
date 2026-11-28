@@ -33,7 +33,16 @@ using pbwire::Writer;
 // breaks compatibility with existing manifest files.
 namespace f_quantizer {
 constexpr uint32_t kEnableRotate = 1;
-}
+constexpr uint32_t kTotalBits = 2;
+constexpr uint32_t kNumClusters = 3;
+constexpr uint32_t kSampleCount = 4;
+constexpr uint32_t kNIters = 5;
+constexpr uint32_t kNumChunk = 2;
+constexpr uint32_t kNumBits = 3;
+constexpr uint32_t kFastScan = 4;
+constexpr uint32_t kOpqIter = 5;
+constexpr uint32_t kOpqPqIter = 6;
+}  // namespace f_quantizer
 namespace f_base {
 constexpr uint32_t kMetricType = 1;
 constexpr uint32_t kQuantizeType = 2;
@@ -77,6 +86,8 @@ constexpr uint32_t kBase = 1;
 constexpr uint32_t kNList = 2;
 constexpr uint32_t kNIters = 3;
 constexpr uint32_t kUseSoar = 4;
+constexpr uint32_t kTotalBits = 5;
+constexpr uint32_t kSampleCount = 6;
 }  // namespace f_ivf
 namespace f_diskann {
 constexpr uint32_t kBase = 1;
@@ -158,7 +169,7 @@ struct BaseParams {
   // HNSW_RABITQ, so presence must be reproduced exactly to keep the encoded
   // bytes identical.
   bool has_quantizer_param{false};
-  bool enable_rotate{false};
+  QuantizerParam quantizer_param{};
 };
 
 void EncodeBase(const BaseParams &base, std::string *out) {
@@ -172,13 +183,40 @@ void EncodeBase(const BaseParams &base, std::string *out) {
   if (base.has_quantizer_param) {
     std::string quantizer;
     Writer qw(&quantizer);
-    qw.put_bool(f_quantizer::kEnableRotate, base.enable_rotate);
+    qw.put_bool(f_quantizer::kEnableRotate,
+                base.quantizer_param.enable_rotate());
+    if (base.quantize_type == QuantizeType::PQ) {
+      qw.put_varint(f_quantizer::kNumChunk, base.quantizer_param.num_chunk(),
+                    false);
+      qw.put_varint(f_quantizer::kNumBits, base.quantizer_param.num_bits(),
+                    false);
+      qw.put_varint(f_quantizer::kFastScan, base.quantizer_param.fast_scan(),
+                    false);
+      qw.put_varint(f_quantizer::kOpqIter, base.quantizer_param.opq_iter(),
+                    false);
+      qw.put_varint(f_quantizer::kOpqPqIter, base.quantizer_param.opq_pq_iter(),
+                    false);
+    } else {
+      // Omit defaults to preserve existing manifest bytes.
+      if (base.quantizer_param.total_bits() != 7)
+        qw.put_varint(f_quantizer::kTotalBits,
+                      base.quantizer_param.total_bits());
+      if (base.quantizer_param.num_clusters() != 16)
+        qw.put_varint(f_quantizer::kNumClusters,
+                      base.quantizer_param.num_clusters());
+      if (base.quantizer_param.sample_count() != 0)
+        qw.put_varint(f_quantizer::kSampleCount,
+                      base.quantizer_param.sample_count());
+      if (base.quantizer_param.n_iters() != 20)
+        qw.put_varint(f_quantizer::kNIters, base.quantizer_param.n_iters());
+    }
     w.put_message(f_base::kQuantizerParam, quantizer);
   }
 }
 
 BaseParams DecodeBase(std::string_view buf) {
   BaseParams base;
+  std::vector<std::string_view> quantizer_messages;
   Reader r(buf);
   while (r.next()) {
     switch (r.field()) {
@@ -190,18 +228,60 @@ BaseParams DecodeBase(std::string_view buf) {
         base.quantize_type = QuantizeTypeCodeBook::Get(
             wire::FromNumber<wire::QuantizeType>(r.int32_value()));
         break;
-      case f_base::kQuantizerParam: {
+      case f_base::kQuantizerParam:
         base.has_quantizer_param = true;
-        Reader qr(r.bytes());
-        while (qr.next()) {
-          if (qr.field() == f_quantizer::kEnableRotate) {
-            base.enable_rotate = qr.bool_value();
-          }
-        }
+        quantizer_messages.push_back(r.bytes());
         break;
-      }
       default:
-        break;  // unknown field: already consumed by Next()
+        break;
+    }
+  }
+  // PQ and RaBitQ historically use the same nested field numbers. Decode
+  // after reading the enclosing type, regardless of protobuf field order.
+  for (const auto message : quantizer_messages) {
+    Reader qr(message);
+    auto &q = base.quantizer_param;
+    while (qr.next()) {
+      if (qr.field() == f_quantizer::kEnableRotate) {
+        q.set_enable_rotate(qr.bool_value());
+      } else if (base.quantize_type == QuantizeType::PQ) {
+        switch (qr.field()) {
+          case f_quantizer::kNumChunk:
+            q.set_num_chunk(qr.int32_value());
+            break;
+          case f_quantizer::kNumBits:
+            q.set_num_bits(qr.int32_value());
+            break;
+          case f_quantizer::kFastScan:
+            q.set_fast_scan(qr.bool_value());
+            break;
+          case f_quantizer::kOpqIter:
+            q.set_opq_iter(qr.uint32_value());
+            break;
+          case f_quantizer::kOpqPqIter:
+            q.set_opq_pq_iter(qr.uint32_value());
+            break;
+          default:
+            break;
+        }
+      } else {
+        switch (qr.field()) {
+          case f_quantizer::kTotalBits:
+            q.set_total_bits(qr.int32_value());
+            break;
+          case f_quantizer::kNumClusters:
+            q.set_num_clusters(qr.int32_value());
+            break;
+          case f_quantizer::kSampleCount:
+            q.set_sample_count(qr.int32_value());
+            break;
+          case f_quantizer::kNIters:
+            q.set_n_iters(qr.int32_value());
+            break;
+          default:
+            break;
+        }
+      }
     }
   }
   return base;
@@ -214,7 +294,7 @@ BaseParams MakeBase(const Params *params) {
   base.metric_type = params->metric_type();
   base.quantize_type = params->quantize_type();
   base.has_quantizer_param = true;
-  base.enable_rotate = params->quantizer_param().enable_rotate();
+  base.quantizer_param = params->quantizer_param();
   return base;
 }
 
@@ -271,8 +351,8 @@ HnswIndexParams::OPtr DecodeHnsw(std::string_view buf) {
   }
   return std::make_shared<HnswIndexParams>(
       base.metric_type, m, ef_construction, base.quantize_type,
-      use_contiguous_memory, QuantizerParam(base.enable_rotate),
-      use_flat_contiguous_memory, flat_data_type);
+      use_contiguous_memory, base.quantizer_param, use_flat_contiguous_memory,
+      flat_data_type);
 }
 
 void EncodeHnswRabitq(const HnswRabitqIndexParams *params, std::string *out) {
@@ -417,7 +497,7 @@ FlatIndexParams::OPtr DecodeFlat(std::string_view buf) {
     }
   }
   return std::make_shared<FlatIndexParams>(
-      base.metric_type, base.quantize_type, QuantizerParam(base.enable_rotate),
+      base.metric_type, base.quantize_type, base.quantizer_param,
       use_contiguous_memory, storage_data_type);
 }
 
@@ -429,6 +509,20 @@ void EncodeIvf(const IVFIndexParams *params, std::string *out) {
   w.put_varint(f_ivf::kNList, static_cast<uint64_t>(params->n_list()));
   w.put_varint(f_ivf::kNIters, static_cast<uint64_t>(params->n_iters()));
   w.put_bool(f_ivf::kUseSoar, params->use_soar());
+  // Mirror canonical RaBitQ settings for older readers, retaining the legacy
+  // field numbers and default omission. There is no second in-memory source.
+  if (params->quantize_type() == QuantizeType::RABITQ &&
+      params->quantizer_param().total_bits() !=
+          core_interface::kDefaultRabitqTotalBits) {
+    w.put_varint(f_ivf::kTotalBits,
+                 static_cast<uint64_t>(params->quantizer_param().total_bits()));
+  }
+  if (params->quantize_type() == QuantizeType::RABITQ &&
+      params->quantizer_param().sample_count() != 0) {
+    w.put_varint(
+        f_ivf::kSampleCount,
+        static_cast<uint64_t>(params->quantizer_param().sample_count()));
+  }
 }
 
 IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
@@ -436,6 +530,8 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
   int32_t n_list = 0;
   int32_t n_iters = 0;
   bool use_soar = false;
+  int32_t total_bits = core_interface::kDefaultRabitqTotalBits;
+  int32_t sample_count = 0;
   Reader r(buf);
   while (r.next()) {
     switch (r.field()) {
@@ -448,6 +544,12 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
       case f_ivf::kNIters:
         n_iters = r.int32_value();
         break;
+      case f_ivf::kTotalBits:
+        total_bits = r.int32_value();
+        break;
+      case f_ivf::kSampleCount:
+        sample_count = r.int32_value();
+        break;
       case f_ivf::kUseSoar:
         use_soar = r.bool_value();
         break;
@@ -455,9 +557,15 @@ IVFIndexParams::OPtr DecodeIvf(std::string_view buf) {
         break;
     }
   }
+  if (base.quantize_type == QuantizeType::RABITQ) {
+    // Old builds used the outer values even if the nested values differed.
+    // Missing fields meant 7 bits / automatic sampling in those builds.
+    base.quantizer_param.set_total_bits(total_bits);
+    base.quantizer_param.set_sample_count(sample_count);
+  }
   return std::make_shared<IVFIndexParams>(base.metric_type, n_list, n_iters,
                                           use_soar, base.quantize_type,
-                                          QuantizerParam(base.enable_rotate));
+                                          base.quantizer_param);
 }
 
 void EncodeDiskAnn(const DiskAnnIndexParams *params, std::string *out) {
@@ -499,7 +607,7 @@ DiskAnnIndexParams::OPtr DecodeDiskAnn(std::string_view buf) {
   }
   return std::make_shared<DiskAnnIndexParams>(
       base.metric_type, max_degree, list_size, pq_chunk_num, base.quantize_type,
-      QuantizerParam(base.enable_rotate));
+      base.quantizer_param);
 }
 
 void EncodeVamana(const VamanaIndexParams *params, std::string *out) {
@@ -577,8 +685,8 @@ VamanaIndexParams::OPtr DecodeVamana(std::string_view buf) {
   return std::make_shared<VamanaIndexParams>(
       base.metric_type, max_degree, search_list_size, alpha, saturate_graph,
       use_contiguous_memory, use_id_map, base.quantize_type,
-      QuantizerParam(base.enable_rotate), two_pass_build,
-      use_flat_contiguous_memory, flat_data_type);
+      base.quantizer_param, two_pass_build, use_flat_contiguous_memory,
+      flat_data_type);
 }
 
 void EncodeInvert(const InvertIndexParams *params, std::string *out) {

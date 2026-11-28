@@ -12,13 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include <ailego/math/euclidean_distance_matrix.h>
-#include <ailego/math_batch/euclidean_distance_batch.h>
 #include <zvec/core/framework/index_error.h>
 #include <zvec/core/framework/index_factory.h>
 #include <zvec/core/interface/index_param.h>
 #include <zvec/turbo/turbo.h>
 #include "metric_params.h"
+#include "turbo_metric.h"
 
 namespace zvec {
 namespace core {
@@ -93,32 +92,18 @@ class UniformUint7Metric : public IndexMetric {
   //! Retrieve matrix distance function
   //! Uses direct int8 L2: sum((a[i]-b[i])^2) — no reconstruction needed
   MatrixDistance distance_matrix(size_t m, size_t n) const override {
-    if (m == 1 && n == 1) {
-      auto turbo_ret = turbo::get_distance_func(
-          turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-          turbo::QuantizeType::kUniform);
-      if (turbo_ret) {
-        return turbo_ret;
-      }
-      return reinterpret_cast<MatrixDistanceHandle>(
-          ailego::SquaredEuclideanDistanceMatrix<int8_t, 1, 1>::Compute);
-    }
-    // Only 1x1 is available for int8 in ailego
-    return nullptr;
+    if (m != 1 || n != 1) return nullptr;
+    return turbo::get_distance_func(turbo::MetricType::kSquaredEuclidean,
+                                    turbo::DataType::kInt8,
+                                    turbo::QuantizeType::kUniform);
   }
 
   //! Retrieve batch distance function
   //! Uses direct int8 batch L2 with prefetching
   MatrixBatchDistance batch_distance() const override {
-    auto turbo_ret = turbo::get_batch_distance_func(
-        turbo::MetricType::kSquaredEuclidean, turbo::DataType::kInt8,
-        turbo::QuantizeType::kUniform);
-    if (turbo_ret) {
-      return turbo_ret;
-    }
-    return reinterpret_cast<IndexMetric::MatrixBatchDistanceHandle>(
-        ailego::distance_batch::SquaredEuclideanDistanceBatch<int8_t, 12,
-                                                              2>::ComputeBatch);
+    return turbo::get_batch_distance_func(turbo::MetricType::kSquaredEuclidean,
+                                          turbo::DataType::kInt8,
+                                          turbo::QuantizeType::kUniform);
   }
 
   //! Retrieve params of Metric

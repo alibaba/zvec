@@ -326,7 +326,10 @@ int HnswSparseStreamer::close() {
 
   stats_.clear();
   meta_.set_metric(metric_->name(), 0, metric_->params());
-  entity_.set_index_meta(meta_);
+  if (entity_.dirty()) {
+    int ret = entity_.set_index_meta(meta_);
+    if (ret != 0) return ret;
+  }
   int ret = entity_.close();
   if (ret != 0) {
     return ret;

@@ -26,6 +26,7 @@ using WalFilePtr = std::shared_ptr<WalFile>;
 struct WalOptions {
   uint32_t max_docs_wal_flush{0};
   bool create_new{false};
+  bool read_only{false};
 };
 
 class WalFile {

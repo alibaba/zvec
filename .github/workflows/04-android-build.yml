@@ -48,7 +48,7 @@ jobs:
           max-size: 300M
 
       - name: Setup Java 17
-        uses: actions/setup-java@v6.0.1
+        uses: actions/setup-java@v6.2.0
         with:
           distribution: temurin
           java-version: '17'
@@ -106,7 +106,7 @@ jobs:
             -DBUILD_ZVEC_AILEGO_SHARED=OFF \
             -DBUILD_ZVEC_CORE_SHARED=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_CPP_EXAMPLES=ON \
             -DENABLE_NATIVE=OFF \
             -DAUTO_DETECT_ARCH=OFF \
@@ -116,9 +116,10 @@ jobs:
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
           if [ "${{ matrix.abi }}" = "arm64-v8a" ]; then
-            echo "Building focused DiskAnn tests and public C++ examples for arm64-v8a..."
+            echo "Building focused ARM64 index tests and public C++ examples..."
             cmake --build "$BUILD_DIR" \
-              --target diskann_mobile_compat_test diskann_mobile_collection_test zvec_cpp_examples \
+              --target diskann_mobile_compat_test diskann_mobile_collection_test \
+                hnsw_rabitq_streamer_test ivf_rabitq_streamer_test zvec_cpp_examples \
               --parallel
             exit 0
           fi
@@ -148,23 +149,6 @@ jobs:
 
           if [ ${#TEST_NAMES[@]} -eq 0 ]; then
             echo "ERROR: No Android test targets were discovered"
-            exit 1
-          fi
-
-          # All test cases in this legacy target are disabled with #if 0.
-          # Exclude it instead of treating a zero-test binary as a passing suite.
-          FILTERED_TEST_NAMES=()
-          for name in "${TEST_NAMES[@]}"; do
-            if [ "$name" = "cosine_distance_matrix_int8_test" ]; then
-              echo "Skipping $name: it contains no enabled GTest cases"
-              continue
-            fi
-            FILTERED_TEST_NAMES+=("$name")
-          done
-          TEST_NAMES=("${FILTERED_TEST_NAMES[@]}")
-
-          if [ ${#TEST_NAMES[@]} -eq 0 ]; then
-            echo "ERROR: No non-empty Android test targets were discovered"
             exit 1
           fi
 
@@ -299,6 +283,15 @@ jobs:
           DEVICE_LIB_DIR="$DEVICE_TEST_DIR/lib"
           adb shell "mkdir -p $DEVICE_TEST_DIR $DEVICE_LIB_DIR"
 
+          # Original Jieba resources are comparison fixtures, not SDK data.
+          # Tests read ../jieba_dict from their isolated working directories.
+          DEVICE_JIEBA_DICT_DIR="$DEVICE_TEST_DIR/jieba_dict"
+          adb shell "mkdir -p $DEVICE_JIEBA_DICT_DIR"
+          for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+            adb push "thirdparty/cppjieba/cppjieba-5.6.7/dict/$dict_file" \
+              "$DEVICE_JIEBA_DICT_DIR/$dict_file" > /dev/null
+          done
+
           # Push shared libraries
           echo "Pushing shared libraries..."
           SO_COUNT=0
@@ -337,15 +330,6 @@ jobs:
             echo "ERROR: No Android test targets were discovered"
             exit 1
           fi
-
-          FILTERED_TEST_NAMES=()
-          for name in "${TEST_NAMES[@]}"; do
-            if [ "$name" = "cosine_distance_matrix_int8_test" ]; then
-              continue
-            fi
-            FILTERED_TEST_NAMES+=("$name")
-          done
-          TEST_NAMES=("${FILTERED_TEST_NAMES[@]}")
 
           for required_test in diskann_mobile_compat_test diskann_mobile_collection_test; do
             found=0
@@ -472,10 +456,10 @@ jobs:
               : # The required DiskAnn suite ran exactly N/N tests successfully.
             elif grep -Eq '^\[==========\][[:space:]]+[1-9][0-9]* tests?[[:space:]]+from[[:space:]]+[1-9][0-9]* test (suites?|cases?)[[:space:]]+ran\.' <<< "$OUTPUT"; then
               : # A non-empty GTest suite completed without failures; skips are valid.
-            elif [ "$test_name" = "c_api_test" ] && \
+            elif { [ "$test_name" = "c_api_test" ] || [ "$test_name" = "c_api_rabitq_test" ]; } && \
                  grep -Eq '^Passed: [1-9][0-9]*[[:space:]]*$' <<< "$OUTPUT" && \
                  grep -Eq '^Failed: 0[[:space:]]*$' <<< "$OUTPUT"; then
-              : # c_api_test uses a custom test framework.
+              : # C API tests use custom summaries rather than GTest.
             else
               echo "  >>> FAILED (no recognisable non-empty passing test summary)"
               TEST_PASSED=0

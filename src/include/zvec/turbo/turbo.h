@@ -16,7 +16,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
-#include <zvec/ailego/math_batch/utils.h>
 #include <zvec/export.h>
 
 namespace zvec::turbo {
@@ -48,8 +47,21 @@ using DistanceFunc =
 using BatchDistanceFunc =
     std::function<void(const void **m, const void *q, size_t num, size_t dim,
                        float *out, const void **extra_values)>;
-using QueryPreprocessFunc =
-    zvec::ailego::distance_batch::DistanceBatchQueryPreprocessFunc;
+// M candidate pointers and N query pointers, each pointing to one contiguous
+// encoded vector. Output is query-major: out[j * M + i]. No transpose is
+// needed. extra_values, when present, has M entries with the same meaning as in
+// batch.
+using ManyToManyDistanceFunc = std::function<void(
+    const void *const *vectors, const void *const *queries, size_t m, size_t n,
+    size_t dim, float *out, const void *const *extra_values)>;
+// A fixed-width interleaved candidate block and N contiguous query vectors.
+// The factory fixes M; candidates use element[d * M + i], queries are not
+// interleaved, and output is out[j * M + i]. No metadata/preprocessing is
+// added.
+using InterleavedManyToManyDistanceFunc =
+    std::function<void(const void *vectors, const void *const *queries,
+                       size_t n, size_t dim, float *out)>;
+using QueryPreprocessFunc = void (*)(void *query, size_t dim);
 
 // Uniform UINT7 quantize kernel: fp32 -> int8 code in [0, 127] with a global
 // affine transform. Raw function pointer (rather than std::function) avoids
@@ -99,6 +111,11 @@ using CodebookBatchAsymmetricDistanceFunc =
     void (*)(const void **codes, const void *lut, size_t num, size_t num_chunk,
              float *out, const void **extra_values);
 
+// Batch symmetric: multiple codes against one code and a shared distance table.
+using CodebookBatchSymmetricDistanceFunc =
+    void (*)(const void *const *codes, const void *query,
+             const void *dist_table, size_t num, size_t num_chunk, float *out);
+
 // FastScan ADC kernel: LUT look-up + accumulate over one packed block of 32
 // vectors.  Codes are 4-bit and block-interleaved, the LUT is affine-quantized
 // to uint8; accumulation stays in the integer domain (callers apply
@@ -126,12 +143,14 @@ struct RotatorKernels {
 //
 // Fields are populated per family and are mutually exclusive: kPQ fills
 // asymmetric_distance / symmetric_distance / batch_asymmetric_distance,
+// and optionally batch_symmetric_distance when the ISA provides it,
 // kPQFast fills only fast_scan (the packed block scan is its sole read path).
 struct CodebookKernels {
   CodebookAsymmetricDistanceFunc asymmetric_distance = nullptr;
   CodebookSymmetricDistanceFunc symmetric_distance = nullptr;
   CodebookBatchAsymmetricDistanceFunc batch_asymmetric_distance = nullptr;
   CodebookFastScanFunc fast_scan = nullptr;
+  CodebookBatchSymmetricDistanceFunc batch_symmetric_distance = nullptr;
 };
 
 enum class MetricType {
@@ -151,6 +170,8 @@ enum class DataType {
   kUnknown,
   kUint4,
   kUint7,
+  kFp64,  // Raw clustering inputs.
+  kInt16,
 };
 
 enum class QuantizeType {
@@ -199,6 +220,32 @@ ZVEC_TURBO_API DistanceFunc get_distance_func(
 
 ZVEC_TURBO_API BatchDistanceFunc get_batch_distance_func(
     MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+// Uses the same kernel family and encoded layouts as get_batch_distance_func.
+// Apply that family's query preprocess to EACH query before calling. Raw
+// FP16/FP32 cosine inputs must already be normalized; other families retain
+// their encoded-data contracts. This API does not quantize or normalize.
+// Zero candidates or queries is a no-op (pointers may be null). Otherwise out
+// must hold M*N floats and must not overlap the inputs. Unsupported families or
+// unavailable explicit ISAs return an empty function, as with batch dispatch.
+ZVEC_TURBO_API ManyToManyDistanceFunc get_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, QuantizeType quantize_type,
+    CpuArchType cpu_arch_type = CpuArchType::kAuto);
+
+// Raw element-interleaved candidates: vectors[d * rows + i]. Queries remain
+// contiguous; results are query-major, out[q * rows + i]. No preprocessing or
+// metadata is added. rows is fixed by the returned function (2/4/8/16/32).
+// Supports FP32/FP16 IP/L2 on ARM64 GNU/Clang NEON, AVX2 + FMA, and AVX512F.
+// FP16 on x86 also requires F16C. For FP16 IP, kAuto skips AVX512; callers
+// can request AVX512 explicitly. Unsupported
+// shapes/types/metrics and unavailable or unimplemented explicit ISAs return
+// empty; kAuto selects only a compiled kernel supported by the current CPU.
+// n == 0 is a no-op even with null pointers; otherwise out holds rows*n floats
+// and must not overlap inputs. Both FP16 and FP32 accumulate in FP32.
+ZVEC_TURBO_API InterleavedManyToManyDistanceFunc
+get_interleaved_many_to_many_distance_func(
+    MetricType metric_type, DataType data_type, size_t rows,
     CpuArchType cpu_arch_type = CpuArchType::kAuto);
 
 ZVEC_TURBO_API QueryPreprocessFunc get_query_preprocess_func(

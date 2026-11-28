@@ -1,0 +1,1454 @@
+// Copyright 2025-present the zvec project
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <signal.h>
+#include <chrono>
+#include <iostream>
+#include <memory>
+#include <ailego/pattern/defer.h>
+#include <turbo/quantizer/quantized_holder.h>
+#include <turbo/quantizer/quantizer.h>
+#include <zvec/ailego/container/params.h>
+#include <zvec/ailego/utility/time_helper.h>
+#if RABITQ_SUPPORTED
+#include "algorithm/hnsw_rabitq/hnsw_rabitq_streamer.h"
+#include "algorithm/hnsw_rabitq/rabitq_converter.h"
+#include "algorithm/hnsw_rabitq/rabitq_reformer.h"
+#endif
+#include "zvec/ailego/logger/logger.h"
+#include "zvec/core/framework/index_dumper.h"
+#include "zvec/core/framework/index_factory.h"
+#include "zvec/core/framework/index_plugin.h"
+#include "zvec/core/framework/index_provider.h"
+#include "zvec/core/framework/index_reformer.h"
+#include "zvec/core/framework/index_streamer.h"
+#include "index_meta_helper.h"
+#include "meta_segment_common.h"
+#include "vecs_index_holder.h"
+
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wshadow"
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+#include <yaml-cpp/yaml.h>
+
+#ifdef __clang__
+#pragma clang diagnostic pop
+#elif defined(__GNUC__) || defined(__GNUG__)
+#pragma GCC diagnostic pop
+#endif
+
+using namespace std;
+using namespace zvec::core;
+using namespace zvec;
+
+enum RetrievalMode { RM_UNDEFINED = 0, RM_DENSE = 1, RM_SPARSE = 2 };
+
+VecsIndexHolder::Pointer holder;
+VecsIndexSparseHolder::Pointer sparse_holder;
+
+bool stop_now = false;
+void stop(int signo) {
+  if (stop_now) {
+    exit(signo);
+  }
+  stop_now = true;
+  cout << "\rTrying to stop. press [Ctrl+C] again kill immediately." << endl
+       << flush;
+  if (holder) {
+    holder->stop();
+  }
+}
+
+void usage() {
+  cout << "Usage: local_builder CONFIG.yaml [plugin file path]" << endl;
+}
+
+bool prepare_params(YAML::Node &&config_params, ailego::Params &params) {
+  cout << "Parse params as blow:" << endl;
+  for (auto it = config_params.begin(); it != config_params.end(); ++it) {
+    string tag = it->second.Tag();
+    if (tag == "tag:yaml.org,2002:int") {
+      int64_t val = it->second.as<int64_t>();
+      params.set(it->first.as<string>(), val);
+      cout << it->first.as<string>() << "=" << val << endl;
+    } else if (tag == "tag:yaml.org,2002:float") {
+      float val = it->second.as<float>();
+      params.set(it->first.as<string>(), val);
+      cout << it->first.as<string>() << "=" << val << endl;
+    } else if (tag == "tag:yaml.org,2002:bool") {
+      bool val = it->second.as<bool>();
+      params.set(it->first.as<string>(), val);
+      cout << it->first.as<string>() << "=" << val << endl;
+    } else {
+      if (it->second.IsScalar()) {
+        string val = it->second.as<string>();
+        params.set(it->first.as<string>(), val);
+        cout << it->first.as<string>() << "=" << val << endl;
+      } else if (it->second.IsMap()) {
+        ailego::Params sub_params;
+        auto sub_node = it->second;
+        if (!prepare_params(std::move(sub_node), sub_params)) {
+          cerr << "parse params error with key[" << it->first.as<string>()
+               << "]" << endl;
+          return false;
+        }
+        params.set(it->first.as<string>(), sub_params);
+      }
+    }
+  }
+  return true;
+}
+
+int setup_hnsw_rabitq_streamer(const IndexStreamer::Pointer &streamer,
+                               const IndexMeta &meta, YAML::Node &config_root,
+                               const std::string &converter_name,
+                               IndexHolder::Pointer *build_holder) {
+#if RABITQ_SUPPORTED
+  RabitqConverter rabitq_converter;
+  ailego::Params rabitq_converter_params;
+  if (config_root["RabitqConverterParams"] &&
+      !prepare_params(config_root["RabitqConverterParams"],
+                      rabitq_converter_params)) {
+    cerr << "Failed to prepare rabitq converter params" << endl;
+    return -1;
+  }
+  if (rabitq_converter.init(meta, rabitq_converter_params) != 0) {
+    cerr << "rabitq converter init failed" << std::endl;
+    return -1;
+  }
+  if (rabitq_converter.train(*build_holder) != 0) {
+    cerr << "rabitq converter train failed" << std::endl;
+    return -1;
+  }
+  IndexReformer::Pointer rabitq_reformer;
+  rabitq_converter.to_reformer(&rabitq_reformer);
+  HnswRabitqStreamer *hnsw_rabitq_streamer =
+      dynamic_cast<HnswRabitqStreamer *>(streamer.get());
+  hnsw_rabitq_streamer->set_reformer(std::move(rabitq_reformer));
+  IndexProvider::Pointer provider;
+  if (converter_name.empty()) {
+    // build_holder is VecsIndexHolder
+    provider = std::dynamic_pointer_cast<IndexProvider>(*build_holder);
+  } else {
+    // build_holder is ordinary IndexHolder, need to convert
+    provider = convert_holder_to_provider(*build_holder);
+    // reuse provider to release memory
+    *build_holder = provider;
+  }
+
+  if (!provider) {
+    cerr << "Failed to cast build holder to provider" << endl;
+    return -1;
+  }
+  hnsw_rabitq_streamer->set_provider(provider);
+  return 0;
+#else
+  (void)streamer;
+  (void)meta;
+  (void)config_root;
+  (void)converter_name;
+  (void)build_holder;
+  cerr << "HNSW RaBitQ is not supported on this platform" << endl;
+  return -1;
+#endif
+}
+
+//! Handle the general [BuildFromOriginal] option: bind a provider of the
+//! original vectors so the graph is built from them
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta);
+
+int setup_build_from_original(const string &builder_class,
+                              const IndexStreamer::Pointer &streamer,
+                              const IndexHolder::Pointer &build_holder,
+                              const IndexMeta &input_meta) {
+  IndexProvider::Pointer provider;
+  IndexMeta provider_meta = input_meta;
+
+  if (input_meta.metric_name() == "Cosine") {
+    // normalize the original vectors so they match the cosine metric space;
+    // note this materializes a full fp32 copy of the dataset in memory
+    VecsIndexHolder::Pointer vecs_holder =
+        std::dynamic_pointer_cast<VecsIndexHolder>(build_holder);
+    if (!vecs_holder) {
+      cerr << "Failed to cast build holder to VecsIndexHolder" << endl;
+      return -1;
+    }
+    IndexHolder::Pointer cv_holder = convert_holder(
+        "CosineFp32Converter", ailego::Params(), vecs_holder, provider_meta);
+    if (!cv_holder) {
+      cerr << "Failed to convert holder for BuildFromOriginal" << endl;
+      return -1;
+    }
+    provider = convert_holder_to_provider(cv_holder);
+  } else {
+    provider = std::dynamic_pointer_cast<IndexProvider>(build_holder);
+  }
+
+  if (!provider) {
+    cerr << "Failed to create provider for BuildFromOriginal" << endl;
+    return -1;
+  }
+  if (!streamer || streamer->set_provider(provider, provider_meta) != 0) {
+    cerr << "[BuildFromOriginal] is not supported by builder class "
+         << builder_class << endl;
+    return -1;
+  }
+  cout << "Build " << builder_class << " graph from original vectors" << endl;
+  return 0;
+}
+
+bool check_config(YAML::Node &config_root) {
+  auto common = config_root["BuilderCommon"];
+  if (!common) {
+    cerr << "Can not find [BuilderClass] in config" << endl;
+    return false;
+  }
+  if (!common["BuilderClass"]) {
+    cerr << "Can not find [BuilderClass] in config" << endl;
+    return false;
+  }
+  if (!common["BuildFile"]) {
+    cerr << "Can not find [BuildFile] in config" << endl;
+    return false;
+  }
+  if (common["NeedTrain"] && common["NeedTrain"].as<bool>()) {
+    if (!common["TrainFile"]) {
+      cerr << "Can not find [TrainFile] in config" << endl;
+      return false;
+    }
+  }
+  if (common["UseTrainer"]) {
+    if (!common["TrainerIndexPath"]) {
+      cerr << "Can not find [TrainerIndexPath] in config" << endl;
+      return false;
+    }
+    if (!config_root["TrainerParams"]) {
+      cerr << "Can not find [TrainerParams] in config" << endl;
+      return false;
+    }
+  }
+  if (!common["DumpPath"]) {
+    cerr << "Can not find [DumpPath] in config" << endl;
+    return false;
+  }
+  if (!config_root["BuilderParams"]) {
+    cerr << "Can not find [BuilderParams] in config" << endl;
+    return false;
+  }
+  return true;
+}
+
+static inline size_t AlignSize(size_t size) {
+  return (size + 0x1F) & (~0x1F);
+}
+
+int64_t dump_meta_segment(const IndexDumper::Pointer &dumper,
+                          const std::string &segment_id, const void *data,
+                          size_t size, size_t &writes) {
+  size_t len = dumper->write(data, size);
+  if (len != size) {
+    LOG_ERROR("Dump segment %s data failed, expect: %lu, actual: %lu",
+              segment_id.c_str(), size, len);
+    return false;
+  }
+
+  size_t padding_size = AlignSize(size) - size;
+  if (padding_size > 0) {
+    std::string padding(padding_size, '\0');
+    if (dumper->write(padding.data(), padding_size) != padding_size) {
+      LOG_ERROR("Append padding failed, size %lu", padding_size);
+      return false;
+    }
+  }
+
+  uint32_t crc = ailego::Crc32c::Hash(data, size);
+  int ret = dumper->append(segment_id, size, padding_size, crc);
+  if (ret != 0) {
+    LOG_ERROR("Dump segment %s meta failed, ret=%d", segment_id.c_str(), ret);
+    return false;
+  }
+
+  writes = len + padding_size;
+
+  return true;
+}
+
+int dump_taglist(IndexDumper::Pointer dumper, size_t num_vecs,
+                 const void *key_base, const void *taglist_data,
+                 uint64_t taglist_size) {
+  TagListHeader taglist_header;
+
+  taglist_header.num_vecs = num_vecs;
+
+  size_t total_writes;
+
+  bool ret =
+      dump_meta_segment(dumper, TAGLIST_HEADER_SEGMENT_NAME, &taglist_header,
+                        sizeof(TagListHeader), total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist meta failed");
+    return IndexError_WriteData;
+  }
+
+  ret = dump_meta_segment(dumper, TAGLIST_KEY_SEGMENT_NAME, key_base,
+                          num_vecs * sizeof(uint64_t), total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist key failed");
+    return IndexError_WriteData;
+  }
+
+  ret = dump_meta_segment(dumper, TAGLIST_DATA_SEGMENT_NAME, taglist_data,
+                          taglist_size, total_writes);
+  if (ret == false) {
+    LOG_ERROR("dump taglist data failed");
+    return IndexError_WriteData;
+  }
+
+  return 0;
+}
+
+int do_build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
+                                uint32_t thread_count) {
+  int ret;
+  ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
+  std::atomic<size_t> finished{0};
+  int errcode = 0;
+  std::mutex mutex;
+  std::atomic_bool error{false};
+  std::condition_variable cond{};
+
+  auto meta = streamer->meta();
+  IndexReformer::Pointer reformer;
+  if (!meta.reformer_name().empty()) {
+    reformer = IndexFactory::CreateReformer(meta.reformer_name());
+    if (!reformer) {
+      LOG_ERROR("Failed to create reformer %s", meta.reformer_name().c_str());
+      return IndexError_NoExist;
+    }
+    reformer->init(meta.reformer_params());
+  }
+
+  IndexQueryMeta qmeta(sparse_holder->data_type());
+  uint32_t keep_docs = sparse_holder->count() - sparse_holder->start_cursor();
+
+  auto do_build = [&](size_t idx) {
+    AILEGO_DEFER([&]() {
+      std::lock_guard<std::mutex> latch(mutex);
+      cond.notify_one();
+    });
+    auto ctx = streamer->create_context();
+    if (!ctx) {
+      if (!error.exchange(true)) {
+        cerr << "Failed to create streamer context";
+        errcode = IndexError_NoMemory;
+      }
+      return;
+    }
+    std::string ovec;
+    for (uint32_t id = idx; id < sparse_holder->count() && !stop_now;
+         id += thread_count) {
+      uint64_t key = sparse_holder->get_key(id);
+      if (reformer) {
+        std::string new_vec;
+        IndexQueryMeta new_meta;
+        ret = reformer->convert(sparse_holder->get_sparse_count(id),
+                                sparse_holder->get_sparse_indices(id),
+                                sparse_holder->get_sparse_data(id), qmeta,
+                                &new_vec, &new_meta);
+        if (ret != 0) {
+          LOG_ERROR("Failed to convert sparse vector for %s",
+                    IndexError::What(ret));
+          errcode = ret;
+          return;
+        }
+        ret = streamer->add_impl(key, sparse_holder->get_sparse_count(id),
+                                 sparse_holder->get_sparse_indices(id),
+                                 new_vec.data(), new_meta, ctx);
+      } else {
+        ret =
+            streamer->add_impl(key, sparse_holder->get_sparse_count(id),
+                               sparse_holder->get_sparse_indices(id),
+                               sparse_holder->get_sparse_data(id), qmeta, ctx);
+      }
+
+      if (ailego_unlikely(ret != 0)) {
+        if (!error.exchange(true)) {
+          LOG_ERROR("streamer all_impl failed\n");
+          errcode = ret;
+        }
+        return;
+      }
+      if (id >= keep_docs) {
+        ret =
+            streamer->remove_impl(sparse_holder->get_key(id - keep_docs), ctx);
+        if (ailego_unlikely(ret != 0)) {
+          if (!error.exchange(true)) {
+            LOG_ERROR("streamer remove_impl failed\n");
+            errcode = ret;
+          }
+          return;
+        }
+      }
+      finished++;
+    }
+    return;
+  };
+
+  for (size_t i = 0; i < pool.count(); ++i) {
+    pool.execute(do_build, i);
+  }
+
+  while (!pool.is_finished()) {
+    std::unique_lock<std::mutex> lk(mutex);
+    cond.wait_until(
+        lk, std::chrono::system_clock::now() + std::chrono::seconds(15));
+    if (error.load(std::memory_order_acquire)) {
+      cerr << "Failed to build index while waiting finish\n";
+      return errcode;
+    }
+    LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
+             finished.load() * 100.0f / sparse_holder->count());
+  }
+  if (error.load(std::memory_order_acquire)) {
+    cerr << "Failed to build index while waiting finish\n";
+    return errcode;
+  }
+  pool.wait_finish();
+
+  return 0;
+}
+
+int build_sparse_by_streamer(IndexStreamer::Pointer &streamer,
+                             YAML::Node &config_common) {
+  if (!config_common["IndexPath"]) {
+    cerr << "Miss params IndexPath for Streamer\n";
+    return IndexError_InvalidArgument;
+  }
+  string path = config_common["IndexPath"].as<string>();
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  if (!storage) {
+    cerr << "Failed to create storage\n";
+    return IndexError_NoExist;
+  }
+  ailego::Params params;
+  int ret = storage->init(params);
+  if (ret != 0) {
+    cerr << "Storage Failed init";
+    return IndexError_Runtime;
+  }
+  ret = storage->open(path, true);
+  if (ret != 0) {
+    cerr << "Storage Failed to open";
+    return IndexError_Runtime;
+  }
+  ret = streamer->open(storage);
+  if (ret != 0) {
+    cerr << "Failed to open storage";
+    return IndexError_Runtime;
+  }
+
+  size_t thread_count = config_common["ThreadCount"]
+                            ? config_common["ThreadCount"].as<uint64_t>()
+                            : std::thread::hardware_concurrency();
+
+  auto meta = streamer->meta();
+
+  LOG_DEBUG("thread count: %zu, retrieval_mode: sparse", thread_count);
+  do_build_sparse_by_streamer(streamer, thread_count);
+
+  return 0;
+}
+
+int do_build_by_streamer(IndexStreamer::Pointer &streamer,
+                         uint32_t thread_count, RetrievalMode retrieval_mode) {
+  int ret;
+  ailego::ThreadPool pool(thread_count, false);
+  thread_count = static_cast<uint32_t>(pool.count());
+  std::atomic<size_t> finished{0};
+  int errcode = 0;
+  std::mutex mutex;
+  std::atomic_bool error{false};
+  std::condition_variable cond{};
+
+  auto meta = streamer->meta();
+  IndexReformer::Pointer reformer;
+  if (!meta.reformer_name().empty()) {
+    if (retrieval_mode != RM_DENSE) {
+      cerr << "Reformer not supported";
+      return IndexError_Runtime;
+    } else {
+      reformer = IndexFactory::CreateReformer(meta.reformer_name());
+      if (!reformer) {
+        LOG_ERROR("Failed to create reformer %s", meta.reformer_name().c_str());
+        return IndexError_NoExist;
+      }
+      reformer->init(meta.reformer_params());
+    }
+  }
+
+  IndexQueryMeta qmeta(holder->data_type(), holder->dimension());
+  const size_t keep_docs = holder->count();
+  const size_t end_cursor = holder->end_cursor();
+
+  auto do_build = [&](size_t idx) {
+    AILEGO_DEFER([&]() {
+      std::lock_guard<std::mutex> latch(mutex);
+      cond.notify_one();
+    });
+    auto ctx = streamer->create_context();
+    if (!ctx) {
+      if (!error.exchange(true)) {
+        cerr << "Failed to create streamer context";
+        errcode = IndexError_NoMemory;
+      }
+      return;
+    }
+    std::string ovec;
+    IndexQueryMeta ometa;
+    for (uint32_t id = idx; id < end_cursor && !stop_now; id += thread_count) {
+      uint64_t key = holder->get_key(id);
+      if (retrieval_mode == RM_DENSE) {
+        if (reformer) {
+          ret = reformer->convert(holder->get_vector_by_index(id), qmeta, &ovec,
+                                  &ometa);
+          if (ret != 0) {
+            LOG_ERROR("Failed to convert vector for %s", IndexError::What(ret));
+            errcode = ret;
+            return;
+          }
+          ret = streamer->add_impl(key, ovec.data(), ometa, ctx);
+        } else {
+          ret = streamer->add_impl(key, holder->get_vector_by_index(id), qmeta,
+                                   ctx);
+        }
+      } else {
+        cerr << "Retrieval mode not supported";
+        errcode = IndexError_Unsupported;
+        return;
+      }
+
+      if (ailego_unlikely(ret != 0)) {
+        if (!error.exchange(true)) {
+          LOG_ERROR("streamer add_impl failed\n");
+          errcode = ret;
+        }
+        return;
+      }
+      if (id >= keep_docs) {
+        ret = streamer->remove_impl(holder->get_key(id - keep_docs), ctx);
+        if (ailego_unlikely(ret != 0)) {
+          if (!error.exchange(true)) {
+            LOG_ERROR("streamer remove_impl failed\n");
+            errcode = ret;
+          }
+          return;
+        }
+      }
+      finished++;
+    }
+    return;
+  };
+
+  for (size_t i = 0; i < pool.count(); ++i) {
+    pool.execute(do_build, i);
+  }
+
+  while (!pool.is_finished()) {
+    std::unique_lock<std::mutex> lk(mutex);
+    cond.wait_until(
+        lk, std::chrono::system_clock::now() + std::chrono::seconds(15));
+    if (error.load(std::memory_order_acquire)) {
+      cerr << "Failed to build index while waiting finish\n";
+      return errcode;
+    }
+    LOG_INFO("Built cnt %zu, finished percent %.3f%%", finished.load(),
+             finished.load() * 100.0f / end_cursor);
+  }
+  if (error.load(std::memory_order_acquire)) {
+    cerr << "Failed to build index while waiting finish\n";
+    return errcode;
+  }
+  pool.wait_finish();
+
+  return 0;
+}
+
+int build_by_streamer(IndexStreamer::Pointer &streamer,
+                      YAML::Node &config_common) {
+  if (!config_common["IndexPath"]) {
+    cerr << "Miss params IndexPath for Streamer\n";
+    return IndexError_InvalidArgument;
+  }
+  string path = config_common["IndexPath"].as<string>();
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  if (!storage) {
+    cerr << "Failed to create storage\n";
+    return IndexError_NoExist;
+  }
+  ailego::Params params;
+  int ret = storage->init(params);
+  if (ret != 0) {
+    cerr << "Storage Failed init";
+    return IndexError_Runtime;
+  }
+  ret = storage->open(path, true);
+  if (ret != 0) {
+    cerr << "Storage Failed to open";
+    return IndexError_Runtime;
+  }
+  ret = streamer->open(storage);
+  if (ret != 0) {
+    cerr << "Failed to open storage";
+    return IndexError_Runtime;
+  }
+
+  size_t thread_count = config_common["ThreadCount"]
+                            ? config_common["ThreadCount"].as<uint64_t>()
+                            : std::thread::hardware_concurrency();
+
+  auto meta = streamer->meta();
+
+  RetrievalMode retrieval_mode = RM_UNDEFINED;
+  if (meta.dimension() > 0) {
+    retrieval_mode = RM_DENSE;
+  } else {
+    retrieval_mode = RM_SPARSE;
+  }
+
+  LOG_DEBUG("thread count: %zu, retrieval mode: %s", thread_count,
+            retrieval_mode == 1 ? "Dense" : "Sparse");
+  do_build_by_streamer(streamer, thread_count, retrieval_mode);
+
+  return 0;
+}
+
+IndexSparseHolder::Pointer convert_sparse_holder(
+    const std::string &name, const ailego::Params &params,
+    VecsIndexSparseHolder::Pointer &in_holder, IndexMeta &index_meta) {
+  IndexSparseHolder::Pointer cast_holder =
+      std::dynamic_pointer_cast<IndexSparseHolder>(in_holder);
+  if (name.empty()) {
+    return cast_holder;
+  }
+
+  IndexConverter::Pointer converter = IndexFactory::CreateConverter(name);
+  if (!converter) {
+    cerr << "Failed to create sparse converter " << name << endl;
+    return IndexSparseHolder::Pointer();
+  }
+
+  int ret = converter->init(in_holder->index_meta(), params);
+  if (ret != 0) {
+    cerr << "Failed to init converter " << ret << endl;
+    return IndexSparseHolder::Pointer();
+  }
+
+  ret = converter->train(cast_holder);
+  if (ret != 0) {
+    cerr << "Failed to train sparse converter " << ret << endl;
+    return IndexSparseHolder::Pointer();
+  }
+
+  ret = converter->transform(cast_holder);
+  if (ret != 0) {
+    cerr << "Failed to transform converter " << ret << endl;
+    return IndexSparseHolder::Pointer();
+  }
+
+  index_meta = converter->meta();
+
+  return converter->sparse_result();
+}
+
+IndexHolder::Pointer convert_holder(const std::string &name,
+                                    const ailego::Params &params,
+                                    VecsIndexHolder::Pointer &in_holder,
+                                    IndexMeta &index_meta) {
+  IndexHolder::Pointer cast_holder =
+      std::dynamic_pointer_cast<IndexHolder>(in_holder);
+  if (name.empty()) {
+    return cast_holder;
+  }
+
+  IndexConverter::Pointer converter = IndexFactory::CreateConverter(name);
+  if (!converter) {
+    cerr << "Failed to create converter " << name << endl;
+    return IndexHolder::Pointer();
+  }
+
+  int ret = converter->init(in_holder->index_meta(), params);
+  if (ret != 0) {
+    cerr << "Failed to init converter " << ret << endl;
+    return IndexHolder::Pointer();
+  }
+
+  ret = converter->train(cast_holder);
+  if (ret != 0) {
+    cerr << "Failed to train converter " << ret << endl;
+    return IndexHolder::Pointer();
+  }
+
+  ret = converter->transform(cast_holder);
+  if (ret != 0) {
+    cerr << "Failed to transform converter " << ret << endl;
+    return IndexHolder::Pointer();
+  }
+
+  index_meta = converter->meta();
+
+  return converter->result();
+}
+
+IndexHolder::Pointer quantize_holder(
+    const std::string &name, const ailego::Params &params,
+    VecsIndexHolder::Pointer &in_holder, IndexMeta &index_meta,
+    std::shared_ptr<zvec::turbo::Quantizer> *out_quantizer) {
+  IndexHolder::Pointer cast_holder =
+      std::dynamic_pointer_cast<IndexHolder>(in_holder);
+  if (name.empty()) {
+    return cast_holder;
+  }
+
+  std::shared_ptr<zvec::turbo::Quantizer> quantizer =
+      IndexFactory::CreateQuantizer(name);
+  if (!quantizer) {
+    cerr << "Failed to create quantizer " << name << endl;
+    return IndexHolder::Pointer();
+  }
+
+  int ret = quantizer->init(in_holder->index_meta(), params);
+  if (ret != 0) {
+    cerr << "Failed to init quantizer " << ret << endl;
+    return IndexHolder::Pointer();
+  }
+
+  if (quantizer->require_train()) {
+    ret = quantizer->train(cast_holder);
+    if (ret != 0) {
+      cerr << "Failed to train quantizer " << ret << endl;
+      return IndexHolder::Pointer();
+    }
+  }
+
+  // The output meta keeps the raw dimension; the record tail (e.g. scale,
+  // Cosine norm) is accounted by extra_meta_size.
+  IndexMeta out_meta = quantizer->meta();
+  size_t code_bytes = quantizer->quantized_datapoint_vector_length();
+  uint32_t unit = out_meta.unit_size();
+  if (unit == 0 || code_bytes % unit != 0 ||
+      code_bytes != out_meta.element_size()) {
+    cerr << "Quantized length " << code_bytes
+         << " mismatches meta element size " << out_meta.element_size() << endl;
+    return IndexHolder::Pointer();
+  }
+
+  // The descriptor must be recorded for trained quantizers too: the codebook
+  // is persisted in the index and restored at load time from this descriptor
+  // (IVFEntity::load_quantizer). Without it turbo IVF rejects the builder init.
+  out_meta.set_quantizer(name, 0, params);
+
+  IndexHolder::Pointer result =
+      std::make_shared<zvec::turbo::QuantizedIndexHolder>(cast_holder,
+                                                          quantizer);
+
+  if (out_quantizer) {
+    *out_quantizer = quantizer;
+  }
+  index_meta = out_meta;
+  return result;
+}
+
+int do_build_sparse(YAML::Node &config_root, YAML::Node &config_common) {
+  string build_file = config_common["BuildFile"].as<string>();
+  VecsIndexSparseHolder::Pointer build_holder(new VecsIndexSparseHolder);
+  if (!build_holder->load(build_file)) {
+    cerr << "Load input error: " << build_file << endl;
+    return -1;
+  }
+  IndexMeta meta;
+  meta = build_holder->index_meta();
+
+  std::string metric_name;
+  ailego::Params metric_params;
+  if (config_common["MetricName"] &&
+      !config_common["MetricName"].as<string>().empty()) {
+    metric_name = config_common["MetricName"].as<string>();
+    if (config_root["MetricParams"] &&
+        !prepare_params(config_root["MetricParams"], metric_params)) {
+      cerr << "Failed to prepare metric params" << endl;
+      return -1;
+    }
+    build_holder->set_metric(metric_name, metric_params);
+    meta.set_metric(metric_name, 0, metric_params);
+  }
+
+  string converter_name;
+  ailego::Params converter_params;
+  if (config_common["ConverterName"] &&
+      !config_common["ConverterName"].as<string>().empty()) {
+    converter_name = config_common["ConverterName"].as<string>();
+    if (config_root["ConverterParams"] &&
+        !prepare_params(config_root["ConverterParams"], converter_params)) {
+      cerr << "Failed to prepare converter params" << endl;
+      return -1;
+    }
+  }
+
+  if (config_common["MaxDocs"] && config_common["MaxDocs"].as<uint32_t>()) {
+    auto max_docs = config_common["MaxDocs"].as<uint32_t>();
+    build_holder->set_max_doc_count(max_docs);
+  }
+  if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
+    auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
+    if (keep_docs < build_holder->count()) {
+      build_holder->set_start_cursor(build_holder->count() - keep_docs);
+    }
+  }
+
+  // Create a Builder
+  string builder_class = config_common["BuilderClass"].as<string>();
+  IndexStreamer::Pointer streamer;
+  IndexBuilder::Pointer builder =
+      IndexFactory::CreateBuilder(builder_class.c_str());
+  if (!builder) {
+    streamer = IndexFactory::CreateStreamer(builder_class.c_str());
+  }
+  if (!builder && !streamer) {
+    cerr << "Failed to create builder " << builder_class << endl;
+    return -1;
+  }
+  cout << "Created builder " << builder_class << endl;
+
+  IndexSparseHolder::Pointer cv_build_holder = convert_sparse_holder(
+      converter_name, converter_params, build_holder, meta);
+  if (!cv_build_holder) {
+    cerr << "Convert holder failed." << endl;
+    return -1;
+  }
+
+  ailego::Params params;
+  if (!prepare_params(config_root["BuilderParams"], params)) {
+    cerr << "Failed to prepare params" << endl;
+    return -1;
+  }
+
+  // INIT
+  int ret =
+      builder ? builder->init(meta, params) : streamer->init(meta, params);
+  if (ret < 0) {
+    cerr << "Failed to init builder, ret=" << ret << endl;
+    return -1;
+  }
+  ailego::ElapsedTime timer;
+
+  // TRAIN
+  if (builder && config_common["NeedTrain"] &&
+      config_common["NeedTrain"].as<bool>()) {
+    string train_file = config_common["TrainFile"].as<string>();
+    VecsIndexSparseHolder::Pointer train_holder(new VecsIndexSparseHolder);
+    if (!train_holder->load(train_file)) {
+      cerr << "Load input error: " << train_file << endl;
+      return -1;
+    }
+
+    if (!metric_name.empty()) {
+      train_holder->set_metric(metric_name, metric_params);
+    }
+
+    IndexSparseHolder::Pointer cv_train_holder = convert_sparse_holder(
+        converter_name, converter_params, train_holder, meta);
+    if (!cv_train_holder) {
+      cerr << "Convert train holder failed." << endl;
+      return -1;
+    }
+
+    std::cout << "Prepare train data done!" << std::endl;
+    timer.reset();
+    ret = builder->train(std::move(cv_train_holder));
+    size_t train_time = timer.milli_seconds();
+
+    if (ret < 0) {
+      cerr << "Failed to train in builder, ret=" << ret << endl;
+      return -1;
+    }
+    cout << "Train finished, consume " << train_time << "ms." << endl;
+  } else {
+    cout << "Skip train procedure" << endl;
+  }
+
+  // BUILD
+  sparse_holder = build_holder;
+  signal(SIGINT, stop);
+  timer.reset();
+  if (builder != nullptr) {
+    ret = builder->build(std::move(cv_build_holder));
+  } else {
+    ret = build_sparse_by_streamer(streamer, config_common);
+  }
+  size_t build_time = timer.milli_seconds();
+  if (ret < 0) {
+    cerr << "Failed to build in builder, ret=" << ret << endl;
+    return -1;
+  }
+  cout << "Build finished, consume " << build_time << "ms." << endl;
+  signal(SIGINT, SIG_DFL);
+
+  // DUMP
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  if (!dumper) {
+    cerr << "Failed to create FileDumper." << endl;
+    return -1;
+  }
+  string dump_prefix = config_common["DumpPath"].as<string>();
+  ret = dumper->create(dump_prefix);
+  if (ret != 0) {
+    cerr << "Failed to create in dumper, ret=" << ret << endl;
+    return -1;
+  }
+  timer.reset();
+  ret = streamer ? streamer->dump(dumper) : builder->dump(dumper);
+  size_t dump_time = timer.milli_seconds();
+  if (ret == IndexError_NotImplemented) {
+    LOG_WARN("Dump index not implemented");
+  } else if (ret < 0) {
+    cerr << "Failed to dump in builder, ret=" << ret << endl;
+    return -1;
+  }
+
+  if (build_holder->has_taglist()) {
+    size_t taglist_size{0};
+    const void *taglist_data = build_holder->get_taglist_data(taglist_size);
+    const void *key_base = build_holder->get_key_base();
+
+    dump_taglist(dumper, build_holder->get_num_vecs(), key_base, taglist_data,
+                 taglist_size);
+  }
+
+  ret = dumper->close();
+  if (ret != 0) {
+    cerr << "Dumper failed to close, ret=" << ret << endl;
+    return -1;
+  }
+  std::cout << "Dump to [" << dump_prefix << "] finished, consume " << dump_time
+            << "ms." << std::endl;
+
+  if (builder) {
+    auto &stats =
+        reinterpret_cast<const IndexBuilder *>(builder.get())->stats();
+    std::cout << "STATS: \n\tTrained count[" << stats.trained_count()
+              << "]\n\tBuilt count[" << stats.built_count()
+              << "]\n\tDump count[" << stats.dumped_count()
+              << "]\n\tDiscarded count[" << stats.discarded_count() << "]\n";
+  } else {
+    auto &stats = streamer->stats();
+    std::cout << "STATS: \n\tTrained count[" << 0 << "]\n\tBuilt count["
+              << stats.added_count() << "]\n\tDump size ["
+              << stats.dumped_size() << "]\n\tDiscarded count["
+              << stats.discarded_count() << "]\n";
+  }
+
+  // CLEANUP
+  builder ? builder->cleanup() : streamer->cleanup();
+
+  return 0;
+}
+
+int do_build(YAML::Node &config_root, YAML::Node &config_common) {
+  string build_file = config_common["BuildFile"].as<string>();
+  VecsIndexHolder::Pointer build_holder(new VecsIndexHolder);
+  if (!build_holder->load(build_file)) {
+    cerr << "Load input error: " << build_file << endl;
+    return -1;
+  }
+  IndexMeta meta;
+  meta = build_holder->index_meta();
+
+  std::string metric_name;
+  ailego::Params metric_params;
+  if (config_common["MetricName"] &&
+      !config_common["MetricName"].as<string>().empty()) {
+    metric_name = config_common["MetricName"].as<string>();
+    if (config_root["MetricParams"] &&
+        !prepare_params(config_root["MetricParams"], metric_params)) {
+      cerr << "Failed to prepare metric params" << endl;
+      return -1;
+    }
+    build_holder->set_metric(metric_name, metric_params);
+    meta.set_metric(metric_name, 0, metric_params);
+  }
+  IndexMeta input_meta = meta;
+  string converter_name;
+  ailego::Params converter_params;
+  if (config_common["ConverterName"] &&
+      !config_common["ConverterName"].as<string>().empty()) {
+    converter_name = config_common["ConverterName"].as<string>();
+    if (config_root["ConverterParams"] &&
+        !prepare_params(config_root["ConverterParams"], converter_params)) {
+      cerr << "Failed to prepare converter params" << endl;
+      return -1;
+    }
+  }
+
+  // Quantizer input: a turbo quantizer used as data transform, symmetric to
+  // the converter path.  Mutually exclusive with ConverterName.
+  string quantizer_name;
+  ailego::Params quantizer_params;
+  if (config_common["QuantizerName"] &&
+      !config_common["QuantizerName"].as<string>().empty()) {
+    quantizer_name = config_common["QuantizerName"].as<string>();
+    if (config_root["QuantizerParams"] &&
+        !prepare_params(config_root["QuantizerParams"], quantizer_params)) {
+      cerr << "Failed to prepare quantizer params" << endl;
+      return -1;
+    }
+  }
+  if (!converter_name.empty() && !quantizer_name.empty()) {
+    cerr << "ConverterName and QuantizerName are mutually exclusive, "
+            "configure only one of them"
+         << endl;
+    return -1;
+  }
+  IndexMeta::MajorOrder order = IndexMeta::MO_UNDEFINED;
+  if (config_common["MajorOrder"]) {
+    std::string order_str = config_common["MajorOrder"].as<string>();
+    if (order_str == "row") {
+      order = IndexMeta::MajorOrder::MO_ROW;
+    } else {
+      order = IndexMeta::MajorOrder::MO_COLUMN;
+    }
+  }
+
+  if (config_common["MaxDocs"] && config_common["MaxDocs"].as<uint32_t>()) {
+    auto max_docs = config_common["MaxDocs"].as<uint32_t>();
+    build_holder->set_max_doc_count(max_docs);
+  }
+  if (config_common["KeepDocs"] && config_common["KeepDocs"].as<uint32_t>()) {
+    auto keep_docs = config_common["KeepDocs"].as<uint32_t>();
+    if (keep_docs < build_holder->end_cursor()) {
+      build_holder->set_start_cursor(build_holder->end_cursor() - keep_docs);
+    }
+  }
+
+  // Create a Builder
+  string builder_class = config_common["BuilderClass"].as<string>();
+  IndexStreamer::Pointer streamer;
+  IndexBuilder::Pointer builder =
+      IndexFactory::CreateBuilder(builder_class.c_str());
+  if (!builder) {
+    streamer = IndexFactory::CreateStreamer(builder_class.c_str());
+  }
+  if (!builder && !streamer) {
+    cerr << "Failed to create builder " << builder_class << endl;
+    return -1;
+  }
+  cout << "Created builder " << builder_class << endl;
+
+
+  std::shared_ptr<zvec::turbo::Quantizer> build_quantizer;
+  IndexHolder::Pointer cv_build_holder;
+  if (!quantizer_name.empty()) {
+    // Quantizer path: only supported with IndexBuilder classes.  The
+    // streamer path feeds raw vectors from the global holder and relies on
+    // reformer info in the meta, which a quantizer does not provide.
+    if (!builder) {
+      cerr << "QuantizerName is not supported with streamer class "
+           << builder_class << endl;
+      return -1;
+    }
+    cv_build_holder = quantize_holder(quantizer_name, quantizer_params,
+                                      build_holder, meta, &build_quantizer);
+    if (!cv_build_holder) {
+      cerr << "Quantize holder failed." << endl;
+      return -1;
+    }
+  } else {
+    cv_build_holder =
+        convert_holder(converter_name, converter_params, build_holder, meta);
+    if (!cv_build_holder) {
+      cerr << "Convert holder failed." << endl;
+      return -1;
+    }
+  }
+  meta.set_major_order(order);
+  cout << IndexMetaHelper::to_string(meta) << endl;
+  cout << "Prepare data done!" << endl;
+
+  ailego::Params params;
+  if (!prepare_params(config_root["BuilderParams"], params)) {
+    cerr << "Failed to prepare params" << endl;
+    return -1;
+  }
+
+  // INIT
+  // Pass the quantizer into the builder so it can compute distances with
+  // the quantizer; fall back to the plain init for builders without
+  // quantizer support.
+  int ret;
+  bool builder_uses_raw_input = false;
+  if (builder) {
+    if (build_quantizer) {
+      ret = builder->init(meta, params, build_quantizer);
+      if (ret == IndexError_NotImplemented) {
+        ret = builder->init(meta, params);
+      } else if (ret == IndexError_Mismatch) {
+        // Builders like turbo IVF expect the raw input meta/holder and
+        // quantize postings internally at dump time.
+        IndexMeta raw_meta = input_meta;
+        raw_meta.set_quantizer(quantizer_name, 0, quantizer_params);
+        ret = builder->init(raw_meta, params, build_quantizer);
+        if (ret == 0) {
+          builder_uses_raw_input = true;
+          cv_build_holder = build_holder;
+          cout << "Builder consumes raw input; quantization happens inside "
+                  "the builder"
+               << endl;
+        }
+      }
+    } else {
+      ret = builder->init(meta, params);
+    }
+  } else {
+    ret = streamer->init(meta, params);
+  }
+  if (ret < 0) {
+    cerr << "Failed to init builder, ret=" << ret << endl;
+    return -1;
+  }
+  ailego::ElapsedTime timer;
+
+  // TRAIN
+  if (config_common["UseTrainer"] && config_common["UseTrainer"].as<bool>()) {
+    ailego::Params trainer_params;
+    if (!prepare_params(config_root["TrainerParams"], trainer_params)) {
+      cerr << "Failed to prepare trainer params" << endl;
+      return -1;
+    }
+
+    string train_index_path;
+    if (config_common["TrainerIndexPath"]) {
+      train_index_path = config_common["TrainerIndexPath"].as<string>();
+      if (train_index_path.empty()) {
+        cerr << "invalid TrainerIndexPath format" << std::endl;
+        return -1;
+      }
+      cout << "Trainer index path: " << train_index_path << "\n";
+    } else {
+      cerr << "Need [TrainerIndexPath] config" << std::endl;
+      return -1;
+    }
+
+    IndexTrainer::Pointer trainer =
+        IndexFactory::CreateTrainer("StratifiedClusterTrainer");
+    if (trainer->init(meta, trainer_params) != 0) {
+      cerr << "trainer init failed" << std::endl;
+      return -1;
+    }
+
+    if (ailego::File::IsExist(train_index_path)) {
+      IndexStorage::Pointer container =
+          IndexFactory::CreateStorage("MMapFileReadStorage");
+      if (!container) {
+        cerr << "Failed to create MMapFileReadStorage" << endl;
+        return -1;
+      }
+      container->init(ailego::Params());
+      if (container->open(train_index_path, false) != 0) {
+        cerr << "MMapFileReadStorage failed to load "
+             << train_index_path.c_str() << endl;
+        return -1;
+      }
+      if (trainer->load(container) != 0) {
+        cerr << "Trainer failed to load container" << endl;
+        return -1;
+      };
+    } else {
+      std::cout << "Prepare trainer data..." << std::endl;
+      string train_file = config_common["TrainFile"].as<string>();
+      VecsIndexHolder::Pointer train_holder(new VecsIndexHolder);
+      if (!train_holder->load(train_file)) {
+        cerr << "Load input error: " << train_file << endl;
+        return -1;
+      }
+      if (!metric_name.empty()) {
+        train_holder->set_metric(metric_name, metric_params);
+      }
+
+      // support fp16 convert
+
+      IndexHolder::Pointer cv_train_holder;
+      if (!quantizer_name.empty()) {
+        cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                          train_holder, meta, nullptr);
+      } else {
+        cv_train_holder = convert_holder(converter_name, converter_params,
+                                         train_holder, meta);
+      }
+      if (!cv_train_holder) {
+        cerr << "Convert train holder failed." << endl;
+        return -1;
+      }
+
+      std::cout << "Prepare trainer data done!" << std::endl;
+      std::cout << "Prepare train data!" << std::endl;
+
+      ret = trainer->train(cv_train_holder);
+      if (ret != 0) {
+        cerr << "trainer train_index failed with " << ret << std::endl;
+        return -1;
+      }
+
+      std::cout << "train data done!" << std::endl;
+      IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+      if (!dumper) {
+        cerr << "Failed to create FileDumper." << endl;
+        return -1;
+      }
+      if (dumper->init(ailego::Params()) != 0) {
+        cerr << "Failed to init FileDumper." << endl;
+        return -1;
+      }
+      ret = dumper->create(train_index_path);
+      if (ret != 0) {
+        cerr << "Failed to create in dumper, ret=" << ret << endl;
+        return -1;
+      }
+      if (trainer->dump(dumper) != 0) {
+        cerr << "trainer dump_index failed" << std::endl;
+        return -1;
+      }
+      dumper->close();
+    }
+
+    ret = builder->train(trainer);
+    size_t train_time = timer.milli_seconds();
+    if (ret < 0) {
+      cerr << "Failed to train in builder, ret=" << ret << endl;
+      return -1;
+    }
+    cout << "Train finished, consume " << train_time << "ms." << endl;
+  } else if (builder && config_common["NeedTrain"] &&
+             config_common["NeedTrain"].as<bool>()) {
+    string train_file = config_common["TrainFile"].as<string>();
+    VecsIndexHolder::Pointer train_holder(new VecsIndexHolder);
+    if (!train_holder->load(train_file)) {
+      cerr << "Load input error: " << train_file << endl;
+      return -1;
+    }
+
+    if (!metric_name.empty()) {
+      train_holder->set_metric(metric_name, metric_params);
+    }
+    IndexHolder::Pointer cv_train_holder;
+    if (!quantizer_name.empty()) {
+      if (builder_uses_raw_input) {
+        cv_train_holder = train_holder;
+      } else {
+        cv_train_holder = quantize_holder(quantizer_name, quantizer_params,
+                                          train_holder, meta, nullptr);
+      }
+    } else {
+      cv_train_holder =
+          convert_holder(converter_name, converter_params, train_holder, meta);
+    }
+    if (!cv_train_holder) {
+      cerr << "Convert train holder failed." << endl;
+      return -1;
+    }
+
+    std::cout << "Prepare train data done!" << std::endl;
+    timer.reset();
+    ret = builder->train(std::move(cv_train_holder));
+    size_t train_time = timer.milli_seconds();
+    if (ret < 0) {
+      cerr << "Failed to train in builder, ret=" << ret << endl;
+      return -1;
+    }
+    cout << "Train finished, consume " << train_time << "ms." << endl;
+  } else {
+    cout << "Skip train procedure" << endl;
+  }
+
+  if (builder_class == "HnswRabitqStreamer") {
+    if (setup_hnsw_rabitq_streamer(streamer, input_meta, config_root,
+                                   converter_name, &cv_build_holder) != 0) {
+      return -1;
+    }
+  }
+
+  if (config_common["BuildFromOriginal"] &&
+      config_common["BuildFromOriginal"].as<bool>()) {
+    if (setup_build_from_original(builder_class, streamer, build_holder,
+                                  input_meta) != 0) {
+      return -1;
+    }
+  }
+
+  // BUILD
+  holder = build_holder;
+  signal(SIGINT, stop);
+  timer.reset();
+  if (builder != nullptr) {
+    ret = builder->build(std::move(cv_build_holder));
+  } else {
+    std::string retrieval_mode = "dense";
+    if (meta.dimension() > 0) {
+      retrieval_mode = "sparse";
+    } else {
+      retrieval_mode = "dense";
+    }
+
+    ret = build_by_streamer(streamer, config_common);
+  }
+  size_t build_time = timer.milli_seconds();
+  if (ret < 0) {
+    cerr << "Failed to build in builder, ret=" << ret << endl;
+    return -1;
+  }
+  cout << "Build finished, consume " << build_time << "ms." << endl;
+  signal(SIGINT, SIG_DFL);
+
+  // DUMP
+  IndexDumper::Pointer dumper = IndexFactory::CreateDumper("FileDumper");
+  if (!dumper) {
+    cerr << "Failed to create FileDumper." << endl;
+    return -1;
+  }
+  string dump_prefix = config_common["DumpPath"].as<string>();
+  ret = dumper->create(dump_prefix);
+  if (ret != 0) {
+    cerr << "Failed to create in dumper, ret=" << ret << endl;
+    return -1;
+  }
+  timer.reset();
+  ret = streamer ? streamer->dump(dumper) : builder->dump(dumper);
+  size_t dump_time = timer.milli_seconds();
+  if (ret == IndexError_NotImplemented) {
+    LOG_WARN("Dump index not implemented");
+  } else if (ret < 0) {
+    cerr << "Failed to dump in builder, ret=" << ret << endl;
+    return -1;
+  }
+
+  if (build_holder->has_taglist()) {
+    size_t taglist_size{0};
+    const void *taglist_data = build_holder->get_taglist_data(taglist_size);
+    const void *key_base = build_holder->get_key_base();
+
+    dump_taglist(dumper, build_holder->get_num_vecs(), key_base, taglist_data,
+                 taglist_size);
+  }
+
+  ret = dumper->close();
+  if (ret != 0) {
+    cerr << "Dumper failed to close, ret=" << ret << endl;
+    return -1;
+  }
+  std::cout << "Dump to [" << dump_prefix << "] finished, consume " << dump_time
+            << "ms." << std::endl;
+
+  if (builder) {
+    auto &stats =
+        reinterpret_cast<const IndexBuilder *>(builder.get())->stats();
+    std::cout << "STATS: \n\tTrained count[" << stats.trained_count()
+              << "]\n\tBuilt count[" << stats.built_count()
+              << "]\n\tDump count[" << stats.dumped_count()
+              << "]\n\tDiscarded count[" << stats.discarded_count() << "]\n";
+  } else {
+    auto &stats = streamer->stats();
+    std::cout << "STATS: \n\tTrained count[" << 0 << "]\n\tBuilt count["
+              << stats.added_count() << "]\n\tDump size ["
+              << stats.dumped_size() << "]\n\tDiscarded count["
+              << stats.discarded_count() << "]\n";
+  }
+
+  // CLEANUP
+  builder ? builder->cleanup() : streamer->cleanup();
+
+  return 0;
+}
+
+int main(int argc, char *argv[]) {
+  if (argc < 2) {
+    usage();
+    return -1;
+  }
+  IndexPluginBroker broker;
+  std::string error;
+  for (int i = 2; i < argc; ++i) {
+    if (!broker.emplace(argv[i], &error)) {
+      cerr << "Failed to load plugin: " << argv[i] << " (" << error << ")"
+           << endl;
+      return -1;
+    }
+  }
+  YAML::Node config_root;
+  try {
+    config_root = YAML::LoadFile(argv[1]);
+  } catch (...) {
+    cerr << "Load YAML file[" << argv[1] << "] failed!" << endl;
+    return -1;
+  }
+  if (!check_config(config_root)) {
+    return -1;
+  }
+  auto config_common = config_root["BuilderCommon"];
+
+  map<string, int> log_level_map = {
+      {"debug", zvec::ailego::Logger::LEVEL_DEBUG},
+      {"info", zvec::ailego::Logger::LEVEL_INFO},
+      {"warn", zvec::ailego::Logger::LEVEL_WARN},
+      {"error", zvec::ailego::Logger::LEVEL_ERROR},
+      {"fatal", zvec::ailego::Logger::LEVEL_FATAL}};
+
+  string log_level = config_common["LogLevel"]
+                         ? config_common["LogLevel"].as<string>()
+                         : "debug";
+
+  transform(log_level.begin(), log_level.end(), log_level.begin(), ::tolower);
+  if (log_level_map.find(log_level) != log_level_map.end()) {
+    zvec::ailego::LoggerBroker::SetLevel(log_level_map[log_level]);
+  }
+
+  RetrievalMode retrieval_mode{RM_DENSE};
+  if (config_common["RetrievalMode"]) {
+    std::string retrieval_mode_str =
+        config_common["RetrievalMode"].as<string>();
+    if (retrieval_mode_str == "dense") {
+      retrieval_mode = RM_DENSE;
+    } else if (retrieval_mode_str == "sparse") {
+      retrieval_mode = RM_SPARSE;
+    }
+  }
+
+  if (retrieval_mode == RM_SPARSE) {
+    return do_build_sparse(config_root, config_common);
+  } else {
+    return do_build(config_root, config_common);
+  }
+
+  return 0;
+}

@@ -13,6 +13,7 @@
 // limitations under the License.
 #include "hnsw_sparse_searcher_entity.h"
 #include <zvec/ailego/hash/crc32c.h>
+#include "utility/legacy_read_buffer.h"
 #include "utility/sparse_utility.h"
 
 namespace zvec {
@@ -36,13 +37,13 @@ int HnswSparseSearcherEntity::cleanup() {
 }
 
 key_t HnswSparseSearcherEntity::get_key(node_id_t id) const {
-  const void *key;
-  if (ailego_unlikely(keys_->read(id * sizeof(key_t), &key, sizeof(key_t)) !=
+  IndexStorage::MemoryBlock key;
+  if (ailego_unlikely(keys_->read(id * sizeof(key_t), key, sizeof(key_t)) !=
                       sizeof(key_t))) {
     LOG_ERROR("Read key from segment failed");
     return kInvalidKey;
   }
-  return *(reinterpret_cast<const key_t *>(key));
+  return *(reinterpret_cast<const key_t *>(key.data()));
 }
 
 //! Get vector local id by key
@@ -55,27 +56,27 @@ node_id_t HnswSparseSearcherEntity::get_id(key_t key) const {
   //! Do binary search
   node_id_t start = 0UL;
   node_id_t end = doc_cnt();
-  const void *data;
+  IndexStorage::MemoryBlock data;
   node_id_t idx = 0u;
   while (start < end) {
     idx = start + (end - start) / 2;
     if (ailego_unlikely(
-            mapping_->read(idx * sizeof(node_id_t), &data, sizeof(node_id_t)) !=
+            mapping_->read(idx * sizeof(node_id_t), data, sizeof(node_id_t)) !=
             sizeof(node_id_t))) {
       LOG_ERROR("Read key from segment failed");
       return kInvalidNodeId;
     }
-    const key_t *mkey;
-    node_id_t local_id = *reinterpret_cast<const node_id_t *>(data);
-    if (ailego_unlikely(keys_->read(local_id * sizeof(key_t),
-                                    (const void **)(&mkey),
+    IndexStorage::MemoryBlock key_block;
+    node_id_t local_id = *reinterpret_cast<const node_id_t *>(data.data());
+    if (ailego_unlikely(keys_->read(local_id * sizeof(key_t), key_block,
                                     sizeof(key_t)) != sizeof(key_t))) {
       LOG_ERROR("Read key from segment failed");
       return kInvalidNodeId;
     }
-    if (*mkey < key) {
+    const auto mkey = *static_cast<const key_t *>(key_block.data());
+    if (mkey < key) {
       start = idx + 1;
-    } else if (*mkey > key) {
+    } else if (mkey > key) {
       end = idx;
     } else {
       return local_id;
@@ -110,19 +111,24 @@ const void *HnswSparseSearcherEntity::get_vector_meta(node_id_t id) const {
   size_t read_size = sparse_meta_size();
   size_t offset = sparse_meta_size() * id;
 
-  const void *vec;
-  if (ailego_unlikely(sparse_vector_meta_->read(offset, &vec, read_size) !=
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock vec;
+  if (ailego_unlikely(sparse_vector_meta_->read(offset, vec, read_size) !=
                       read_size)) {
     LOG_ERROR("Read vector from segment failed");
     return nullptr;
   }
-  return vec;
+  return buffer.assign(vec, read_size);
 }
 
 int HnswSparseSearcherEntity::get_vector_meta(
     const node_id_t id, IndexStorage::MemoryBlock &block) const {
-  const void *vec = get_vector_meta(id);
-  block.reset((void *)vec);
+  const size_t size = sparse_meta_size();
+  if (sparse_vector_meta_->read(size * id, block, size) != size) {
+    LOG_ERROR("Read vector from segment failed");
+    return IndexError_ReadData;
+  }
   return 0;
 }
 
@@ -155,10 +161,12 @@ int HnswSparseSearcherEntity::get_vector_metas(const node_id_t *ids,
 int HnswSparseSearcherEntity::get_vector_metas(
     const node_id_t *ids, uint32_t count,
     std::vector<IndexStorage::MemoryBlock> &block_vecs) const {
-  std::vector<const void *> vecs(count);
-  get_vector_metas(ids, count, vecs.data());
+  block_vecs.resize(count);
   for (uint32_t i = 0; i < count; ++i) {
-    block_vecs.emplace_back(IndexStorage::MemoryBlock((void *)vecs[i]));
+    int ret = get_vector_meta(ids[i], block_vecs[i]);
+    if (ret != 0) {
+      return ret;
+    }
   }
   return 0;
 }
@@ -172,51 +180,54 @@ const Neighbors HnswSparseSearcherEntity::get_neighbors(level_t level,
       return {hd->neighbor_cnt, hd->neighbors};
     }
 
-    const SparseGraphNeighborMeta *m;
-    if (ailego_unlikely(
-            neighbors_meta_->read(id * sizeof(SparseGraphNeighborMeta),
-                                  (const void **)(&m),
-                                  sizeof(SparseGraphNeighborMeta)) !=
-            sizeof(SparseGraphNeighborMeta))) {
+    IndexStorage::MemoryBlock meta_block;
+    if (ailego_unlikely(neighbors_meta_->read(
+                            id * sizeof(SparseGraphNeighborMeta), meta_block,
+                            sizeof(SparseGraphNeighborMeta)) !=
+                        sizeof(SparseGraphNeighborMeta))) {
       LOG_ERROR("Read neighbors meta from segment failed");
       return {0, nullptr};
     }
 
-    const void *data;
-    if (ailego_unlikely(neighbors_->read(m->offset, &data,
+    const auto *m =
+        static_cast<const SparseGraphNeighborMeta *>(meta_block.data());
+    IndexStorage::MemoryBlock data;
+    if (ailego_unlikely(neighbors_->read(m->offset, data,
                                          m->neighbor_cnt * sizeof(node_id_t)) !=
                         m->neighbor_cnt * sizeof(node_id_t))) {
       LOG_ERROR("Read neighbors from segment failed");
       return {0, nullptr};
     }
-    return {static_cast<uint32_t>(m->neighbor_cnt),
-            reinterpret_cast<const node_id_t *>(data)};
+    Neighbors result(static_cast<uint32_t>(m->neighbor_cnt),
+                     static_cast<const node_id_t *>(data.data()));
+    result.neighbor_block = std::move(data);
+    return result;
   }
 
   //! Read level > 0 neighbors
-  const HnswSparseNeighborMeta *m;
-  if (ailego_unlikely(
-          upper_neighbors_meta_->read(id * sizeof(HnswSparseNeighborMeta),
-                                      (const void **)(&m),
-                                      sizeof(HnswSparseNeighborMeta)) !=
-          sizeof(HnswSparseNeighborMeta))) {
+  IndexStorage::MemoryBlock meta_block;
+  if (ailego_unlikely(upper_neighbors_meta_->read(
+                          id * sizeof(HnswSparseNeighborMeta), meta_block,
+                          sizeof(HnswSparseNeighborMeta)) !=
+                      sizeof(HnswSparseNeighborMeta))) {
     LOG_ERROR("Read neighbors meta from segment failed");
     return {0, nullptr};
   }
 
+  const auto *m =
+      static_cast<const HnswSparseNeighborMeta *>(meta_block.data());
   ailego_assert_with(level <= m->level, "invalid level");
   size_t offset = m->offset + (level - 1) * upper_neighbors_size();
   ailego_assert_with(offset <= upper_neighbors_->data_size(), "invalid offset");
-  const void *data;
+  IndexStorage::MemoryBlock data;
   if (ailego_unlikely(
-          upper_neighbors_->read(offset, &data, upper_neighbors_size()) !=
+          upper_neighbors_->read(offset, data, upper_neighbors_size()) !=
           upper_neighbors_size())) {
     LOG_ERROR("Read neighbors from segment failed");
     return {0, nullptr};
   }
 
-  auto hd = reinterpret_cast<const NeighborsHeader *>(data);
-  return {hd->neighbor_cnt, hd->neighbors};
+  return Neighbors(std::move(data));
 }
 
 int HnswSparseSearcherEntity::load(const IndexStorage::Pointer &container,
@@ -247,7 +258,7 @@ int HnswSparseSearcherEntity::load(const IndexStorage::Pointer &container,
 
 int HnswSparseSearcherEntity::load_segments(bool check_crc) {
   //! load header
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   HNSWSparseHeader hd;
   auto graph_hd_segment = container_->get(kSparseGraphHeaderSegmentId);
   if (!graph_hd_segment || graph_hd_segment->data_size() < sizeof(hd.graph)) {
@@ -255,24 +266,22 @@ int HnswSparseSearcherEntity::load_segments(bool check_crc) {
               kSparseGraphHeaderSegmentId.c_str());
     return IndexError_InvalidFormat;
   }
-  if (graph_hd_segment->read(0, reinterpret_cast<const void **>(&data),
-                             sizeof(hd.graph)) != sizeof(hd.graph)) {
+  if (graph_hd_segment->read(0, data, sizeof(hd.graph)) != sizeof(hd.graph)) {
     LOG_ERROR("Read segment %s failed", kSparseGraphHeaderSegmentId.c_str());
     return IndexError_ReadData;
   }
-  memcpy(&hd.graph, data, sizeof(hd.graph));
+  memcpy(&hd.graph, data.data(), sizeof(hd.graph));
 
   auto hnsw_hd_segment = container_->get(kSparseHnswHeaderSegmentId);
   if (!hnsw_hd_segment || hnsw_hd_segment->data_size() < sizeof(hd.hnsw)) {
     LOG_ERROR("Miss or invalid segment %s", kSparseHnswHeaderSegmentId.c_str());
     return IndexError_InvalidFormat;
   }
-  if (hnsw_hd_segment->read(0, reinterpret_cast<const void **>(&data),
-                            sizeof(hd.hnsw)) != sizeof(hd.hnsw)) {
+  if (hnsw_hd_segment->read(0, data, sizeof(hd.hnsw)) != sizeof(hd.hnsw)) {
     LOG_ERROR("Read segment %s failed", kSparseHnswHeaderSegmentId.c_str());
     return IndexError_ReadData;
   }
-  memcpy(&hd.hnsw, data, sizeof(hd.hnsw));
+  memcpy(&hd.hnsw, data.data(), sizeof(hd.hnsw));
   *mutable_header() = hd;
   segment_datas_.resize(std::max(l0_neighbor_cnt(), upper_neighbor_cnt()));
 
@@ -381,29 +390,28 @@ int HnswSparseSearcherEntity::load_and_flat_neighbors() {
     return IndexError_InvalidArgument;
   }
 
-  const SparseGraphNeighborMeta *neighbors_index = nullptr;
-  if (neighbors_meta->read(0, reinterpret_cast<const void **>(&neighbors_index),
-                           neighbors_meta->data_size()) !=
+  IndexStorage::MemoryBlock meta_block;
+  if (neighbors_meta->read(0, meta_block, neighbors_meta->data_size()) !=
       neighbors_meta->data_size()) {
     LOG_ERROR("Read segment %s data failed",
               kSparseGraphOffsetsSegmentId.c_str());
     return IndexError_InvalidArgument;
   }
 
-  const char *neighbor_data;
+  const auto *neighbors_index =
+      static_cast<const SparseGraphNeighborMeta *>(meta_block.data());
+  IndexStorage::MemoryBlock neighbor_data;
   for (node_id_t id = 0; id < doc_cnt(); ++id) {
     size_t rd_size = neighbors_index[id].neighbor_cnt * sizeof(node_id_t);
-    if (ailego_unlikely(
-            neighbors_->read(neighbors_index[id].offset,
-                             reinterpret_cast<const void **>(&neighbor_data),
-                             rd_size) != rd_size)) {
+    if (ailego_unlikely(neighbors_->read(neighbors_index[id].offset,
+                                         neighbor_data, rd_size) != rd_size)) {
       LOG_ERROR("Read neighbors from segment failed");
       return IndexError_ReadData;
     }
     // copy level 0 neighbors to fixed size neighbors memory
     char *dst = fixed_neighbors_.get() + neighbors_size() * id;
     *reinterpret_cast<uint32_t *>(dst) = neighbors_index[id].neighbor_cnt;
-    memcpy(dst + sizeof(uint32_t), neighbor_data, rd_size);
+    memcpy(dst + sizeof(uint32_t), neighbor_data.data(), rd_size);
   }
 
   return 0;
@@ -418,15 +426,16 @@ int HnswSparseSearcherEntity::get_fixed_neighbors(
     return IndexError_InvalidArgument;
   }
 
-  const SparseGraphNeighborMeta *neighbors_index = nullptr;
+  IndexStorage::MemoryBlock meta_block;
   size_t meta_size = neighbors_meta->data_size();
-  if (neighbors_meta->read(0, reinterpret_cast<const void **>(&neighbors_index),
-                           meta_size) != meta_size) {
+  if (neighbors_meta->read(0, meta_block, meta_size) != meta_size) {
     LOG_ERROR("Read segment %s data failed",
               kSparseGraphOffsetsSegmentId.c_str());
     return IndexError_InvalidArgument;
   }
 
+  const auto *neighbors_index =
+      static_cast<const SparseGraphNeighborMeta *>(meta_block.data());
   size_t fixed_neighbor_cnt = l0_neighbor_cnt();
   fixed_neighbors->resize((fixed_neighbor_cnt + 1) * doc_cnt(), kInvalidNodeId);
 
@@ -439,15 +448,16 @@ int HnswSparseSearcherEntity::get_fixed_neighbors(
       continue;
     }
     size_t rd_size = cur_neighbor_cnt * sizeof(node_id_t);
-    const uint32_t *neighbors;
-    if (neighbors_->read(neighbors_index[id].offset,
-                         reinterpret_cast<const void **>(&neighbors),
-                         rd_size) != rd_size) {
+    IndexStorage::MemoryBlock neighbor_block;
+    if (neighbors_->read(neighbors_index[id].offset, neighbor_block, rd_size) !=
+        rd_size) {
       LOG_ERROR("Read neighbors from segment failed");
       return IndexError_ReadData;
     }
 
     // copy level 0 neighbors to fixed size neighbors memory
+    const auto *neighbors =
+        static_cast<const uint32_t *>(neighbor_block.data());
     auto it = fixed_neighbors->begin() + id * fixed_neighbor_cnt;
     std::copy(neighbors, neighbors + cur_neighbor_cnt, it);
 
@@ -463,18 +473,18 @@ int HnswSparseSearcherEntity::get_fixed_neighbors(
 bool HnswSparseSearcherEntity::do_crc_check(
     std::vector<SegmentPointer> &segments) const {
   constexpr size_t blk_size = 4096;
-  const void *data;
+  IndexStorage::MemoryBlock data;
   for (auto &segment : segments) {
     size_t offset = 0;
     size_t rd_size;
     uint32_t crc = 0;
     while (offset < segment->data_size()) {
       size_t size = std::min(blk_size, segment->data_size() - offset);
-      if ((rd_size = segment->read(offset, &data, size)) <= 0) {
+      if ((rd_size = segment->read(offset, data, size)) <= 0) {
         break;
       }
       offset += rd_size;
-      crc = ailego::Crc32c::Hash(data, rd_size, crc);
+      crc = ailego::Crc32c::Hash(data.data(), rd_size, crc);
     }
     if (crc != segment->data_crc()) {
       return false;
@@ -550,9 +560,11 @@ const HnswSparseEntity::Pointer HnswSparseSearcherEntity::clone() const {
 //! Get vector sparse feature data by chunk index and offset
 const void *HnswSparseSearcherEntity::get_sparse_data(uint64_t offset,
                                                       uint32_t len) const {
-  const void *sparse_data = nullptr;
+  // Keep the legacy pointer valid until the next call on this thread.
+  static thread_local LegacyReadBuffer buffer;
+  IndexStorage::MemoryBlock sparse_data;
 
-  uint32_t real_length = sparse_vectors_->read(offset, &sparse_data, len);
+  uint32_t real_length = sparse_vectors_->read(offset, sparse_data, len);
 
   if (ailego_unlikely(real_length != len)) {
     LOG_ERROR("Read sparse data from segment failed, %u vs %u", real_length,
@@ -560,13 +572,15 @@ const void *HnswSparseSearcherEntity::get_sparse_data(uint64_t offset,
     return nullptr;
   }
 
-  return sparse_data;
+  return buffer.assign(sparse_data, len);
 }
 
 int HnswSparseSearcherEntity::get_sparse_data(
     uint64_t offset, uint32_t len, IndexStorage::MemoryBlock &block) const {
-  const void *vec = get_sparse_data(offset, len);
-  block.reset((void *)vec);
+  if (sparse_vectors_->read(offset, block, len) != len) {
+    LOG_ERROR("Read sparse data from segment failed");
+    return IndexError_ReadData;
+  }
   return 0;
 }
 
@@ -586,9 +600,13 @@ const void *HnswSparseSearcherEntity::get_sparse_data(node_id_t id) const {
 
 int HnswSparseSearcherEntity::get_sparse_data(
     const node_id_t id, IndexStorage::MemoryBlock &block) const {
-  const void *vec = get_sparse_data(id);
-  block.reset((void *)vec);
-  return 0;
+  IndexStorage::MemoryBlock meta_block;
+  int ret = get_vector_meta(id, meta_block);
+  if (ret != 0) {
+    return ret;
+  }
+  int sparse_length = 0;
+  return get_sparse_data_from_vector(meta_block.data(), block, sparse_length);
 }
 
 //! Get sparse data from vector
@@ -619,11 +637,17 @@ HnswSparseSearcherEntity::get_sparse_data_from_vector(const void *vec) const {
 int HnswSparseSearcherEntity::get_sparse_data_from_vector(
     const void *vec, IndexStorage::MemoryBlock &block,
     int &sparse_length) const {
-  std::pair<const void *, uint32_t> sparse_data =
-      get_sparse_data_from_vector(vec);
-  block.reset((void *)sparse_data.first);
-  sparse_length = sparse_data.second;
-  return 0;
+  if (vec == nullptr) {
+    block.reset();
+    sparse_length = 0;
+    return IndexError_ReadData;
+  }
+  const char *meta = static_cast<const char *>(vec);
+  const uint64_t offset = *reinterpret_cast<const uint64_t *>(meta);
+  const uint32_t length =
+      *reinterpret_cast<const uint32_t *>(meta + sizeof(uint64_t));
+  sparse_length = length;
+  return get_sparse_data(offset, length, block);
 }
 
 }  // namespace core

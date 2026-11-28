@@ -715,20 +715,6 @@ zvec_config_data_set_optimize_thread_count(zvec_config_data_t *config,
 ZVEC_EXPORT uint32_t ZVEC_CALL
 zvec_config_data_get_optimize_thread_count(const zvec_config_data_t *config);
 
-/**
- * @brief Set jieba dict directory in configuration data
- * @param dir Dict directory; NULL or empty leaves the field empty
- */
-ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_config_data_set_jieba_dict_dir(
-    zvec_config_data_t *config, const char *dir);
-
-/**
- * @brief Get jieba dict directory from configuration data
- * @return Pointer owned by config (do not free); empty when unset
- */
-ZVEC_EXPORT const char *ZVEC_CALL
-zvec_config_data_get_jieba_dict_dir(const zvec_config_data_t *config);
-
 // =============================================================================
 // Initialization and Cleanup Interface
 // =============================================================================
@@ -753,26 +739,6 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_shutdown(void);
  * @return true if initialized, false otherwise
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_is_initialized(void);
-
-/**
- * @brief Set the process-wide default jieba dict directory.
- *
- * For language SDKs to call on module load. Thread-safe, decoupled from
- * zvec_initialize(); last writer wins. A subsequent zvec_initialize() with
- * non-empty config.jieba_dict_dir overrides this. JiebaTokenizer priority:
- * per-field > ZVEC_JIEBA_DICT_DIR > this.
- *
- * @param dir UTF-8 directory containing jieba.dict.utf8 + hmm_model.utf8;
- *            NULL or empty clears the value.
- */
-ZVEC_EXPORT void ZVEC_CALL zvec_set_default_jieba_dict_dir(const char *dir);
-
-/**
- * @brief Get the process-wide default jieba dict directory.
- * @return Thread-local string valid until the next call on this thread;
- *         empty when unset.
- */
-ZVEC_EXPORT const char *ZVEC_CALL zvec_get_default_jieba_dict_dir(void);
 
 // =============================================================================
 // I/O Backend Introspection
@@ -917,6 +883,7 @@ typedef uint32_t zvec_quantize_type_t;
 #define ZVEC_QUANTIZE_TYPE_INT8 2
 #define ZVEC_QUANTIZE_TYPE_INT4 3
 #define ZVEC_QUANTIZE_TYPE_RABITQ 4
+#define ZVEC_QUANTIZE_TYPE_PQ 8
 
 // =============================================================================
 // Collection Structures (Opaque Pointer Pattern)
@@ -1023,15 +990,34 @@ ZVEC_EXPORT zvec_quantize_type_t ZVEC_CALL
 zvec_index_params_get_quantize_type(const zvec_index_params_t *params);
 
 /**
- * @brief Set enable_rotate for quantizer (only effective with INT8/INT4
- * quantize type)
+ * Configure Turbo RaBitQ for an ordinary HNSW, IVF or DiskANN index whose
+ * quantize type is RABITQ. total_bits: 1..9; num_clusters: 1..65536; n_iters:
+ * positive; sample_count: nonnegative (0 uses all training vectors). This does
+ * not change IVF n_list/n_iters. Invalid inputs leave the parameters unchanged.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_set_rabitq_quantizer_params(zvec_index_params_t *params,
+                                              int total_bits, int num_clusters,
+                                              int sample_count, int n_iters);
+
+/** Get effective Turbo RaBitQ settings. Each output pointer may be NULL. */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
+zvec_index_params_get_rabitq_quantizer_params(const zvec_index_params_t *params,
+                                              int *total_bits,
+                                              int *num_clusters,
+                                              int *sample_count, int *n_iters);
+
+/**
+ * @brief Set enable_rotate for quantizer (random rotation for INT8/INT4; OPQ
+ * for PQ, quantize type)
  *
  * When enabled, vectors are randomly rotated before INT8/INT4 quantization to
- * reduce quantization error. The rotation matrix is stored with the index
+ * reduce quantization error. With PQ, learned OPQ is used instead.
+ * The rotation matrix is stored with the index
  * and automatically applied to query vectors at search time.
  *
  * @param params Index parameters (must be vector index type)
- * @param enable_rotate Whether to enable random rotation before quantization
+ * @param enable_rotate Whether to enable rotation (learned OPQ with PQ)
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL
@@ -1045,6 +1031,33 @@ zvec_index_params_set_quantizer_enable_rotate(zvec_index_params_t *params,
  */
 ZVEC_EXPORT bool ZVEC_CALL zvec_index_params_get_quantizer_enable_rotate(
     const zvec_index_params_t *params);
+
+/** IVF PQ configuration. Set the index quantize type to ZVEC_QUANTIZE_TYPE_PQ.
+ * PQ supports FP32 IVF fields with L2, IP or COSINE metrics. num_chunk must be
+ * positive and num_bits must be 4 or 8. PQ4 requires dimension divisible by
+ * num_chunk; FastScan requires PQ4. enable_rotate selects learned OPQ.
+ */
+typedef struct {
+  int num_chunk;
+  int num_bits;
+  bool enable_rotate;
+  bool fast_scan;
+  uint32_t opq_iter;
+  uint32_t opq_pq_iter;
+} zvec_pq_quantizer_params_t;
+
+#define ZVEC_PQ_QUANTIZER_PARAMS_DEFAULT {8, 8, false, false, 5, 4}
+
+/** Set IVF PQ configuration.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_quantizer_pq(
+    zvec_index_params_t *params, const zvec_pq_quantizer_params_t *pq);
+
+/** Read IVF PQ configuration. Returns INVALID_ARGUMENT for null/non-IVF params.
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_quantizer_pq(
+    const zvec_index_params_t *params, zvec_pq_quantizer_params_t *pq);
+
 
 /**
  * @brief Set HNSW specific parameters
@@ -1126,7 +1139,7 @@ zvec_index_params_get_vamana_two_pass_build(const zvec_index_params_t *params);
  * @param params Index parameters (must be DiskANN type)
  * @param max_degree Graph connectivity (max degree of Vamana graph)
  * @param list_size Build-time list size (candidate list during construction)
- * @param pq_chunk_num PQ chunk count (0 disables PQ)
+ * @param pq_chunk_num PQ chunk count (0 selects the count automatically)
  * @return ZVEC_OK on success, error code on failure
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_diskann_params(
@@ -1182,9 +1195,11 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_get_ivf_params(
 
 /**
  * @brief Set IVF RaBitQ specific parameters
- * @param params Index parameters (must be IVF_RABITQ type)
- * @param nlist Number of cluster centers
- * @param total_bits Total bits for RaBitQ quantization
+ * @param params IVF_RABITQ parameters, or IVF parameters with RABITQ
+ * quantization
+ * @param nlist Number of cluster centers (must be positive)
+ * @param total_bits Total bits for RaBitQ quantization (1-9; IVF_RABITQ also
+ * accepts 0 to select the default)
  * @param sample_count Sample count for training, 0 means use all vectors
  * @return ZVEC_OK on success, error code on failure
  */
@@ -1193,7 +1208,8 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_ivf_rabitq_params(
 
 /**
  * @brief Get IVF RaBitQ parameters (all at once)
- * @param params Index parameters (must be IVF_RABITQ type)
+ * @param params IVF_RABITQ parameters, or IVF parameters with RABITQ
+ * quantization
  * @param out_nlist Output parameter for nlist
  * @param out_total_bits Output parameter for total_bits
  * @param out_sample_count Output parameter for sample_count
@@ -1244,9 +1260,11 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_index_params_set_invert_params(
  *       "punctuation", "symbol"; default [] keeps all valid UTF-8
  *       characters). custom_token_chars is not supported.
  *   jieba:
- *     - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *       hmm_model.utf8).
- *     - "user_dict_path" (user dictionary path).
+ *     - "jieba_dict_dir" (optional external directory containing
+ *       jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+ *       ZVEC_JIEBA_DICT_DIR > embedded defaults).
+ *     - "user_dict_path" (user dictionary path; augments the selected
+ *       dictionary, including the embedded default).
  *     - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *   whitespace:
  *     - no extra_params.
@@ -1371,7 +1389,8 @@ typedef struct zvec_vector_query_t zvec_vector_query_t;
  * @brief Grouped vector query structure (opaque pointer)
  * Aligned with zvec::GroupByVectorQuery
  * Use zvec_group_by_vector_query_create() to create and
- * zvec_group_by_vector_query_destroy() to destroy
+ * zvec_group_by_vector_query_destroy() to destroy.
+ * Execute with zvec_collection_group_by_query().
  */
 typedef struct zvec_group_by_vector_query_t zvec_group_by_vector_query_t;
 
@@ -1417,7 +1436,7 @@ typedef struct zvec_sub_query_t zvec_sub_query_t;
 
 /**
  * @brief Create HNSW query parameters
- * @param ef Exploration factor during search (default: 40)
+ * @param ef Exploration factor during search (default: 300)
  * @param radius Search radius (default: 0.0)
  * @param is_linear Whether linear search (default: false)
  * @param is_using_refiner Whether using refiner (default: false)
@@ -2319,6 +2338,7 @@ zvec_vector_query_get_fts(const zvec_vector_query_t *query);
 
 /**
  * @brief Create group by vector query
+ * Defaults to at most 2 groups and 3 documents per group.
  * @return zvec_group_by_vector_query_t* Pointer to the newly created group by
  * vector query
  */
@@ -3765,8 +3785,9 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_delete_by_filter(
  * @param collection Collection handle
  * @param query Query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
@@ -3774,12 +3795,49 @@ ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_query(
     zvec_doc_t ***results, size_t *result_count);
 
 /**
+ * @brief One group of vector search results
+ * All members are owned by the result array. Release the entire array with
+ * zvec_group_results_free; do not free individual members separately.
+ */
+typedef struct {
+  char *group_by_value; /**< String representation of the grouping value */
+  zvec_doc_t **docs;    /**< Documents ordered by vector similarity */
+  size_t doc_count;     /**< Number of documents in this group */
+} zvec_group_result_t;
+
+/**
+ * @brief Vector similarity search grouped by a scalar field
+ * @param collection Collection handle
+ * @param query Grouped query specifying the vector, grouping field, maximum
+ * group count and maximum results per group
+ * @param[out] results Owned result array; release with zvec_group_results_free.
+ * NULL on failure or when no groups match. Results remain valid after the query
+ * or collection is destroyed.
+ * @param[out] result_count Number of groups; zero on failure or no matches
+ * @return zvec_error_code_t Error code
+ */
+ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_group_by_query(
+    const zvec_collection_t *collection,
+    const zvec_group_by_vector_query_t *query, zvec_group_result_t **results,
+    size_t *result_count);
+
+/**
+ * @brief Free grouped results, including grouping values and documents
+ * @param results Result array returned by zvec_collection_group_by_query;
+ * NULL is allowed
+ * @param result_count Number of groups in the array
+ */
+ZVEC_EXPORT void ZVEC_CALL zvec_group_results_free(zvec_group_result_t *results,
+                                                   size_t result_count);
+
+/**
  * @brief Multi-query with multiple sub-queries and re-ranking
  * @param collection Collection handle
  * @param query Multi-query query parameters pointer
  * @param[out] results Returned document array (needs to be freed by calling
- * zvec_docs_free)
- * @param[out] result_count Number of returned results
+ * zvec_docs_free); NULL when no documents match
+ * @param[out] result_count Number of returned results; zero when no documents
+ * match
  * @return zvec_error_code_t Error code
  */
 ZVEC_EXPORT zvec_error_code_t ZVEC_CALL zvec_collection_multi_query(

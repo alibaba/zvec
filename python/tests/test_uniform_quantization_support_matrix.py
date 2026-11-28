@@ -4,6 +4,8 @@ HnswRabitqIndexParam and IvfRabitqIndexParam select RABITQ internally and do
 not expose a quantize_type constructor argument.
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -49,7 +51,18 @@ def test_uniform_rejects_unsupported_field_types(
             )
         ],
     )
-    with pytest.raises(ValueError, match="Invalid schema:.*quantiz"):
+    if metric == zvec.MetricType.L2:
+        error = (
+            f"data_type={data_type.name} does not support quantization; "
+            f"got quantize_type={quantizer.name}"
+        )
+    else:
+        error = (
+            f"{quantizer.name} quantization only supports L2 metric; got {metric.name}"
+        )
+    with pytest.raises(
+        ValueError, match=re.escape(f"Invalid schema for field[dense]: {error}")
+    ):
         collection = zvec.create_and_open(str(tmp_path / "collection"), schema=schema)
         collection.close()
 
@@ -96,11 +109,7 @@ def test_uniform_index_support_matrix(
             if not supported
             else "only supports L2 metric"
         )
-        error_type = ValueError
-        if index_name == "DISKANN":
-            error += "|DiskAnn is not supported on this platform"
-            error_type = (ValueError, RuntimeError)
-        with pytest.raises(error_type, match=error):
+        with pytest.raises(ValueError, match=error):
             collection = zvec.create_and_open(path=path, schema=schema)
             collection.close()
         return

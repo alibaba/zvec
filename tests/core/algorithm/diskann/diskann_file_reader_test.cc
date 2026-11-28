@@ -20,8 +20,30 @@
 #include <cstring>
 #include <memory>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
+#include "../../../ailego/buffer/pool_payload_budget.h"
+
+namespace zvec::ailego {
+struct QueueResidentSampleTestPeer {
+  static bool configure_with_headroom(MemoryLimitPool &pool, size_t allowance) {
+    constexpr size_t kLimit = 64UL << 20;
+    const auto sample = +[]() -> size_t { return 32UL << 20; };
+    if (!pool.process_rss_.configure(kLimit, sample)) return false;
+    const auto used = kLimit - pool.process_rss_.available();
+    return pool.process_rss_.configure(used + allowance, sample);
+  }
+  static bool pause_background(MemoryLimitPool &pool) {
+    const bool running = pool.bg_running_.load();
+    pool.stop_background_evictor();
+    return running;
+  }
+  static void resume_background(MemoryLimitPool &pool) {
+    pool.start_background_evictor();
+  }
+};
+}  // namespace zvec::ailego
 
 using namespace zvec::core;
 
@@ -185,9 +207,9 @@ TEST(DiskAnnFileReaderTest, BufferPoolReadsSectorSlicesFromNativePages) {
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
 
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool =
@@ -226,6 +248,205 @@ TEST(DiskAnnFileReaderTest, BufferPoolReadsSectorSlicesFromNativePages) {
   reader.close();
 }
 
+TEST(DiskAnnFileReaderTest, CachedSectorBatchesKeepOrderAndReleasePins) {
+  namespace ailego = zvec::ailego;
+  const size_t page = ailego::kVectorPageSize;
+  const size_t sector = DiskAnnUtil::kSectorSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(8 * page);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>((i / sector) * 17 + i % 251);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  auto &budget = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_EQ(0, budget.init(64UL << 20));
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(0, pool->init());
+  for (ailego::block_id_t id = 0; id < 8; ++id) {
+    ASSERT_NE(nullptr, pool->acquire_buffer(id));
+    pool->release_pages(&id, 1);
+  }
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(0, reader.open_from_pool(file.path()));
+  auto output = make_aligned_buffer(8 * page);
+  ASSERT_NE(nullptr, output);
+  std::vector<AlignedRead> requests{
+      {3 * page + sector, sector, output.get()},
+      {page - sector, 2 * sector,
+       static_cast<uint8_t *>(output.get()) + 2 * page},
+      {sector, sector, static_cast<uint8_t *>(output.get()) + 4 * page},
+      {3 * page + sector, sector,
+       static_cast<uint8_t *>(output.get()) + 6 * page}};
+  IOContext ctx{};
+  PendingBatch batch;
+  const auto before = pool->stats();
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(4, reader.get_completed(batch, ctx, 1, completed));
+  for (size_t i = 0; i < requests.size(); ++i) {
+    ASSERT_EQ(i, completed[i]);
+    EXPECT_EQ(0, std::memcmp(requests[i].buf,
+                            source.data() + requests[i].offset,
+                            requests[i].len));
+  }
+  EXPECT_EQ(before.miss, pool->stats().miss);
+  EXPECT_EQ(before.bypass_bytes, pool->stats().bypass_bytes);
+  EXPECT_EQ(nullptr, ctx);
+  // No page pin may escape the synchronous copy. Reclaim before checking the
+  // caller's retained bytes so both pin release and output lifetime matter.
+  for (size_t i = 0; i < 32; ++i)
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(64);
+  EXPECT_FALSE(pool->is_page_resident(0));
+  EXPECT_FALSE(pool->is_page_resident(3));
+  for (const auto &request : requests)
+    EXPECT_EQ(0, std::memcmp(request.buf, source.data() + request.offset,
+                            request.len));
+  reader.close();
+}
+
+TEST(DiskAnnFileReaderTest, CachedNodesCopyOnlyTheirWindowAndReleasePins) {
+  namespace ailego = zvec::ailego;
+  const size_t page = ailego::kVectorPageSize;
+  constexpr size_t sector = DiskAnnUtil::kSectorSize;
+  constexpr size_t node_size = 1156;
+  constexpr size_t nodes_per_sector = sector / node_size;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(8 * page);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>(i % 251);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  auto &budget = ailego::PoolPayloadBudget::get_instance();
+  ASSERT_EQ(0, budget.init(64UL << 20));
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(0, pool->init());
+  for (ailego::block_id_t id = 0; id < 8; ++id) {
+    ASSERT_NE(nullptr, pool->acquire_buffer(id));
+    pool->release_pages(&id, 1);
+  }
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(0, reader.open_from_pool(file.path()));
+  const std::array<uint32_t, 6> ids{{0, 1, 2, 4, 13, 1}};
+  auto output = make_aligned_buffer(ids.size() * sector);
+  ASSERT_NE(nullptr, output);
+  std::memset(output.get(), 0xad, ids.size() * sector);
+  std::vector<AlignedRead> requests;
+  for (size_t i = 0; i < ids.size(); ++i)
+    requests.emplace_back((1 + ids[i] / nodes_per_sector) * sector, sector,
+                          static_cast<char *>(output.get()) + i * sector);
+  IOContext ctx{};
+  PendingBatch batch;
+  const auto before = pool->stats();
+  ASSERT_TRUE(reader.try_submit_cached_nodes(batch, requests, ctx, ids.data(),
+                                              node_size, nodes_per_sector));
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(ids.size(), reader.get_completed(batch, ctx, 1, completed));
+  for (size_t i = 0; i < requests.size(); ++i) {
+    ASSERT_EQ(i, completed[i]);
+    const size_t start = (ids[i] % nodes_per_sector) * node_size;
+    const auto *bytes = static_cast<const uint8_t *>(requests[i].buf);
+    EXPECT_EQ(0, std::memcmp(bytes + start,
+                            source.data() + requests[i].offset + start,
+                            node_size));
+    for (size_t j = 0; j < sector; ++j) {
+      if (j < start || j >= start + node_size) {
+        EXPECT_EQ(0xad, bytes[j]);
+      }
+    }
+  }
+  EXPECT_EQ(before.miss, pool->stats().miss);
+  EXPECT_EQ(before.bypass_bytes, pool->stats().bypass_bytes);
+  EXPECT_EQ(nullptr, ctx);
+  for (size_t i = 0; i < 32; ++i)
+    ailego::BlockEvictionQueue::get_instance().batch_recycle(64);
+  for (ailego::block_id_t id = 0; id < 8; ++id)
+    EXPECT_FALSE(pool->is_page_resident(id));
+  for (size_t i = 0; i < requests.size(); ++i) {
+    const size_t start = (ids[i] % nodes_per_sector) * node_size;
+    EXPECT_EQ(0, std::memcmp(static_cast<char *>(requests[i].buf) + start,
+                            source.data() + requests[i].offset + start,
+                            node_size));
+  }
+}
+
+TEST(DiskAnnFileReaderTest, CachedLargeNodeSpansNativePagesWithoutCopyingPadding) {
+  namespace ailego = zvec::ailego;
+  const size_t page = ailego::kVectorPageSize;
+  constexpr size_t sector = DiskAnnUtil::kSectorSize;
+  constexpr size_t node_size = 17 * 1024 + 132;
+  constexpr size_t length = 5 * sector;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(8 * page);
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = static_cast<uint8_t>(i % 251);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(64UL << 20));
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(0, pool->init());
+  for (ailego::block_id_t id = 0; id < 8; ++id) {
+    ASSERT_NE(nullptr, pool->acquire_buffer(id));
+    pool->release_pages(&id, 1);
+  }
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(0, reader.open_from_pool(file.path()));
+  auto output = make_aligned_buffer(length);
+  ASSERT_NE(nullptr, output);
+  std::memset(output.get(), 0xad, length);
+  std::vector<AlignedRead> requests{{sector, length, output.get()}};
+  const uint32_t id = 0;
+  IOContext ctx{};
+  PendingBatch batch;
+  ASSERT_TRUE(reader.try_submit_cached_nodes(batch, requests, ctx, &id,
+                                              node_size, 0));
+  EXPECT_EQ(0, std::memcmp(output.get(), source.data() + sector, node_size));
+  const auto *bytes = static_cast<const uint8_t *>(output.get());
+  for (size_t i = node_size; i < length; ++i) EXPECT_EQ(0xad, bytes[i]);
+}
+
+TEST(DiskAnnFileReaderTest, MissingCachedNodeLeavesAllDestinationsUntouched) {
+  namespace ailego = zvec::ailego;
+  const size_t page = ailego::kVectorPageSize;
+  constexpr size_t sector = DiskAnnUtil::kSectorSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  std::vector<uint8_t> source(4 * page, 0x61);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  ASSERT_EQ(0, ailego::PoolPayloadBudget::get_instance().init(64UL << 20));
+  auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+  ASSERT_EQ(0, pool->init());
+  const ailego::block_id_t first = 0;
+  ASSERT_NE(nullptr, pool->acquire_buffer(first));
+  pool->release_pages(&first, 1);
+  BufferPoolAlignedFileReader reader(pool);
+  ASSERT_EQ(0, reader.open_from_pool(file.path()));
+  auto output = make_aligned_buffer(2 * sector);
+  ASSERT_NE(nullptr, output);
+  std::memset(output.get(), 0xad, 2 * sector);
+  std::vector<AlignedRead> requests{
+      {0, sector, output.get()},
+      {2 * page, sector, static_cast<char *>(output.get()) + sector}};
+  const uint32_t ids[]{0, 0};
+  IOContext ctx{};
+  PendingBatch batch;
+  ASSERT_FALSE(reader.try_submit_cached_nodes(batch, requests, ctx, ids, 1156, 3));
+  const auto *bytes = static_cast<const uint8_t *>(output.get());
+  for (size_t i = 0; i < 2 * sector; ++i) ASSERT_EQ(0xad, bytes[i]);
+  EXPECT_EQ(0u, batch.n_submitted);
+  ASSERT_FALSE(reader.try_submit_cached_nodes(batch, requests, ctx, ids,
+                                               sector + 1, 3));
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  std::vector<uint32_t> completed;
+  ASSERT_EQ(2, reader.get_completed(batch, ctx, 2, completed));
+  for (const auto &request : requests)
+    EXPECT_EQ(0, std::memcmp(request.buf, source.data() + request.offset,
+                            request.len));
+}
+
 TEST(DiskAnnFileReaderTest,
      BufferPoolCacheAndBypassFollowOriginalFileAfterPathReplacement) {
   namespace ailego = zvec::ailego;
@@ -243,9 +464,9 @@ TEST(DiskAnnFileReaderTest,
   original.close();
   replacement.close();
 
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
       0);
   auto pool = std::make_shared<ailego::VecBufferPool>(original.path(), false);
@@ -262,6 +483,13 @@ TEST(DiskAnnFileReaderTest,
   ASSERT_NE(output, nullptr);
   const size_t offset = native_page_size - sector_size;
   std::vector<AlignedRead> requests{{offset, 2 * sector_size, output.get()}};
+  // The required read workspace can use RSS headroom even when the only
+  // cache page is pinned and the cold slice must bypass the cache.
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const size_t previous_rss = rss.process_rss_limit();
+  const auto restore_rss = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss)); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(size_t{1} << 30));
   const auto before = pool->stats();
   IOContext ctx{};
   EXPECT_EQ(reader.read(requests, ctx), 0);
@@ -288,7 +516,7 @@ TEST(DiskAnnFileReaderTest, BufferPoolWithoutPageTableUsesBypassOnly) {
               ailego::kVectorPageSize);
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(memory_pool.init(1), 0);
   auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
 
@@ -317,6 +545,77 @@ TEST(DiskAnnFileReaderTest, BufferPoolWithoutPageTableUsesBypassOnly) {
   reader.release_io_ctx(ctx);
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   reader.close();
+}
+
+TEST(DiskAnnFileReaderTest, BufferPoolPreadWhenIoContextDoesNotFit) {
+  namespace ailego = zvec::ailego;
+  using Budget = ailego::QueueResidentSampleTestPeer;
+  const size_t page_size = ailego::kVectorPageSize;
+  TemporaryFile file;
+  ASSERT_GE(file.fd(), 0);
+  const std::vector<uint8_t> source(2 * page_size, 0x9a);
+  ASSERT_TRUE(file.write_all(source.data(), source.size()));
+  file.close();
+  auto &pool_budget = ailego::PoolPayloadBudget::get_instance();
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const auto previous_pool = pool_budget.capacity();
+  const auto previous_rss = rss.process_rss_limit();
+  const auto restore = ailego::ScopeGuard::Make([&] {
+    EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss));
+    EXPECT_EQ(0, pool_budget.init(previous_pool));
+  });
+  ASSERT_TRUE(rss.configure_process_rss_limit(0));
+  for (bool use_cache : {false, true}) {
+    SCOPED_TRACE(use_cache);
+    const size_t capacity =
+        use_cache ? 2 * page_size +
+                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)
+                  : 1;
+    ASSERT_EQ(0, pool_budget.init(capacity));
+    auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
+    const ailego::block_id_t hot_page = 0;
+    if (use_cache) {
+      ASSERT_EQ(0, pool->init());
+      ASSERT_NE(nullptr, pool->acquire_buffer(hot_page, 1));
+    }
+    const auto unpin = ailego::ScopeGuard::Make([&] {
+      if (use_cache) pool->release_pages(&hot_page, 1);
+    });
+    ASSERT_EQ(use_cache, pool->cache_enabled());
+    BufferPoolAlignedFileReader reader(pool);
+    ASSERT_EQ(0, reader.open_from_pool(file.path()));
+    AlignedBuffer output = make_aligned_buffer(page_size);
+    ASSERT_NE(nullptr, output);
+    std::vector<AlignedRead> requests{{page_size, page_size, output.get()}};
+    const bool background_running = Budget::pause_background(rss);
+    const auto resume = ailego::ScopeGuard::Make([&] {
+      EXPECT_TRUE(rss.configure_process_rss_limit(0));
+      if (background_running) Budget::resume_background(rss);
+    });
+    // A cold page needs a split and lookup plan if the page table is enabled.
+    // Allow their descriptors, leaving too little for an I/O context.
+    const size_t allowance = use_cache ? 128 : 0;
+    ASSERT_TRUE(Budget::configure_with_headroom(rss, allowance));
+    IOContext ctx{};
+    const auto release = ailego::ScopeGuard::Make([&] { destroy_io_ctx(ctx); });
+    const int status = reader.read(requests, ctx);
+    EXPECT_EQ(0, status);
+    if (status != 0) continue;
+    EXPECT_EQ(nullptr, ctx);
+    EXPECT_EQ(0,
+              std::memcmp(output.get(), source.data() + page_size, page_size));
+
+    ASSERT_TRUE(Budget::configure_with_headroom(rss, allowance));
+    std::memset(output.get(), 0, page_size);
+    PendingBatch batch;
+    ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+    EXPECT_TRUE(batch.used_pread);
+    std::vector<uint32_t> completed;
+    ASSERT_EQ(1, reader.get_completed(batch, ctx, 1, completed));
+    EXPECT_EQ((std::vector<uint32_t>{0}), completed);
+    EXPECT_EQ(0,
+              std::memcmp(output.get(), source.data() + page_size, page_size));
+  }
 }
 
 TEST(DiskAnnFileReaderTest, BufferPoolReadBeforeOpenReturnsError) {
@@ -357,7 +656,7 @@ TEST(DiskAnnFileReaderTest, BufferPoolRejectsUnalignedRequestsAfterOpen) {
   std::vector<uint8_t> source(2 * ailego::kVectorPageSize, 0x5a);
   ASSERT_TRUE(file.write_all(source.data(), source.size()));
   file.close();
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
       memory_pool.init(16 * ailego::kVectorPageSize +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(2)),
@@ -370,10 +669,12 @@ TEST(DiskAnnFileReaderTest, BufferPoolRejectsUnalignedRequestsAfterOpen) {
   ASSERT_NE(output, nullptr);
 
   IOContext ctx{};
-  std::vector<AlignedRead> bad_offset{{1, sector_size, output.get()}};
+  std::vector<AlignedRead> bad_offset{{0, sector_size, output.get()}};
+  bad_offset.front().offset = 1;
   EXPECT_EQ(reader.read(bad_offset, ctx), IndexError_InvalidArgument);
   EXPECT_EQ(ctx, nullptr);
-  std::vector<AlignedRead> bad_length{{0, sector_size - 1, output.get()}};
+  std::vector<AlignedRead> bad_length{{0, sector_size, output.get()}};
+  bad_length.front().len = sector_size - 1;
   EXPECT_EQ(reader.read(bad_length, ctx), IndexError_InvalidArgument);
   EXPECT_EQ(ctx, nullptr);
 

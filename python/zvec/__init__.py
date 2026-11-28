@@ -30,30 +30,11 @@ if sys.maxsize <= 2**32:
     )
 
 
-# Register the wheel-bundled jieba dict dir so `import zvec` alone makes
-# the jieba FTS tokenizer usable. Users can still override via
-# zvec.init(jieba_dict_dir=...), zvec.set_default_jieba_dict_dir(...),
-# ZVEC_JIEBA_DICT_DIR, or per-field FtsIndexParam.extra_params.
-try:
-    from importlib.resources import files as _resource_files
-
-    from zvec._zvec import (
-        get_default_jieba_dict_dir,
-        io_backend_description,
-        io_backend_type,
-        set_default_jieba_dict_dir,
-    )
-
-    set_default_jieba_dict_dir(str(_resource_files("zvec").joinpath("data/jieba_dict")))
-except Exception:
-    # Custom builds without bundled dict; users must configure explicitly.
-    pass
-
+from zvec._zvec import io_backend_description, io_backend_type
 
 # ==============================
 # Public API — grouped by category
 # ==============================
-
 from . import model as model
 
 # —— Extensions ——
@@ -139,8 +120,6 @@ __all__ = [
     "create_and_open",
     "init",
     "open",
-    "set_default_jieba_dict_dir",
-    "get_default_jieba_dict_dir",
     "io_backend_type",
     "io_backend_description",
     # Core classes

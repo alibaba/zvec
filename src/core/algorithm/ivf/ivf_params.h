@@ -18,59 +18,59 @@
 namespace zvec {
 namespace core {
 
-static const std::string SEPARATOR("/");
-static const std::string CENTROID_SEPERATOR = "*";
+inline const std::string SEPARATOR("/");
+inline const std::string CENTROID_SEPERATOR = "*";
 
 // builder params
-static const std::string PARAM_IVF_BUILDER_CENTROID_COUNT(
+inline const std::string PARAM_IVF_BUILDER_CENTROID_COUNT(
     "proxima.ivf.builder.centroid_count");
-static const std::string PARAM_IVF_BUILDER_CLUSTER_CLASS(
+inline const std::string PARAM_IVF_BUILDER_CLUSTER_CLASS(
     "proxima.ivf.builder.cluster_class");
-static const std::string PARAM_IVF_BUILDER_THREAD_COUNT(
+inline const std::string PARAM_IVF_BUILDER_THREAD_COUNT(
     "proxima.ivf.builder.thread_count");
-static const std::string PARAM_IVF_BUILDER_CLUSTER_AUTO_TUNING(
+inline const std::string PARAM_IVF_BUILDER_CLUSTER_AUTO_TUNING(
     "proxima.ivf.builder.cluster_auto_tuning");
-static const std::string PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT(
+inline const std::string PARAM_IVF_BUILDER_TRAIN_SAMPLE_COUNT(
     "proxima.ivf.builder.train_sample_count");
-static const std::string PARAM_IVF_BUILDER_TRAIN_SAMPLE_RATIO(
+inline const std::string PARAM_IVF_BUILDER_TRAIN_SAMPLE_RATIO(
     "proxima.ivf.builder.train_sample_ratio");
-static const std::string PARAM_IVF_BUILDER_CONVERTER_PARAMS(
+inline const std::string PARAM_IVF_BUILDER_CONVERTER_PARAMS(
     "proxima.ivf.builder.converter_params");
-static const std::string PARAM_IVF_BUILDER_CONVERTER_CLASS(
+inline const std::string PARAM_IVF_BUILDER_CONVERTER_CLASS(
     "proxima.ivf.builder.converter_class");
-static const std::string PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES(
+inline const std::string PARAM_IVF_BUILDER_STORE_ORIGINAL_FEATURES(
     "proxima.ivf.builder.store_original_features");
-static const std::string PARAM_IVF_BUILDER_QUANTIZER_CLASS(
+inline const std::string PARAM_IVF_BUILDER_QUANTIZER_CLASS(
     "proxima.ivf.builder.quantizer_class");
-static const std::string PARAM_IVF_BUILDER_QUANTIZE_BY_CENTROID(
+inline const std::string PARAM_IVF_BUILDER_QUANTIZE_BY_CENTROID(
     "proxima.ivf.builder.quantize_by_centroid");
-static const std::string PARAM_IVF_BUILDER_QUANTIZER_PARAMS(
+inline const std::string PARAM_IVF_BUILDER_QUANTIZER_PARAMS(
     "proxima.ivf.builder.quantizer_params");
-static const std::string PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX(
+inline const std::string PARAM_IVF_BUILDER_CLUSTER_PARAMS_IN_LEVEL_PREFIX(
     "proxima.ivf.builder.cluster_params_in_level_");
-static const std::string PARAM_IVF_BUILDER_OPTIMIZER_CLASS(
+inline const std::string PARAM_IVF_BUILDER_OPTIMIZER_CLASS(
     "proxima.ivf.builder.optimizer_class");
-static const std::string PARAM_IVF_BUILDER_OPTIMIZER_PARAMS(
+inline const std::string PARAM_IVF_BUILDER_OPTIMIZER_PARAMS(
     "proxima.ivf.builder.optimizer_params");
-static const std::string PARAM_IVF_BUILDER_OPTIMIZER_QUANTIZER_CLASS(
+inline const std::string PARAM_IVF_BUILDER_OPTIMIZER_QUANTIZER_CLASS(
     "proxima.ivf.builder.optimizer_quantizer_class");
-static const std::string PARAM_IVF_BUILDER_OPTIMIZER_QUANTIZER_PARAMS(
+inline const std::string PARAM_IVF_BUILDER_OPTIMIZER_QUANTIZER_PARAMS(
     "proxima.ivf.builder.optimizer_quantizer_params");
-static const std::string PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT(
+inline const std::string PARAM_IVF_BUILDER_BLOCK_VECTOR_COUNT(
     "proxima.ivf.builder.block_vector_count");
 
 // searcher params
-static const std::string PARAM_IVF_SEARCHER_SCAN_RATIO(
+inline const std::string PARAM_IVF_SEARCHER_SCAN_RATIO(
     "proxima.ivf.searcher.scan_ratio");
-static const std::string PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD(
+inline const std::string PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD(
     "proxima.ivf.searcher.brute_force_threshold");
-static const std::string PARAM_IVF_SEARCHER_OPTIMIZER(
+inline const std::string PARAM_IVF_SEARCHER_OPTIMIZER(
     "proxima.ivf.searcher.optimizer");
-static const std::string PARAM_IVF_SEARCHER_OPTIMIZER_PARAMS(
+inline const std::string PARAM_IVF_SEARCHER_OPTIMIZER_PARAMS(
     "proxima.ivf.searcher.optimizer_params");
-static const std::string PARAM_IVF_SEARCHER_CONVERTER_REFORMER(
+inline const std::string PARAM_IVF_SEARCHER_CONVERTER_REFORMER(
     "proxima.ivf.searcher.converter_reformer");
-static const std::string PARAM_IVF_SEARCHER_NPROBE(
+inline const std::string PARAM_IVF_SEARCHER_NPROBE(
     "proxima.ivf.searcher.nprobe");
 
 // Constants

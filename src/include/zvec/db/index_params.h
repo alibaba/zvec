@@ -52,6 +52,10 @@ class ZVEC_API IndexParams {
     return !(*this == other);
   }
 
+  virtual Status validate() const {
+    return Status::OK();
+  }
+
   bool is_vector_index_type() const {
     return type_ == IndexType::FLAT || type_ == IndexType::HNSW ||
            type_ == IndexType::HNSW_RABITQ || type_ == IndexType::IVF ||
@@ -116,19 +120,68 @@ class ZVEC_API InvertIndexParams : public IndexParams {
   }
 
  private:
-  bool enable_range_optimization_{false};
-  bool enable_extended_wildcard_{false};
+  bool enable_range_optimization_;
+  bool enable_extended_wildcard_;
 };
 
 /*
  * Quantizer parameters for vector indexes.
- * Encapsulates quantization-related settings such as enable_rotate.
- * Designed for future extensibility (e.g., num_bits, calibration_size).
+ * enable_rotate enables random rotation for INT4/INT8 or learned OPQ for PQ.
+ * PQ fields take effect only when quantize_type is PQ.
+ * Also configures Turbo RaBitQ training for standard HNSW, IVF, and DiskANN.
  */
-class QuantizerParam {
+class ZVEC_API QuantizerParam {
  public:
   QuantizerParam() = default;
-  explicit QuantizerParam(bool enable_rotate) : enable_rotate_(enable_rotate) {}
+  explicit QuantizerParam(
+      bool enable_rotate, int num_chunk = core_interface::kDefaultPqNumChunks,
+      int num_bits = core_interface::kDefaultPqNumBits,
+      bool fast_scan = core_interface::kDefaultPqFastScan,
+      uint32_t opq_iter = core_interface::kDefaultOpqNumIterations,
+      uint32_t opq_pq_iter = core_interface::kDefaultOpqPqNumIterations)
+      : enable_rotate_(enable_rotate),
+        num_chunk_(num_chunk),
+        num_bits_(num_bits),
+        fast_scan_(fast_scan),
+        opq_iter_(opq_iter),
+        opq_pq_iter_(opq_pq_iter) {}
+  static QuantizerParam ForRabitq(bool enable_rotate, int total_bits,
+                                  int num_clusters, int sample_count,
+                                  int n_iters = 20) {
+    QuantizerParam q(enable_rotate);
+    q.total_bits_ = total_bits;
+    q.num_clusters_ = num_clusters;
+    q.sample_count_ = sample_count;
+    q.n_iters_ = n_iters;
+    return q;
+  }
+
+  int total_bits() const {
+    return total_bits_;
+  }
+  void set_total_bits(int value) {
+    total_bits_ = value;
+  }
+  int num_clusters() const {
+    return num_clusters_;
+  }
+  void set_num_clusters(int value) {
+    num_clusters_ = value;
+  }
+  int sample_count() const {
+    return sample_count_;
+  }
+  void set_sample_count(int value) {
+    sample_count_ = value;
+  }
+  int n_iters() const {
+    return n_iters_;
+  }
+  void set_n_iters(int value) {
+    n_iters_ = value;
+  }
+
+  Status validate() const;
 
   bool enable_rotate() const {
     return enable_rotate_;
@@ -138,8 +191,49 @@ class QuantizerParam {
     enable_rotate_ = v;
   }
 
+  int num_chunk() const {
+    return num_chunk_;
+  }
+  void set_num_chunk(int value) {
+    num_chunk_ = value;
+  }
+
+  int num_bits() const {
+    return num_bits_;
+  }
+  void set_num_bits(int value) {
+    num_bits_ = value;
+  }
+
+  bool fast_scan() const {
+    return fast_scan_;
+  }
+  void set_fast_scan(bool value) {
+    fast_scan_ = value;
+  }
+
+  uint32_t opq_iter() const {
+    return opq_iter_;
+  }
+  void set_opq_iter(uint32_t value) {
+    opq_iter_ = value;
+  }
+
+  uint32_t opq_pq_iter() const {
+    return opq_pq_iter_;
+  }
+  void set_opq_pq_iter(uint32_t value) {
+    opq_pq_iter_ = value;
+  }
+
   bool operator==(const QuantizerParam &other) const {
-    return enable_rotate_ == other.enable_rotate_;
+    return enable_rotate_ == other.enable_rotate_ &&
+           total_bits_ == other.total_bits_ &&
+           num_clusters_ == other.num_clusters_ &&
+           sample_count_ == other.sample_count_ && n_iters_ == other.n_iters_ &&
+           num_chunk_ == other.num_chunk_ && num_bits_ == other.num_bits_ &&
+           fast_scan_ == other.fast_scan_ && opq_iter_ == other.opq_iter_ &&
+           opq_pq_iter_ == other.opq_pq_iter_;
   }
 
   bool operator!=(const QuantizerParam &other) const {
@@ -147,9 +241,19 @@ class QuantizerParam {
   }
 
  private:
-  // When enabled, vectors are rotated before INT8 quantization to reduce
-  // quantization error. Only effective with quantize_type=INT8.
-  bool enable_rotate_{false};
+  // Random rotation for scalar quantizers; learned OPQ for PQ.
+  bool enable_rotate_{core_interface::kDefaultQuantizerEnableRotate};
+  int num_chunk_{core_interface::kDefaultPqNumChunks};
+  int num_bits_{core_interface::kDefaultPqNumBits};
+  bool fast_scan_{core_interface::kDefaultPqFastScan};
+  uint32_t opq_iter_{core_interface::kDefaultOpqNumIterations};
+  uint32_t opq_pq_iter_{core_interface::kDefaultOpqPqNumIterations};
+  // Canonical RaBitQ settings for standard HNSW/IVF/DiskANN indexes.
+  // IVF partition training is configured separately by n_list/n_iters.
+  int total_bits_{7};
+  int num_clusters_{16};
+  int sample_count_{0};
+  int n_iters_{20};
 };
 
 /*
@@ -166,6 +270,8 @@ class ZVEC_API VectorIndexParams : public IndexParams {
         quantizer_param_(quantizer_param) {}
 
   ~VectorIndexParams() override = default;
+
+  Status validate() const override;
 
   std::string vector_index_params_to_string(const std::string &class_name,
                                             MetricType metric_type,
@@ -222,7 +328,7 @@ class ZVEC_API VectorIndexParams : public IndexParams {
 class ZVEC_API HnswIndexParams : public VectorIndexParams {
  public:
   HnswIndexParams(
-      MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCnt,
+      MetricType metric_type, int m = core_interface::kDefaultHnswNeighborCount,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
       bool use_contiguous_memory = false, QuantizerParam quantizer_param = {},
@@ -242,10 +348,7 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
 
  public:
   Ptr clone() const override {
-    return std::make_shared<HnswIndexParams>(
-        metric_type_, m_, ef_construction_, quantize_type_,
-        use_contiguous_memory_, quantizer_param_, use_flat_contiguous_memory_,
-        flat_data_type_);
+    return std::make_shared<HnswIndexParams>(*this);
   }
 
   std::string to_string() const override {
@@ -318,7 +421,16 @@ class ZVEC_API HnswIndexParams : public VectorIndexParams {
     return flat_data_type_;
   }
 
+  // Build-only provider: shared while training/building, never persisted.
+  const core::IndexProvider::Pointer &raw_vector_provider() const {
+    return raw_vector_provider_;
+  }
+  void set_raw_vector_provider(core::IndexProvider::Pointer provider) {
+    raw_vector_provider_ = std::move(provider);
+  }
+
  protected:
+  core::IndexProvider::Pointer raw_vector_provider_;
   int m_;
   int ef_construction_;
   // When enabled, HNSW streamer allocates a single contiguous memory arena
@@ -335,10 +447,10 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
   HnswRabitqIndexParams(
       MetricType metric_type,
       int total_bits = core_interface::kDefaultRabitqTotalBits,
-      int num_clusters = core_interface::kDefaultRabitqNumClusters,
-      int m = core_interface::kDefaultHnswNeighborCnt,
+      int num_clusters = core_interface::kDefaultHnswRabitqNumClusters,
+      int m = core_interface::kDefaultHnswNeighborCount,
       int ef_construction = core_interface::kDefaultHnswEfConstruction,
-      int sample_count = 0)
+      int sample_count = core_interface::kDefaultRabitqSampleCount)
       : VectorIndexParams(IndexType::HNSW_RABITQ, metric_type,
                           QuantizeType::RABITQ),
         total_bits_(total_bits),
@@ -348,6 +460,8 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
         ef_construction_(ef_construction) {}
 
   using OPtr = std::shared_ptr<HnswRabitqIndexParams>;
+
+  Status validate() const override;
 
   Ptr clone() const override {
     auto obj = std::make_shared<HnswRabitqIndexParams>(
@@ -444,10 +558,11 @@ class ZVEC_API HnswRabitqIndexParams : public VectorIndexParams {
 
 class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
  public:
-  IvfRabitqIndexParams(MetricType metric_type,
-                       int nlist = core_interface::kDefaultIvfRabitqNlist,
-                       int total_bits = core_interface::kDefaultRabitqTotalBits,
-                       int sample_count = 0)
+  IvfRabitqIndexParams(
+      MetricType metric_type,
+      int nlist = core_interface::kDefaultIvfRabitqNumLists,
+      int total_bits = core_interface::kDefaultRabitqTotalBits,
+      int sample_count = core_interface::kDefaultRabitqSampleCount)
       : VectorIndexParams(IndexType::IVF_RABITQ, metric_type,
                           QuantizeType::RABITQ),
         nlist_(nlist),
@@ -455,6 +570,8 @@ class ZVEC_API IvfRabitqIndexParams : public VectorIndexParams {
         sample_count_(sample_count) {}
 
   using OPtr = std::shared_ptr<IvfRabitqIndexParams>;
+
+  Status validate() const override;
 
   Ptr clone() const override {
     return std::make_shared<IvfRabitqIndexParams>(metric_type_, nlist_,
@@ -580,13 +697,20 @@ inline FlatIndexParams MakeDefaultVectorIndexParams(
 inline FlatIndexParams MakeDefaultQuantVectorIndexParams(
     MetricType metric_type, QuantizeType quantize_type,
     QuantizerParam quantizer_param = {}) {
+  // RaBitQ needs dataset training during optimize. Its temporary Flat stores
+  // raw vectors, including when reopening an existing unindexed block.
+  if (quantize_type == QuantizeType::RABITQ) {
+    return MakeDefaultVectorIndexParams(metric_type);
+  }
   return FlatIndexParams(metric_type, quantize_type, quantizer_param);
 }
 
 class ZVEC_API IVFIndexParams : public VectorIndexParams {
  public:
-  IVFIndexParams(MetricType metric_type, int n_list = 1024, int n_iters = 10,
-                 bool use_soar = false,
+  IVFIndexParams(MetricType metric_type,
+                 int n_list = core_interface::kDefaultIvfNumLists,
+                 int n_iters = core_interface::kDefaultIvfNumIterations,
+                 bool use_soar = core_interface::kDefaultIvfUseSoar,
                  QuantizeType quantize_type = QuantizeType::UNDEFINED,
                  QuantizerParam quantizer_param = {})
       : VectorIndexParams(IndexType::IVF, metric_type, quantize_type,
@@ -596,6 +720,8 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
         use_soar_(use_soar) {}
 
   using OPtr = std::shared_ptr<IVFIndexParams>;
+
+  Status validate() const override;
 
  public:
   Ptr clone() const override {
@@ -659,10 +785,13 @@ class ZVEC_API IVFIndexParams : public VectorIndexParams {
 
 class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
  public:
-  DiskAnnIndexParams(MetricType metric_type, int max_degree = 100,
-                     int list_size = 50, int pq_chunk_num = 0,
-                     QuantizeType quantize_type = QuantizeType::UNDEFINED,
-                     QuantizerParam quantizer_param = {})
+  DiskAnnIndexParams(
+      MetricType metric_type,
+      int max_degree = core_interface::kDefaultDiskAnnMaxDegree,
+      int list_size = core_interface::kDefaultDiskAnnBuildListSize,
+      int pq_chunk_num = core_interface::kDefaultDiskAnnPqNumChunks,
+      QuantizeType quantize_type = QuantizeType::UNDEFINED,
+      QuantizerParam quantizer_param = {})
       : VectorIndexParams(IndexType::DISKANN, metric_type, quantize_type,
                           quantizer_param),
         max_degree_{max_degree},
@@ -670,6 +799,8 @@ class ZVEC_API DiskAnnIndexParams : public VectorIndexParams {
         pq_chunk_num_{pq_chunk_num} {}
 
   using OPtr = std::shared_ptr<DiskAnnIndexParams>;
+
+  Status validate() const override;
 
  public:
   Ptr clone() const override {
@@ -743,12 +874,13 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
   VamanaIndexParams(
       MetricType metric_type,
       int max_degree = core_interface::kDefaultVamanaMaxDegree,
-      int search_list_size = core_interface::kDefaultVamanaSearchListSize,
+      int search_list_size = core_interface::kDefaultVamanaBuildListSize,
       float alpha = core_interface::kDefaultVamanaAlpha,
       bool saturate_graph = core_interface::kDefaultVamanaSaturateGraph,
       bool use_contiguous_memory = false, bool use_id_map = false,
       QuantizeType quantize_type = QuantizeType::UNDEFINED,
-      QuantizerParam quantizer_param = {}, bool two_pass_build = false,
+      QuantizerParam quantizer_param = {},
+      bool two_pass_build = core_interface::kDefaultVamanaTwoPassBuild,
       bool use_flat_contiguous_memory = false,
       DataType flat_data_type = DataType::VECTOR_FP32)
       : VectorIndexParams(IndexType::VAMANA, metric_type, quantize_type,
@@ -921,9 +1053,11 @@ class ZVEC_API VamanaIndexParams : public VectorIndexParams {
  *         "punctuation", "symbol"; default [] keeps all valid UTF-8
  *         characters). custom_token_chars is not supported.
  *     jieba:
- *       - "jieba_dict_dir" (directory containing jieba.dict.utf8 and
- *         hmm_model.utf8).
- *       - "user_dict_path" (user dictionary path).
+ *       - "jieba_dict_dir" (optional external directory containing
+ *         jieba.dict.utf8 and hmm_model.utf8; priority: field value >
+ *         ZVEC_JIEBA_DICT_DIR > embedded defaults).
+ *       - "user_dict_path" (user dictionary path; augments the selected
+ *         dictionary, including the embedded default).
  *       - "cut_mode" ("search", "mix", "full", or "hmm"; default "search").
  *     whitespace:
  *       - no extra_params.
@@ -953,6 +1087,8 @@ class ZVEC_API FtsIndexParams : public IndexParams {
   FtsIndexParams &operator=(FtsIndexParams &&) = delete;
 
   ~FtsIndexParams() override;
+
+  Status validate() const override;
 
   Ptr clone() const override {
     return std::make_shared<FtsIndexParams>(tokenizer_name_, filters_,

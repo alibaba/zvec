@@ -13,16 +13,201 @@
 // limitations under the License.
 
 #include <mutex>
-#include <new>
 #include <sstream>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/index_params.h>
+#include "ailego/internal/cpu_features.h"
+#if !RABITQ_SUPPORTED
+#include "core/algorithm/hnsw_rabitq/rabitq_params.h"
+#endif
 #include "db/index/column/fts_column/fts_pipeline.h"
 #include "db/index/column/fts_column/fts_types.h"
+#include "db/index/column/fts_column/tokenizer/tokenizer_factory.h"
 #include "db/index/column/fts_column/tokenizer/tokenizer_pipeline_manager.h"
 #include "type_helper.h"
 
 namespace zvec {
+
+namespace {
+
+Status validate_rabitq_params(MetricType metric, int total_bits) {
+  if (metric != MetricType::L2 && metric != MetricType::IP &&
+      metric != MetricType::COSINE) {
+    return Status::InvalidArgument("RabitQ supports L2/IP/COSINE metric; got ",
+                                   MetricTypeCodeBook::AsString(metric));
+  }
+  if (total_bits < 0 || total_bits > 9) {
+    return Status::InvalidArgument(
+        "RabitQ total_bits must be in [0, 9] (0 selects the default); got ",
+        total_bits);
+  }
+#if !RABITQ_SUPPORTED
+  return Status::NotSupported(core::kRabitqUnsupportedPlatform);
+#endif
+  const auto &flags = ailego::internal::CpuFeatures::static_flags_;
+  const bool supports_avx2 = flags.AVX2 && flags.FMA;
+  const bool supports_avx512 =
+      flags.AVX512F && flags.AVX512BW && flags.AVX512DQ;
+  if (!supports_avx2 && !supports_avx512 && !flags.NEON) {
+    return Status::NotSupported(
+        "RabitQ requires AVX2/FMA, AVX512F/BW/DQ, or NEON to be supported");
+  }
+  return Status::OK();
+}
+
+}  // namespace
+
+Status QuantizerParam::validate() const {
+  if (num_chunk_ <= 0) {
+    return Status::InvalidArgument("num_chunk must be greater than 0; got ",
+                                   num_chunk_);
+  }
+  if (num_bits_ != 4 && num_bits_ != 8) {
+    return Status::InvalidArgument("num_bits must be 4 or 8; got ", num_bits_);
+  }
+  if (fast_scan_ && num_bits_ != 4) {
+    return Status::InvalidArgument("fast_scan requires num_bits=4; got ",
+                                   num_bits_);
+  }
+  if (opq_iter_ == 0) {
+    return Status::InvalidArgument("opq_iter must be greater than 0; got 0");
+  }
+  if (opq_pq_iter_ == 0) {
+    return Status::InvalidArgument("opq_pq_iter must be greater than 0; got 0");
+  }
+  return Status::OK();
+}
+
+Status VectorIndexParams::validate() const {
+  if (auto s = quantizer_param_.validate(); !s.ok()) {
+    return s;
+  }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::IVF || type_ == IndexType::HNSW ||
+       type_ == IndexType::DISKANN) &&
+      !core_interface::IsValidRabitqClusterCount(
+          quantizer_param_.num_clusters())) {
+    return Status::InvalidArgument(
+        "RABITQ num_clusters must be in [1, 65536]; got ",
+        quantizer_param_.num_clusters());
+  }
+  const auto storage_type = flat_data_type();
+  if (storage_type != DataType::UNDEFINED &&
+      storage_type != DataType::VECTOR_FP32 &&
+      storage_type != DataType::VECTOR_FP16 &&
+      storage_type != DataType::VECTOR_UINT8) {
+    return Status::InvalidArgument(
+        "flat_data_type must be VECTOR_FP32, VECTOR_FP16, or VECTOR_UINT8, "
+        "but got ",
+        DataTypeCodeBook::AsString(storage_type));
+  }
+  if (storage_type == DataType::VECTOR_UINT8 &&
+      metric_type_ != MetricType::L2) {
+    return Status::InvalidArgument(
+        "VECTOR_UINT8 Flat reference storage only supports L2 metric; got ",
+        MetricTypeCodeBook::AsString(metric_type_));
+  }
+  if (quantize_type_ == QuantizeType::PQ) {
+    if (type_ != IndexType::IVF && type_ != IndexType::HNSW) {
+      return Status::InvalidArgument(
+          "PQ quantization requires IVF or HNSW index_type; got ",
+          IndexTypeCodeBook::AsString(type_));
+    }
+    if (metric_type_ != MetricType::L2 && metric_type_ != MetricType::IP &&
+        metric_type_ != MetricType::COSINE) {
+      return Status::InvalidArgument(
+          "PQ quantization requires L2/IP/COSINE metric; got ",
+          MetricTypeCodeBook::AsString(metric_type_));
+    }
+    if (quantizer_param_.fast_scan() && type_ != IndexType::IVF) {
+      return Status::InvalidArgument("fast_scan requires IVF index_type; got ",
+                                     IndexTypeCodeBook::AsString(type_));
+    }
+  }
+  const bool is_uniform = quantize_type_ == QuantizeType::UNIFORM_UINT7 ||
+                          quantize_type_ == QuantizeType::UNIFORM_UINT8 ||
+                          quantize_type_ == QuantizeType::UNIFORM_UINT4;
+  if (is_uniform) {
+    // These DB index paths do not support Uniform training or restoration.
+    if (type_ == IndexType::FLAT || type_ == IndexType::IVF ||
+        type_ == IndexType::DISKANN) {
+      return Status::InvalidArgument(
+          QuantizeTypeCodeBook::AsString(quantize_type_),
+          " quantization is not supported with ",
+          IndexTypeCodeBook::AsString(type_), " index");
+    }
+    if (metric_type_ != MetricType::L2) {
+      return Status::InvalidArgument(
+          QuantizeTypeCodeBook::AsString(quantize_type_),
+          " quantization only supports L2 metric; got ",
+          MetricTypeCodeBook::AsString(metric_type_));
+    }
+  }
+  if (quantize_type_ == QuantizeType::RABITQ &&
+      (type_ == IndexType::HNSW || type_ == IndexType::DISKANN)) {
+    // Only dedicated RaBitQ indexes normalize zero to the default bit width.
+    if (quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9) {
+      return Status::InvalidArgument(
+          "RABITQ total_bits must be in [1, 9]; got ",
+          quantizer_param_.total_bits());
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
+  }
+  return Status::OK();
+}
+
+Status HnswRabitqIndexParams::validate() const {
+  if (auto s = VectorIndexParams::validate(); !s.ok()) {
+    return s;
+  }
+  return validate_rabitq_params(metric_type_, total_bits_);
+}
+
+Status IvfRabitqIndexParams::validate() const {
+  if (auto s = VectorIndexParams::validate(); !s.ok()) {
+    return s;
+  }
+  if (nlist_ <= 0) {
+    return Status::InvalidArgument(
+        "IVF_RABITQ nlist must be greater than 0; got ", nlist_);
+  }
+  if (sample_count_ < 0) {
+    return Status::InvalidArgument(
+        "IVF_RABITQ sample_count must be greater than or equal to 0; got ",
+        sample_count_);
+  }
+  return validate_rabitq_params(metric_type_, total_bits_);
+}
+
+Status IVFIndexParams::validate() const {
+  if (auto s = VectorIndexParams::validate(); !s.ok()) {
+    return s;
+  }
+  if (quantize_type_ == QuantizeType::RABITQ) {
+    if (n_list_ <= 0 || n_iters_ <= 0 || quantizer_param_.total_bits() < 1 ||
+        quantizer_param_.total_bits() > 9 ||
+        quantizer_param_.sample_count() < 0 || use_soar_ ||
+        quantizer_param_.enable_rotate()) {
+      return Status::InvalidArgument(
+          "Invalid IVF RABITQ parameters: n_list/n_iters must be positive, "
+          "total_bits in [1, 9], sample_count >= 0; SOAR and "
+          "enable_rotate are unsupported");
+    }
+    return validate_rabitq_params(metric_type_, quantizer_param_.total_bits());
+  }
+  return Status::OK();
+}
+
+Status DiskAnnIndexParams::validate() const {
+  if (auto s = VectorIndexParams::validate(); !s.ok()) {
+    return s;
+  }
+#if !DISKANN_SUPPORTED
+  return Status::NotSupported("DiskANN is not supported on this platform.");
+#endif
+  return Status::OK();
+}
 
 std::string InvertIndexParams::to_string() const {
   std::ostringstream oss;
@@ -41,6 +226,13 @@ std::string VectorIndexParams::vector_index_params_to_string(
   oss << class_name << "{"
       << "metric:" << MetricTypeCodeBook::AsString(metric_type)
       << ",quantize:" << QuantizeTypeCodeBook::AsString(quantize_type);
+  if (quantize_type == QuantizeType::PQ) {
+    oss << ",num_chunk:" << quantizer_param_.num_chunk()
+        << ",num_bits:" << quantizer_param_.num_bits()
+        << ",fast_scan:" << quantizer_param_.fast_scan()
+        << ",opq_iter:" << quantizer_param_.opq_iter()
+        << ",opq_pq_iter:" << quantizer_param_.opq_pq_iter();
+  }
   return oss.str();
 }
 
@@ -56,6 +248,15 @@ static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
   return p;
 }
 
+Status FtsIndexParams::validate() const {
+  auto pipeline = fts::TokenizerFactory::prepare(to_internal(*this));
+  if (!pipeline.has_value()) {
+    return Status::InvalidArgument("invalid FTS index params: ",
+                                   pipeline.error().message());
+  }
+  return Status::OK();
+}
+
 // ============================================================
 // FtsIndexParams — opaque pipeline state (Pimpl)
 // ============================================================
@@ -63,8 +264,7 @@ static fts::FtsIndexParams to_internal(const FtsIndexParams &params) {
 namespace detail {
 struct FtsState {
   std::once_flag once;
-  std::shared_ptr<fts::TokenizerPipeline> pipeline;
-  bool created{false};
+  Result<fts::PreparedTokenizerPipeline> pipeline;
 };
 
 struct FtsPipelineHelper {
@@ -95,7 +295,7 @@ FtsIndexParams::FtsIndexParams(FtsIndexParams &&other) noexcept
       state_(std::move(other.state_)) {}
 
 FtsIndexParams::~FtsIndexParams() {
-  if (state_ && state_->created) {
+  if (state_ && state_->pipeline && state_->pipeline->valid()) {
     auto internal = to_internal(*this);
     fts::TokenizerPipelineManager::Instance().release(internal);
   }
@@ -107,7 +307,7 @@ FtsIndexParams::~FtsIndexParams() {
 
 namespace detail {
 
-Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+Result<fts::PreparedTokenizerPipeline> PrepareFtsPipeline(
     FtsIndexParams &params) {
   auto &state_uptr = FtsPipelineHelper::state(params);
   if (!state_uptr) {
@@ -119,16 +319,18 @@ Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
   auto &st = *state_uptr;
   std::call_once(st.once, [&]() {
     auto internal = to_internal(params);
-    st.pipeline = fts::TokenizerPipelineManager::Instance().acquire(internal);
-    if (st.pipeline) {
-      st.created = true;
-    }
+    st.pipeline = fts::TokenizerPipelineManager::Instance().prepare(internal);
   });
-  if (!st.pipeline) {
-    return tl::make_unexpected(
-        Status::InternalError("Failed to create tokenizer pipeline"));
-  }
   return st.pipeline;
+}
+
+Result<std::shared_ptr<fts::TokenizerPipeline>> AcquireFtsPipeline(
+    FtsIndexParams &params) {
+  auto prepared = PrepareFtsPipeline(params);
+  if (!prepared) {
+    return tl::make_unexpected(prepared.error());
+  }
+  return prepared->get();
 }
 
 }  // namespace detail

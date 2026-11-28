@@ -16,6 +16,8 @@
 #include <core/quantizer/quantizer_params.h>
 #include <zvec/core/framework/index_framework.h>
 #include "metric/metric_params.h"
+#include "turbo/quantizer/common/pq_quantizer/packed_code_quantizer.h"
+#include "turbo/quantizer/quantizer.h"
 #include "ivf_index_format.h"
 #include "ivf_params.h"
 #include "ivf_utility.h"
@@ -49,6 +51,15 @@ class IVFDumper {
     //! If the block is full and the block order is column, make a
     //! transpose
     void emplace(uint64_t key, const void *vec, IndexMeta::MajorOrder order) {
+      // Turbo records can include tails or packed codes whose byte lengths
+      // are not multiples of the legacy transposition unit.
+      if (major_order_ == IndexMeta::MO_ROW && order == IndexMeta::MO_ROW) {
+        ailego_assert_with(count_ < max_vec_count_, "emplace a full block");
+        std::memcpy(data_.data() + element_size_ * count_, vec, element_size_);
+        ++count_;
+        keys_.emplace_back(key);
+        return;
+      }
       switch (align_size_) {
         case 2:
           do_emplace<uint16_t>(vec, order);
@@ -162,9 +173,11 @@ class IVFDumper {
 
   //! Constructor
   IVFDumper(const IndexMeta &meta, const IndexDumper::Pointer &dumper,
-            size_t inverted_list_count, size_t block_vector_count)
+            size_t inverted_list_count, size_t block_vector_count,
+            turbo::Quantizer::Pointer quantizer = nullptr)
       : meta_(meta),
         dumper_(dumper),
+        quantizer_(std::move(quantizer)),
         block_vector_count_(block_vector_count),
         inverted_lists_meta_(inverted_list_count) {
     block_.init(meta, block_vector_count_);
@@ -204,6 +217,15 @@ class IVFDumper {
   //! Dump params for each inverted list quantizer
   int dump_quantizer_params(
       const std::vector<IndexConverter::Pointer> &quantizers);
+
+  //! Persist Turbo training state separately from the posting metadata.
+  int dump_turbo_quantizer(const turbo::Quantizer::Pointer &quantizer);
+
+  void enable_block_scan(const turbo::Quantizer::Pointer &quantizer) {
+    if (quantizer && quantizer->scan_block_size() &&
+        block_vector_count_ <= 32 && meta_.major_order() == IndexMeta::MO_ROW)
+      scan_quantizer_ = quantizer;
+  }
 
   //! Dump the original vector, which doesnot been quantized
   int dump_original_vector(const void *data, size_t size);
@@ -246,6 +268,7 @@ class IVFDumper {
   Block block_{};           // vectors grouped in block
   const IndexMeta meta_{};  // IndexMeta of the inverted index
   const IndexDumper::Pointer dumper_{};
+  turbo::Quantizer::Pointer quantizer_{};
   size_t block_vector_count_{kDefaultBlockCount};
   std::vector<InvertedListMeta> inverted_lists_meta_{};
   std::vector<uint64_t> keys_{};
@@ -253,6 +276,8 @@ class IVFDumper {
   uint32_t dumped_feature_count_{0};
   size_t dumped_features_size_{0};
   mutable size_t dumped_size_{0};
+  turbo::Quantizer::Pointer scan_quantizer_{};
+  std::vector<char> scan_blocks_{};
   InvertedIndexHeader header_;
 };
 

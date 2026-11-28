@@ -283,6 +283,15 @@ TEST(IndexParamsTest, DynamicPointerCast) {
 
 // ==================== QuantizerParam tests ====================
 
+TEST(QuantizerParamTest, IntegerFastScanFlagPreservesPqSettings) {
+  for (int fast_scan : {0, 1}) {
+    const QuantizerParam q(false, 16, 4, fast_scan);
+    EXPECT_EQ(16, q.num_chunk());
+    EXPECT_EQ(4, q.num_bits());
+    EXPECT_EQ(fast_scan != 0, q.fast_scan());
+  }
+}
+
 TEST(IndexParamsTest, QuantizerParamBasic) {
   // Default constructor: enable_rotate should be false
   QuantizerParam qp_default;

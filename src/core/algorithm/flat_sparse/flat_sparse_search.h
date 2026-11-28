@@ -14,7 +14,7 @@
 
 #pragma once
 
-#include <ailego/math/inner_product_matrix.h>
+#include <utility/sparse_utility.h>
 #include "flat_sparse_context.h"
 
 namespace zvec {
@@ -86,9 +86,9 @@ static inline int FlatSearch(const uint32_t *sparse_count,
 
     for (size_t q = 0; q < count; ++q) {
       std::string sparse_query_buffer;
-      ailego::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
-          sparse_count[q], sparse_indices_tmp, sparse_query_tmp,
-          sparse_query_buffer);
+      SparseUtility::TransSparseFormat(sparse_count[q], sparse_indices_tmp,
+                                       sparse_query_tmp, qmeta.unit_size(),
+                                       sparse_query_buffer);
 
       std::unordered_map<std::string, IndexDocumentHeap> group_heap{};
 
@@ -141,9 +141,9 @@ static inline int FlatSearch(const uint32_t *sparse_count,
   } else {
     for (size_t q = 0; q < count; ++q) {
       std::string sparse_query_buffer;
-      ailego::MinusInnerProductSparseMatrix<float>::transform_sparse_format(
-          sparse_count[q], sparse_indices_tmp, sparse_query_tmp,
-          sparse_query_buffer);
+      SparseUtility::TransSparseFormat(sparse_count[q], sparse_indices_tmp,
+                                       sparse_query_tmp, qmeta.unit_size(),
+                                       sparse_query_buffer);
 
       auto heap = ctx->result_heap();
 

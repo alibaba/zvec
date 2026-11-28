@@ -139,6 +139,9 @@ class DiskAnnSearcher : public IndexSearcher {
   void print_debug_info() override;
 
  private:
+  void reset_loaded_index();
+  int create_search_context(Context::Pointer &context) const;
+
   template <typename T, typename LabelT = uint32_t>
   int search_disk_index(const std::string &query_file,
                         const uint32_t num_nodes_to_cache,

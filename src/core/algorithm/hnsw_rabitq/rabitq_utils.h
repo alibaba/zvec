@@ -15,7 +15,7 @@
 
 #include <memory>
 #include <vector>
-#include <rabitqlib/utils/rotator.hpp>
+#include <rabitqlib/core/rotator.hpp>
 #include "zvec/core/framework/index_dumper.h"
 
 namespace zvec {

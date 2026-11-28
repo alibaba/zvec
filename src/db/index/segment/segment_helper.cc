@@ -16,16 +16,14 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <roaring.hh>
 #include <arrow/compute/api_vector.h>
 #include <arrow/type_fwd.h>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/db/config.h>
 #include <zvec/db/status.h>
 #include <zvec/db/type.h>
-#if RABITQ_SUPPORTED
 #include "core/algorithm/hnsw_rabitq/rabitq_params.h"
-#endif
-#include <roaring.hh>
 #include "db/common/constants.h"
 #include "db/common/file_helper.h"
 #include "db/common/global_resource.h"
@@ -705,11 +703,13 @@ Status SegmentHelper::ReduceVectorIndex(
       // IVF trains from the input segments' quantized indexers, not this new
       // raw Flat. Flush and close it inside MergeWithOptionalReuse so its
       // storage does not overlap the IVF training and dump working sets.
-      // HNSW_RABITQ training relies on the raw provider held by the flat
+      // HNSW RaBitQ training relies on the raw provider held by the flat
       // indexer, so its Close() is deferred until after the quantize indexer
       // is written.
       core::IndexProvider::Pointer raw_vector_provider;
-      if (vector_index_params->type() == IndexType::HNSW_RABITQ) {
+      if (vector_index_params->type() == IndexType::HNSW_RABITQ ||
+          (vector_index_params->type() == IndexType::HNSW &&
+           vector_index_params->quantize_type() == QuantizeType::RABITQ)) {
         raw_vector_provider = vector_indexer->create_index_provider();
       }
 
@@ -738,7 +738,7 @@ Status SegmentHelper::ReduceVectorIndex(
       // raw Flat sources and train again for the merged segment.
       auto quant_merge_sources =
           segment_detail::CanReuseInsertTimeQuantizedVectors(
-              vector_index_params->quantize_type())
+              *vector_index_params)
               ? collect_merge_indexers(&Segment::get_quant_vector_indexer)
               : collect_merge_indexers(&Segment::get_vector_indexer);
 
@@ -793,6 +793,15 @@ bool CanReuseFirstIndexer(const std::vector<VectorColumnIndexer::Ptr> &indexers,
         std::dynamic_pointer_cast<VectorIndexParams>(f.index_params());
     return params ? params->quantize_type() : QuantizeType::UNDEFINED;
   };
+  if (quantize_type_of(output_field) == QuantizeType::PQ) {
+    const auto &first =
+        static_cast<const VectorIndexParams &>(*first_field.index_params());
+    const auto &output =
+        static_cast<const VectorIndexParams &>(*output_field.index_params());
+    if (first.metric_type() != output.metric_type() ||
+        first.quantizer_param() != output.quantizer_param())
+      return false;
+  }
   return quantize_type_of(first_field) == quantize_type_of(output_field);
 }
 
@@ -878,10 +887,11 @@ Status SegmentHelper::PrepareQuantizeField(
 
 #if !RABITQ_SUPPORTED
   (void)raw_vector_provider;
-  return Status::NotSupported(
-      "RabitQ is not supported on this platform (Linux x86_64 only)");
+  return Status::NotSupported(core::kRabitqUnsupportedPlatform);
 #else
-  if (vector_index_params->type() == IndexType::IVF_RABITQ) {
+  if (vector_index_params->type() == IndexType::IVF_RABITQ ||
+      vector_index_params->type() == IndexType::IVF ||
+      vector_index_params->type() == IndexType::DISKANN) {
     *out_field = field_clone;
     return Status::OK();
   }
@@ -889,6 +899,16 @@ Status SegmentHelper::PrepareQuantizeField(
   if (raw_vector_provider == nullptr) {
     return Status::InvalidArgument(
         "raw_vector_provider is required for RABITQ training");
+  }
+
+  if (vector_index_params->type() == IndexType::HNSW) {
+    auto params = std::dynamic_pointer_cast<HnswIndexParams>(
+        vector_index_params->clone());
+    if (!params) return Status::InvalidArgument("Expected HnswIndexParams");
+    params->set_raw_vector_provider(raw_vector_provider);
+    field_clone->set_index_params(params);
+    *out_field = std::move(field_clone);
+    return Status::OK();
   }
 
   auto rabitq_params = std::dynamic_pointer_cast<HnswRabitqIndexParams>(

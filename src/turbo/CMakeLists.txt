@@ -1,6 +1,8 @@
 include(${PROJECT_ROOT_DIR}/cmake/bazel.cmake)
 include(${PROJECT_ROOT_DIR}/cmake/option.cmake)
 include(CheckCXXSourceCompiles)
+include(${PROJECT_ROOT_DIR}/cmake/batch_topk.cmake)
+zvec_configure_batch_topk()
 
 # HOST_ARCH is only populated by the shared AUTO_DETECT_ARCH path. Resolve the
 # CMake target locally as well so Turbo's ARM dispatch also works for Android
@@ -28,6 +30,8 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
     TURBO_MARCH_FLAG_AVX2
     TURBO_MARCH_FLAG_AVX512
     TURBO_MARCH_FLAG_AVX512FP16)
+  # Sparse FP32 uses SSE4 instructions, unlike the dense SSE2 kernels.
+  set(TURBO_SPARSE_MARCH_FLAG_SSE "${TURBO_MARCH_FLAG_SSE2}")
   # kSSE2 is gated by SSE2 at runtime. Keep these translation units at
   # that exact baseline so auto-vectorized scalar tails cannot acquire
   # instructions from the broader corei7 profile returned above.
@@ -48,7 +52,7 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
    _TURBO_TARGET_ARCH MATCHES "^(arm|arm64)$")
   # Keep this probe local to Turbo: only its neon_fp16 distance kernels need
   # FEAT_FP16, while the plain NEON kernels (which widen to FP32) and the
-  # existing Ailego distance implementations stay untouched.
+  # sparse kernels keep their own feature gates.
   # Android is kept even though build_android.sh sets AUTO_DETECT_ARCH=OFF:
   # that switch guards the host-oriented march detection, while this probe
   # runs against the actual (cross) target toolchain.
@@ -85,12 +89,60 @@ endif()
 
 file(GLOB_RECURSE ALL_SRCS *.cc *.c *.h)
 
+# Match the platform gate used by the dedicated RaBitQ indexes.
+if(NOT RABITQ_SUPPORTED)
+  list(FILTER ALL_SRCS EXCLUDE REGEX ".*/quantizer/rabitq_quantizer/.*")
+endif()
+
+# Keep pruning available on AVX2-baseline builds. Use the same target flags
+# and runtime CPU/OS guard as rabitqlib; the top-level gate probes these flags.
+if(RABITQ_SUPPORTED AND RABITQ_TARGET_PROCESSOR MATCHES "^(x86_64|amd64)$")
+  set_property(SOURCE quantizer/rabitq_quantizer/rabitq_scan_avx512.cc
+    APPEND PROPERTY COMPILE_OPTIONS ${RABITQ_AVX512_FLAGS})
+  set_property(SOURCE quantizer/rabitq_quantizer/rabitq_quantizer.cc
+    APPEND PROPERTY COMPILE_DEFINITIONS ZVEC_RABITQ_HAVE_AVX512=1)
+endif()
+
 # Set per-file compile flags for SIMD sources.
 # set_source_files_properties is directory-scoped, so it must be called in the
 # same directory that adds the sources to a target (i.e. here, not in a
 # subdirectory).
 if(NOT ANDROID AND AUTO_DETECT_ARCH AND
    _TURBO_TARGET_ARCH MATCHES "^(x86|x64)$")
+    # Compile sparse dispatch at the target baseline. Advertise the kernels
+    # separately: compiling dispatch with the strongest ISA can emit illegal
+    # instructions before the runtime CPU check on older machines.
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp32_sse.cc
+        distance/sparse/sparse_inner_product_fp32_dispatch.cc
+        "${TURBO_SPARSE_MARCH_FLAG_SSE}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__SSE4_1__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_SSE4)
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp16_avx.cc
+        distance/sparse/sparse_inner_product_fp16_dispatch.cc
+        "${TURBO_MARCH_FLAG_AVX2}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_AVX)
+    configure_simd_kernel(
+        distance/sparse/sparse_inner_product_fp16_avx512fp16.cc
+        distance/sparse/sparse_inner_product_fp16_dispatch.cc
+        "${TURBO_MARCH_FLAG_AVX512FP16}" "
+        #include <zvec/ailego/internal/platform.h>
+        #if !defined(__AVX512FP16__)
+        #error Kernel ISA unavailable
+        #endif
+        int main() { return 0; }"
+        ZVEC_TURBO_SPARSE_HAVE_AVX512FP16)
+
     # SSE2
     file(GLOB_RECURSE SSE2_SRCS ${CMAKE_CURRENT_SOURCE_DIR}/distance/sse2/*.cc)
     set_source_files_properties(
@@ -128,6 +180,26 @@ if(NOT ANDROID AND AUTO_DETECT_ARCH AND
         PROPERTIES
         COMPILE_FLAGS "${TURBO_MARCH_FLAG_AVX512}"
     )
+
+    # These INT8 kernels promise AVX2 or AVX512F+BW, not the full feature set of
+    # the CPU model selected above. In particular, icelake-server lets Clang
+    # fuse madd+add into VNNI, which older AVX512BW CPUs cannot execute.
+    if(NOT MSVC)
+      set(_TURBO_INT8_BASE "-march=x86-64")
+      if(_TURBO_TARGET_ARCH STREQUAL "x86")
+        set(_TURBO_INT8_BASE "-march=i686")
+      endif()
+      file(GLOB AVX2_RECORD_INT8_SRCS
+          ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx2/record_quantized_int8/*.cc)
+      file(GLOB AVX512_RECORD_INT8_SRCS
+          ${CMAKE_CURRENT_SOURCE_DIR}/distance/avx512/record_quantized_int8/*.cc)
+      set_source_files_properties(distance/avx2/raw_int8/distance.cc
+          ${AVX2_RECORD_INT8_SRCS}
+          PROPERTIES COMPILE_FLAGS "${_TURBO_INT8_BASE} -mavx2")
+      set_source_files_properties(distance/avx512/raw_int8/distance.cc
+          ${AVX512_RECORD_INT8_SRCS}
+          PROPERTIES COMPILE_FLAGS "${_TURBO_INT8_BASE} -mavx512f -mavx512bw")
+    endif()
 endif()
 
 if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
@@ -141,7 +213,70 @@ if(NOT IOS AND NOT MSVC AND (AUTO_DETECT_ARCH OR ANDROID) AND
     )
 endif()
 
+# Use the compiler-target probe, including macOS cross builds. The joint
+# AVX2 TU must not inherit extra ISA features from a host CPU model flag.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "/arch:AVX2")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=x86-64 -mavx2 -mfma -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX2_FLAGS "-march=i686 -mavx2 -mfma -mf16c")
+    endif()
+    set_source_files_properties(distance/avx2/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX2_FLAGS}")
+endif()
+
+# AVX512 joint kernels need AVX512F and FP16 conversion, not BW/DQ/VL/VNNI.
+if(ZVEC_TOPK_TARGET_X86)
+    if(MSVC)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "/arch:AVX512")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=x86-64 -mavx512f -mf16c")
+    else()
+        set(_TURBO_INTERLEAVED_AVX512_FLAGS "-march=i686 -mavx512f -mf16c")
+    endif()
+    set_source_files_properties(distance/avx512/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "${_TURBO_INTERLEAVED_AVX512_FLAGS}")
+endif()
+
+# The generic matrix kernel is compiled for the project's baseline. Enabling
+# a wider ISA in these two files must not silently fuse a multiply and add
+# that the baseline rounds separately. With an FMA baseline, inherit its FP
+# contraction policy for the equivalent multiply/add expressions.
+if(ZVEC_TOPK_TARGET_X86)
+    unset(ZVEC_MATRIX_BASELINE_HAS_FMA CACHE)
+    check_cxx_source_compiles([=[
+        #if !defined(__FMA__) && !(defined(_MSC_VER) && defined(__AVX2__))
+        #error Baseline has no FMA
+        #endif
+        int main() { return 0; }
+    ]=] ZVEC_MATRIX_BASELINE_HAS_FMA)
+    if(NOT ZVEC_MATRIX_BASELINE_HAS_FMA)
+        if(MSVC)
+            set(_matrix_contract_flag "/fp:strict")
+        else()
+            set(_matrix_contract_flag "-ffp-contract=off")
+        endif()
+        set_property(SOURCE distance/avx2/interleaved_many_to_many.cc
+                            distance/avx512/interleaved_many_to_many.cc
+                     APPEND PROPERTY COMPILE_OPTIONS ${_matrix_contract_flag})
+    endif()
+endif()
+
+# The joint interleaved kernel uses baseline AArch64 NEON and FP32 arithmetic,
+# including FP16-to-FP32 conversion; it does not require FEAT_FP16 arithmetic.
+# Keep this translation unit at the ISA promised by its runtime dispatch gate.
+if(NOT MSVC AND _TURBO_TARGET_ARCH STREQUAL "arm64" AND
+   (NOT CMAKE_OSX_ARCHITECTURES OR CMAKE_OSX_ARCHITECTURES STREQUAL "arm64"))
+    set_source_files_properties(distance/neon/interleaved_many_to_many.cc
+        PROPERTIES COMPILE_FLAGS "-march=armv8-a")
+endif()
+
 set(ZVEC_TURBO_DEFS)
+if(ZVEC_ON_MUSL)
+  list(APPEND ZVEC_TURBO_DEFS ZVEC_ON_MUSL)
+endif()
 if(ZVEC_TURBO_ARM_FP16_SUPPORTED)
     list(APPEND ZVEC_TURBO_DEFS ZVEC_HAVE_ARM_FP16_KERNEL=1)
 endif()
@@ -156,21 +291,26 @@ if(WIN32 AND (BUILD_ZVEC_CORE_SHARED OR BUILD_ZVEC_SHARED))
   endif()
 endif()
 
+set(ZVEC_TURBO_RABITQ_LIBS "")
+if(RABITQ_SUPPORTED)
+  # Share Eigen's ABI settings with RaBitQ when both are linked into zvec.
+  list(APPEND ZVEC_TURBO_RABITQ_LIBS rabitqlib::fastscan)
+endif()
+
 cc_library(
     NAME zvec_turbo STATIC STRICT ALWAYS_LINK PACKED
     ${ZVEC_TURBO_LIBRARY_OPTIONS}
     SRCS ${ALL_SRCS}
     DEFS ${ZVEC_TURBO_DEFS}
-    LIBS zvec_ailego
+    LIBS zvec_ailego ${ZVEC_TURBO_RABITQ_LIBS}
     INCS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/distance ${PROJECT_ROOT_DIR}/src/include
 )
 
 # Eigen (header-only, shipped inside the RaBitQ third-party tree) backs the OPQ
-# rotator only. It must be a SYSTEM include: INCS above maps to a plain
-# target_include_directories, and STRICT turns Eigen's own warnings into errors.
-# Only the headers are consumed -- rabitqlib/rabitqlib_runtime is NOT linked.
+# rotator and scalar RaBitQ encoder. Keep third-party headers SYSTEM so
+# their warnings do not become errors under STRICT.
 set(TURBO_EIGEN_INC
-    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.1/include)
+    ${PROJECT_ROOT_DIR}/thirdparty/RaBitQ-Library/RaBitQ-Library-0.7.0/include)
 foreach(_turbo_tgt zvec_turbo zvec_turbo_objects zvec_turbo_export_objects)
   if(TARGET ${_turbo_tgt})
     target_include_directories(${_turbo_tgt} SYSTEM PRIVATE ${TURBO_EIGEN_INC})

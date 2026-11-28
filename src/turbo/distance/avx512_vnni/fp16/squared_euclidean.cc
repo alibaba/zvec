@@ -15,6 +15,7 @@
 #include "avx512_vnni/fp16/squared_euclidean.h"
 #include <algorithm>
 #include <cstdint>
+#include <zvec/ailego/internal/platform.h>
 #include <zvec/ailego/utility/float_helper.h>
 #if (defined(__AVX512F__) && defined(__AVX512DQ__) && defined(__F16C__)) || \
     (defined(_MSC_VER) && defined(__AVX512F__))
@@ -57,7 +58,7 @@ void DistanceBatch(const void *const *vectors, const uint16_t *query,
 
   size_t d = 0;
   for (; d + 32 <= dimension; d += 32) {
-    // Expand one cache line of the FP16 query once for all candidate rows.
+    // Expand one 512-bit FP16 query block once for all candidate rows.
     // Two accumulators break the dependency chain across the 32 dimensions.
     const __m512i qh =
         _mm512_loadu_si512(reinterpret_cast<const __m512i *>(query + d));
@@ -118,9 +119,18 @@ inline void PrefetchRow(const void *vector, size_t dimension) {
   // Stage the beginning of long rows one batch ahead without trying to pull
   // the entire row into L1 (which would evict the batch currently in flight).
   if (dimension >= 512) {
+#if AILEGO_CACHE_LINE_SIZE == 64
     _mm_prefetch(row + 64, _MM_HINT_T0);
     _mm_prefetch(row + 128, _MM_HINT_T0);
     _mm_prefetch(row + 192, _MM_HINT_T0);
+#elif AILEGO_CACHE_LINE_SIZE == 128
+    _mm_prefetch(row + 128, _MM_HINT_T0);
+#else
+    const size_t lines = ailego_cache_line_count(dimension * sizeof(uint16_t));
+    for (size_t line = 1; line < 4 && line < lines; ++line) {
+      _mm_prefetch(row + line * AILEGO_CACHE_LINE_SIZE, _MM_HINT_T0);
+    }
+#endif
   }
 }
 
@@ -180,7 +190,7 @@ void squared_euclidean_fp16_batch_distance(
   }
 
   // Long rows are memory-latency dominated. Ten independent rows reuse each
-  // expanded query cache line while exposing enough unrelated loads to keep
+  // expanded query block while exposing enough unrelated loads to keep
   // the Ice Lake memory pipeline busy. The smaller high-recall rerank sets use
   // a twelve-row first batch: this exactly covers candidate_topk=12 and leaves
   // one four-row batch for candidate_topk=16. Handle all other remainders with

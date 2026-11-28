@@ -28,6 +28,7 @@
 #include <arrow/array.h>
 #include <arrow/io/file.h>
 #include <arrow/ipc/reader.h>
+#include <arrow/memory_pool.h>
 #include <arrow/result.h>
 #include <arrow/table.h>
 #include <gtest/gtest.h>
@@ -95,6 +96,47 @@ class MemStoreTest : public testing::Test {
   std::shared_ptr<CollectionSchema> schema_;
   std::shared_ptr<MemForwardStore> store_;
 };
+
+// A failed checkpoint must retain its buffers and propagate the I/O error.
+TEST_F(MemStoreTest, ClosePropagatesFlushAndFooterFailures) {
+  class FailingWriter : public ChunkedFileWriter {
+   public:
+    explicit FailingWriter(bool fail_write)
+        : ChunkedFileWriter(nullptr), fail_write_(fail_write) {}
+    arrow::Status write(const arrow::RecordBatch &) override {
+      return result();
+    }
+    arrow::Status write(const arrow::Table &) override {
+      return result();
+    }
+    arrow::Status close() override {
+      return fail_write_ ? arrow::Status::OK()
+                         : arrow::Status::IOError("injected footer failure");
+    }
+
+   private:
+    arrow::Status result() const {
+      return fail_write_ ? arrow::Status::IOError("injected write failure")
+                         : arrow::Status::OK();
+    }
+    bool fail_write_;
+  };
+  ASSERT_TRUE(store_->writer_->close().ok());
+  for (bool fail_write : {true, false}) {
+    store_->writer_ = std::make_unique<FailingWriter>(fail_write);
+    if (fail_write) {
+      auto doc = CreateDoc(0);
+      ASSERT_TRUE(store_->insert(doc).ok());
+    }
+    auto status = store_->close();
+    EXPECT_FALSE(status.ok());
+    EXPECT_NE(std::string::npos,
+              status.message().find(fail_write ? "injected write failure"
+                                               : "injected footer failure"));
+    EXPECT_NE(nullptr, store_->writer_);
+    EXPECT_FALSE(store_->batches_.empty());
+  }
+}
 
 // Test constructor
 TEST_F(MemStoreTest, ConstructorTest) {
@@ -263,6 +305,15 @@ TEST_F(MemStoreTest, ConvertToTableWithColumnFiltering) {
   EXPECT_EQ(table->num_columns(), 2);
 }
 
+TEST_F(MemStoreTest, ConvertToTableReportsMissingColumn) {
+  ASSERT_TRUE(store_->insert(CreateDoc(0)).ok());
+
+  auto result = store_->convert_to_table({"id", "missing_column"}, {0});
+  ASSERT_TRUE(result.status().IsInvalid()) << result.status();
+  EXPECT_NE(result.status().message().find("missing_column"),
+            std::string::npos);
+}
+
 // Test convertToTable with index filtering
 TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
   // Insert multiple documents
@@ -280,6 +331,33 @@ TEST_F(MemStoreTest, ConvertToTableWithIndexFiltering) {
 
   auto table = result.ValueOrDie();
   EXPECT_EQ(table->num_rows(), 3);  // Only selected rows
+}
+
+TEST_F(MemStoreTest, FetchPrimaryKeysSkipsUnrequestedText) {
+  constexpr int64_t kTextBytes = 256 * 1024;
+  auto doc = CreateDoc(0);
+  doc.set<std::string>("name", std::string(kTextBytes, 'x'));
+  ASSERT_TRUE(store_->insert(doc).ok());
+  ASSERT_TRUE(store_->flush().ok());
+  ASSERT_TRUE(store_->insert(CreateDoc(1)).ok());
+
+  // Fetch across a stored batch and the pending row, in hit order.
+  const std::vector<int> rows{1, 0, 0};
+  auto *pool = arrow::default_memory_pool();
+  const auto before = pool->total_bytes_allocated();
+  auto table = store_->fetch({USER_ID}, rows);
+  const auto allocated = pool->total_bytes_allocated() - before;
+  // Copying even one unrequested text value would exceed this budget.
+  RecordProperty("fetch_allocated_bytes", std::to_string(allocated));
+  EXPECT_LT(allocated, kTextBytes);
+
+  ASSERT_NE(table, nullptr);
+  ASSERT_EQ(table->ColumnNames(), std::vector<std::string>{USER_ID});
+  ASSERT_EQ(table->num_rows(), rows.size());
+  for (size_t i = 0; i < rows.size(); ++i) {
+    EXPECT_EQ(table->column(0)->GetScalar(i).ValueOrDie()->ToString(),
+              "pk_" + std::to_string(rows[i]));
+  }
 }
 
 // Test fetch method

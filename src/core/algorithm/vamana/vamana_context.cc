@@ -24,7 +24,6 @@ namespace {
 // Vamana resolves the shared query defaults against the loaded graph layout.
 // Keep this policy local to Vamana rather than exposing algorithm-tuning
 // constants through the public interface.
-constexpr uint32_t kPrefetchCacheLineBytes = 64;
 constexpr uint32_t kPrefetchBudgetBytes = 6 * 1024;
 constexpr uint32_t kPrefetchTargetLines = 2;
 constexpr uint32_t kPrefetchMaxValue = 256;
@@ -135,12 +134,18 @@ int VamanaContext::update_context(ContextType type, const IndexMeta &meta,
 int VamanaContext::update(const ailego::Params &params) {
   uint32_t ef = ef_;
   params.get(PARAM_VAMANA_STREAMER_EF, &ef);
-  ef_ = ef;
-  search_heap_.limit(std::max(topk_, ef_));
   uint32_t requested_po = requested_po_;
   uint32_t requested_pl = requested_pl_;
   params.get(PARAM_VAMANA_STREAMER_PO, &requested_po);
   params.get(PARAM_VAMANA_STREAMER_PL, &requested_pl);
+  update_query_params(ef, requested_po, requested_pl);
+  return 0;
+}
+
+void VamanaContext::update_query_params(uint32_t ef, uint32_t requested_po,
+                                        uint32_t requested_pl) {
+  ef_ = ef;
+  search_heap_.limit(std::max(topk_, ef_));
   // Compare requests, not effective values: an automatic PO may have resolved
   // to the same number as a new manual PO but must retain different semantics.
   if (!query_prefetch_ready_ || requested_po != requested_po_ ||
@@ -149,7 +154,6 @@ int VamanaContext::update(const ailego::Params &params) {
     requested_pl_ = requested_pl;
     update_query_prefetch();
   }
-  return 0;
 }
 
 void VamanaContext::update_query_prefetch() {
@@ -171,20 +175,19 @@ std::pair<uint32_t, uint32_t> VamanaContext::resolve_query_prefetch(
   }
 
   const uint32_t body_lines =
-      static_cast<uint32_t>((vector_data_size + kPrefetchCacheLineBytes - 1) /
-                            kPrefetchCacheLineBytes);
+      static_cast<uint32_t>(ailego_cache_line_count(vector_data_size));
 
   uint32_t resolved_lines;
-  if (requested_lines == kDefaultPrefetchLines) {
+  if (requested_lines == kDefaultVamanaPrefetchLines) {
     resolved_lines = std::min(kPrefetchTargetLines, body_lines);
   } else {
     resolved_lines = std::min({requested_lines, body_lines, kPrefetchMaxValue});
   }
 
   uint32_t resolved_offset;
-  if (requested_offset == kDefaultPrefetchOffset) {
+  if (requested_offset == kDefaultVamanaPrefetchOffset) {
     const uint64_t bytes_per_neighbor =
-        static_cast<uint64_t>(kPrefetchCacheLineBytes) * resolved_lines;
+        static_cast<uint64_t>(AILEGO_CACHE_LINE_SIZE) * resolved_lines;
     const uint32_t budget_offset = static_cast<uint32_t>(
         std::max<uint64_t>(1, kPrefetchBudgetBytes / bytes_per_neighbor));
     resolved_offset = std::min({budget_offset, max_degree, kPrefetchMaxValue});
@@ -201,19 +204,31 @@ void VamanaContext::topk_to_result(uint32_t idx) {
   results_[idx].clear();
   collect_search_result([&](node_id_t id, dist_t score) {
     if (fetch_vector_) {
+      IndexStorage::MemoryBlock block;
+      entity_->get_vector(id, block);
       results_[idx].emplace_back(entity_->get_key(id), score, id,
-                                 entity_->get_vector(id));
+                                 std::move(block));
     } else {
       results_[idx].emplace_back(entity_->get_key(id), score, id);
     }
   });
 }
 
-void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys) {
+void VamanaContext::topk_to_keys(std::vector<uint64_t> &keys,
+                                 std::vector<float> *scores) {
   keys.clear();
   keys.reserve((std::min)(static_cast<size_t>(topk_), search_heap_.size()));
-  collect_search_result(
-      [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  if (scores) {
+    scores->clear();
+    scores->reserve(keys.capacity());
+    collect_search_result([&](node_id_t id, dist_t score) {
+      keys.push_back(entity_->get_key(id));
+      scores->push_back(score);
+    });
+  } else {
+    collect_search_result(
+        [&](node_id_t id, dist_t) { keys.push_back(entity_->get_key(id)); });
+  }
 }
 
 void VamanaContext::fill_random_to_topk_full() {

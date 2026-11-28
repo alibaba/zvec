@@ -14,6 +14,7 @@
 
 #include "scalar/record_quantized_int8/inner_product.h"
 #include <cstdint>
+#include "common/record_metadata.h"
 #include "scalar/record_quantized_int8/common.h"
 
 namespace zvec::turbo::scalar {
@@ -27,10 +28,10 @@ void inner_product_int8_distance(const void *a, const void *b, size_t dim,
   }
   float ip = internal::ip_int8_scalar(a, b, original_dim);
 
-  const float *a_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(a) + original_dim);
-  const float *b_tail = reinterpret_cast<const float *>(
-      reinterpret_cast<const int8_t *>(b) + original_dim);
+  const record::Metadata a_tail(reinterpret_cast<const int8_t *>(a) +
+                                original_dim);
+  const record::Metadata b_tail(reinterpret_cast<const int8_t *>(b) +
+                                original_dim);
 
   float ma = a_tail[0];
   float mb = a_tail[1];

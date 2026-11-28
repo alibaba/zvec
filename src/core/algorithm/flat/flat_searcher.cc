@@ -80,31 +80,50 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
 
   column_major_order_ = (meta_.major_order() == IndexMeta::MO_COLUMN);
 
+  legacy_quantizer_layout_ = false;
+  distance_matrix_ = {};
   if (quantizer_) {
-    if (column_major_order_) {
+    const auto &quantizer_meta = quantizer_->meta();
+    const bool floating = quantizer_meta.data_type() == IndexMeta::DT_FP32 ||
+                          quantizer_meta.data_type() == IndexMeta::DT_FP16;
+    // IVF distance quantizers operate on already converted centroid records.
+    // Legacy cosine records include the norm tail in dimension(), while Turbo
+    // describes the same bytes as extra metadata.
+    legacy_quantizer_layout_ = floating && meta_.quantizer_name().empty() &&
+                               quantizer_meta.quantizer_name().empty();
+    if (column_major_order_ && !legacy_quantizer_layout_) {
       LOG_ERROR("Quantizer distance does not support column index.");
       return IndexError_Unsupported;
     }
-    // Flat's turbo row path uses the same record layout for data and queries,
-    // not asymmetric lookup-table or packed-block query formats.
+    // Flat requires the same physical record layout for data and queries.
     if (quantizer_->quantized_query_vector_length() !=
         quantizer_->quantized_datapoint_vector_length()) {
-      LOG_ERROR("Quantizer query layout does not support flat row index.");
+      LOG_ERROR("Quantizer query layout does not support flat index.");
       return IndexError_Unsupported;
     }
-    const auto &quantizer_meta = quantizer_->meta();
+    const bool same_dimensions =
+        meta_.dimension() == quantizer_meta.dimension() &&
+        meta_.extra_meta_size() == quantizer_meta.extra_meta_size();
+    const bool legacy_cosine_dimensions =
+        legacy_quantizer_layout_ && meta_.metric_name() == "Cosine" &&
+        meta_.extra_meta_size() == 0 &&
+        quantizer_meta.extra_meta_size() == sizeof(float) &&
+        meta_.dimension() == quantizer_meta.dimension() +
+                                 sizeof(float) / quantizer_meta.unit_size();
     if (meta_.meta_type() != IndexMeta::MT_DENSE ||
         meta_.meta_type() != quantizer_meta.meta_type() ||
         meta_.data_type() != quantizer_meta.data_type() ||
-        meta_.dimension() != quantizer_meta.dimension() ||
+        (!same_dimensions && !legacy_cosine_dimensions) ||
         meta_.unit_size() != quantizer_meta.unit_size() ||
-        meta_.extra_meta_size() != quantizer_meta.extra_meta_size() ||
         meta_.element_size() != quantizer_meta.element_size() ||
         meta_.element_size() !=
             quantizer_->quantized_datapoint_vector_length() ||
         meta_.metric_name() != quantizer_meta.metric_name()) {
       LOG_ERROR("The quantizer is unmatched with index meta from container.");
       return IndexError_Mismatch;
+    }
+    if (legacy_quantizer_layout_) {
+      distance_matrix_.initialize(quantizer_);
     }
     measure_.reset();
   } else {
@@ -189,7 +208,17 @@ int FlatSearcher<BATCH_SIZE>::load(IndexStorage::Pointer cntr,
 template <size_t BATCH_SIZE>
 int FlatSearcher<BATCH_SIZE>::check_query_meta(
     const IndexQueryMeta &qmeta) const {
-  if (quantizer_) {
+  if (legacy_quantizer_layout_) {
+    if (qmeta.meta_type() != meta_.meta_type() ||
+        qmeta.data_type() != meta_.data_type() ||
+        qmeta.dimension() != meta_.dimension() ||
+        qmeta.unit_size() != meta_.unit_size() ||
+        qmeta.extra_meta_size() != meta_.extra_meta_size() ||
+        qmeta.element_size() != quantizer_->quantized_query_vector_length()) {
+      LOG_ERROR("The query meta is unmatched with stored centroid records.");
+      return IndexError_Mismatch;
+    }
+  } else if (quantizer_) {
     const auto &quantizer_meta = quantizer_->meta();
     if (qmeta.meta_type() != quantizer_meta.meta_type() ||
         qmeta.data_type() != quantizer_meta.data_type() ||

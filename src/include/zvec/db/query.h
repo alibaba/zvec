@@ -14,7 +14,6 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -131,6 +130,12 @@ inline void QueryTarget::set_sparse_vector(std::string indices,
   vc.sparse_indices_ = std::move(indices);
   vc.sparse_values_ = std::move(values);
 }
+
+// Buffers returned by the internal-ID query API.
+struct InternalIdsQueryResult {
+  std::vector<int64_t> ids;
+  std::vector<float> scores;
+};
 
 struct ZVEC_API SearchQuery {
   QueryTarget target_;

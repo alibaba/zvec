@@ -346,8 +346,8 @@ class ZVEC_AILEGO_API ThreadPool {
   void enqueue(T &&handle, TaskControl *ctrl) {
     if (handle) {
       std::lock_guard<std::mutex> lock(queue_mutex_);
-      ++pending_count_;
       queue_.emplace(std::forward<T>(handle), ctrl);
+      ++pending_count_;
     }
   }
 
@@ -356,9 +356,10 @@ class ZVEC_AILEGO_API ThreadPool {
   void enqueue(T &&handle, TaskGroup::Pointer &&group, TaskControl *ctrl) {
     if (handle) {
       std::lock_guard<std::mutex> lock(queue_mutex_);
-      ++pending_count_;
-      group->mark_task_enqueued();
+      auto *enqueued_group = group.get();
       queue_.emplace(std::forward<T>(handle), std::move(group), ctrl);
+      ++pending_count_;
+      enqueued_group->mark_task_enqueued();
     }
   }
 
@@ -367,8 +368,8 @@ class ZVEC_AILEGO_API ThreadPool {
   void enqueue_and_wake(T &&handle, TaskControl *ctrl) {
     if (handle) {
       std::lock_guard<std::mutex> lock(queue_mutex_);
-      ++pending_count_;
       queue_.emplace(std::forward<T>(handle), ctrl);
+      ++pending_count_;
       work_cond_.notify_one();
     }
   }
@@ -379,9 +380,12 @@ class ZVEC_AILEGO_API ThreadPool {
                         TaskControl *ctrl) {
     if (handle) {
       std::lock_guard<std::mutex> lock(queue_mutex_);
-      ++pending_count_;
-      group->mark_task_enqueued();
+      auto *enqueued_group = group.get();
+      // Queue allocation may throw. Publish counters only after insertion;
+      // workers cannot pop the task while queue_mutex_ is held.
       queue_.emplace(std::forward<T>(handle), std::move(group), ctrl);
+      ++pending_count_;
+      enqueued_group->mark_task_enqueued();
       work_cond_.notify_one();
     }
   }

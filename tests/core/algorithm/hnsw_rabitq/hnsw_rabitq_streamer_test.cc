@@ -46,8 +46,9 @@ std::string HnswRabitqStreamerTest::dir_("hnswRabitqStreamerTest");
 shared_ptr<IndexMeta> HnswRabitqStreamerTest::index_meta_ptr_;
 
 void HnswRabitqStreamerTest::SetUp() {
-  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2()) {
-    GTEST_SKIP() << "CPU does not support AVX2/FMA or AVX512F/BW/DQ";
+  if (!rabitqlib::cpu::has_avx512_core() && !rabitqlib::cpu::has_avx2() &&
+      !rabitqlib::cpu::has_neon()) {
+    GTEST_SKIP() << "CPU does not support AVX2/FMA, AVX512F/BW/DQ, or NEON";
   }
 
   index_meta_ptr_.reset(new (nothrow)
@@ -57,6 +58,29 @@ void HnswRabitqStreamerTest::SetUp() {
 
 void HnswRabitqStreamerTest::TearDown() {
   ailego::FileHelper::RemovePath(dir_.c_str());
+}
+
+TEST_F(HnswRabitqStreamerTest, TestFirstUpperNeighbor) {
+  IndexStreamer::Stats stats;
+  HnswRabitqStreamerEntity entity(stats);
+  entity.set_scaling_factor(5);
+  entity.set_l0_neighbor_cnt(16);
+  entity.set_upper_neighbor_cnt(8);
+  entity.set_ex_bits(6);
+  entity.update_rabitq_params_and_vector_size(dim);
+  ASSERT_EQ(0, entity.init(100));
+
+  auto storage = IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(dir_ + "/TestFirstUpperNeighbor", true));
+  ASSERT_EQ(0, entity.open(storage, 0, false));
+
+  std::string vector(entity.vector_size(), '\0');
+  node_id_t id = kInvalidNodeId;
+  ASSERT_EQ(0, entity.add_vector(1, 0, vector.data(), &id));
+  ASSERT_EQ(0U, id);
+  ASSERT_EQ(0, entity.close());
 }
 
 TEST_F(HnswRabitqStreamerTest, TestBuildAndSearch) {

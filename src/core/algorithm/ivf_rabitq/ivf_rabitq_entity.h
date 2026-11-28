@@ -17,6 +17,7 @@
 #include <memory>
 #include <vector>
 #include <rabitqlib/utils/space.hpp>
+#include "utility/legacy_read_buffer.h"
 #include "zvec/core/framework/index_document.h"
 #include "zvec/core/framework/index_filter.h"
 #include "zvec/core/framework/index_storage.h"
@@ -106,12 +107,14 @@ class IvfRabitqEntity {
     if (!mapping_) {
       return nullptr;
     }
-    const void *data = nullptr;
+    // Keep the legacy pointer valid until the next call on this thread.
+    static thread_local LegacyReadBuffer buffer;
+    IndexStorage::MemoryBlock data;
     size_t size = total_vector_count() * sizeof(uint32_t);
-    if (mapping_->read(0, &data, size) != size) {
+    if (mapping_->read(0, data, size) != size) {
       return nullptr;
     }
-    return static_cast<const uint32_t *>(data);
+    return static_cast<const uint32_t *>(buffer.assign(data, size));
   }
 
  private:

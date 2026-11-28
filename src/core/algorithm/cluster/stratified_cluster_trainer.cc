@@ -314,14 +314,14 @@ int StratifiedClusterTrainer::load(IndexStorage::Pointer cntr) {
       return IndexError_InvalidArgument;
     }
     size_t data_size = seg->data_size();
-    const void *data = nullptr;
-    size_t actual_size = seg->read(0, &data, data_size);
+    IndexStorage::MemoryBlock data;
+    size_t actual_size = seg->read(0, data, data_size);
     if (actual_size != data_size) {
       LOG_ERROR("Read data failed expect %zu, actual %zu.", data_size,
                 actual_size);
       return IndexError_ReadData;
     }
-    bundle->set(it.first, data, data_size);
+    bundle->set(it.first, data.data(), data_size);
   }
 
   int result = IndexHelper::DeserializeFromStorage(cntr.get(), &meta_);

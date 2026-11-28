@@ -38,8 +38,15 @@ jobs:
           key: ios-${{ matrix.platform }}
           max-size: 150M
 
+      - name: Pin CMake
+        run: |
+          python3 -m venv "$RUNNER_TEMP/cmake-venv"
+          "$RUNNER_TEMP/cmake-venv/bin/python" -m pip install cmake==3.30.0
+          echo "$RUNNER_TEMP/cmake-venv/bin" >> "$GITHUB_PATH"
+
       - name: Configure and Build
         run: |
+          cmake --version
           git submodule foreach --recursive 'git stash --include-untracked' || true
 
           SDK_PATH=$(xcrun --sdk ${{ matrix.sdk }} --show-sdk-path)
@@ -55,7 +62,7 @@ jobs:
             -DBUILD_ZVEC_AILEGO_SHARED=OFF \
             -DBUILD_ZVEC_CORE_SHARED=OFF \
             -DBUILD_PYTHON_BINDINGS=OFF \
-            -DBUILD_TOOLS=OFF \
+            -DBUILD_BENCHMARKS=OFF \
             -DBUILD_CPP_EXAMPLES=ON \
             -DENABLE_WERROR=ON \
             -DCMAKE_INSTALL_PREFIX="./install" \
@@ -80,18 +87,20 @@ jobs:
             fi
           done
 
-      - name: Build required DiskAnn test targets
+      - name: Build required ARM64 index test targets
         run: |
           NPROC=$(sysctl -n hw.ncpu)
           BUILD_DIR=build_ios_${{ matrix.platform }}
           cmake --build "$BUILD_DIR" \
             --target diskann_mobile_compat_test diskann_mobile_collection_test \
+              hnsw_rabitq_streamer_test ivf_rabitq_streamer_test \
             --parallel "$NPROC"
 
-          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test; do
+          for test_name in diskann_mobile_compat_test diskann_mobile_collection_test \
+            hnsw_rabitq_streamer_test ivf_rabitq_streamer_test; do
             test_app="$BUILD_DIR/bin/${test_name}.app"
             if [ ! -d "$test_app" ]; then
-              echo "::error::Missing required iOS DiskAnn test app: $test_app"
+              echo "::error::Missing required iOS index test app: $test_app"
               exit 1
             fi
           done
@@ -149,13 +158,6 @@ jobs:
             [ -d "$APP" ] || continue
             TEST_NAME=$(basename "$APP" .app)
 
-            # All test cases in this legacy target are disabled with #if 0.
-            # Do not count an empty GTest binary as an executed test suite.
-            if [ "$TEST_NAME" = "cosine_distance_matrix_int8_test" ]; then
-              echo "::notice::Skipping ${TEST_NAME}: it contains no enabled GTest cases"
-              continue
-            fi
-
             BUNDLE_ID="com.zvec.${TEST_NAME}"
             LOG_FILE="$RUNNER_TEMP/${TEST_NAME}.log"
             TOTAL=$((TOTAL + 1))
@@ -201,7 +203,8 @@ jobs:
               SUMMARY_FOUND=0
               if grep -Eq '^\[==========\][[:space:]]+[0-9]+ tests?[[:space:]]+from[[:space:]]+[0-9]+ test (suites?|cases?)[[:space:]]+ran\.' "$LOG_FILE"; then
                 SUMMARY_FOUND=1
-              elif [ "$TEST_NAME" = "c_api_test" ] && grep -Eq '^Failed: [0-9]+[[:space:]]*$' "$LOG_FILE"; then
+              elif { [ "$TEST_NAME" = "c_api_test" ] || [ "$TEST_NAME" = "c_api_rabitq_test" ]; } && \
+                   grep -Eq '^Failed: [0-9]+[[:space:]]*$' "$LOG_FILE"; then
                 SUMMARY_FOUND=1
               fi
 
@@ -269,10 +272,10 @@ jobs:
               elif [ "$TEST_NAME" = "diskann_mobile_collection_test" ]; then
                 DISKANN_COLLECTION_PASSED=1
               fi
-            elif [ "$TEST_NAME" = "c_api_test" ] && \
+            elif { [ "$TEST_NAME" = "c_api_test" ] || [ "$TEST_NAME" = "c_api_rabitq_test" ]; } && \
                  grep -Eq '^Passed: [1-9][0-9]*[[:space:]]*$' "$LOG_FILE" && \
                  grep -Eq '^Failed: 0[[:space:]]*$' "$LOG_FILE"; then
-              # c_api_test uses a custom test framework (not GTest)
+              # C API tests use custom summaries rather than GTest.
               PASSED=$((PASSED + 1))
             else
               echo "::error::${TEST_NAME} produced no recognisable passing test summary"

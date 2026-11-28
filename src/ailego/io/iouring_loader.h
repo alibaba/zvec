@@ -31,8 +31,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory>
 #include <vector>
 #include <ailego/io/iouring_def.h>
+#include <zvec/ailego/buffer/process_rss_budget.h>
 
 namespace zvec {
 namespace ailego {
@@ -87,10 +89,8 @@ static constexpr size_t kIoUringStagingAlign = 4096;
 
 class IoUringRing {
  public:
-  IoUringRing() = default;
-  ~IoUringRing() {
-    teardown();
-  }
+  IoUringRing();
+  ~IoUringRing();
 
   IoUringRing(const IoUringRing &) = delete;
   IoUringRing &operator=(const IoUringRing &) = delete;
@@ -98,6 +98,8 @@ class IoUringRing {
   // Create an io_uring with `entries` queue slots.  Returns false if the
   // kernel lacks io_uring or setup failed.  In iouring_loader.cc.
   bool setup(uint32_t entries);
+  enum class SetupResult { kReady, kUnavailable, kNoMemory };
+  SetupResult setup_with_status(uint32_t entries);
 
   // munmap all regions, close the ring fd, free staging.  Closing the fd
   // only *starts* asynchronous cancellation of in-flight requests, so call
@@ -109,12 +111,21 @@ class IoUringRing {
   // the ring is quiesced (the old pool is freed here).  In iouring_loader.cc.
   bool ensure_staging(size_t bytes);
 
+  // Take ownership of an existing metadata reservation for writeback staging.
+  // Must be called before staging allocation. No second charge is taken.
+  void adopt_staging_reservation(size_t bytes);
+
   // Deliberately leak the staging pool when in-flight requests cannot be
   // drained: the kernel may keep writing into it after the fd is closed.
   // Caller buffers are never handed to the kernel and remain safe.
   void abandon_staging() {
+    if (!staging_) return;
     staging_ = nullptr;
     staging_size_ = 0;
+    // The allocation has not been freed. Leave its charge quarantined too.
+    staging_charge_ = 0;
+    staging_projection_ = {};
+    prepaid_staging_bytes_ = 0;
   }
 
   bool is_valid() const {
@@ -130,9 +141,18 @@ class IoUringRing {
     return execute(fd, read_reqs.data(), read_reqs.size());
   }
 
+  // One bounded batch may remain in flight while the caller computes.
+  // Requests are copied and the kernel only sees charged ring-owned staging.
+  // Destinations must remain alive until completion or cancel_reads().
+  int submit_reads(int fd, const IoUringRead *reads, size_t count);
+  int get_completed_reads(size_t minimum, uint32_t *indices, size_t capacity);
+  void cancel_reads();
+  bool has_pending_reads() const;
+
   // Execute a batch of aligned writes via io_uring. The call blocks until all
   // accepted requests have completed, but the requests execute concurrently
-  // in the kernel. Returns 0 on success and -1 on a safely drained failure.
+  // in the kernel. A quarantined write can still modify the file after return.
+  static constexpr int kQuarantined = -2;
   int execute_writes(int fd, const IoUringWrite *write_reqs, size_t count);
 
   int execute_writes(int fd, const std::vector<IoUringWrite> &write_reqs) {
@@ -140,8 +160,17 @@ class IoUringRing {
   }
 
  private:
+  friend class IoUringStagingTestPeer;
+  SetupResult map_control_regions(const io_uring_params &params);
+  bool release_staging();
   int execute_impl(int fd, const IoUringRead *read_reqs,
                    const IoUringWrite *write_reqs, size_t count);
+  struct AsyncReads;
+  std::unique_ptr<AsyncReads> async_reads_;
+  int reap_reads(size_t minimum, uint32_t *indices, size_t capacity,
+                 bool deliver);
+  int enter(unsigned submit, unsigned minimum, unsigned flags);
+  int (*enter_override_)(int, unsigned, unsigned, unsigned){nullptr};
 
   int ring_fd_{-1};
 
@@ -152,6 +181,9 @@ class IoUringRing {
   size_t sq_ring_size_{0};
   size_t sqes_size_{0};
   size_t cq_ring_size_{0};
+  ProcessRssBudget::MaterializationStamp sq_ring_projection_{};
+  ProcessRssBudget::MaterializationStamp sqes_projection_{};
+  ProcessRssBudget::MaterializationStamp cq_ring_projection_{};
 
   // SQ ring field pointers (into sq_ring_ptr_).
   unsigned *sq_head_{nullptr};
@@ -177,6 +209,9 @@ class IoUringRing {
   // io_uring teardown (see abandon_staging()).
   char *staging_{nullptr};
   size_t staging_size_{0};
+  size_t staging_charge_{0};
+  ProcessRssBudget::MaterializationStamp staging_projection_{};
+  size_t prepaid_staging_bytes_{0};
 
   unsigned sq_entries_{0};
   unsigned cq_entries_{0};

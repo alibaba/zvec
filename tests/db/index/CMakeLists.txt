@@ -38,25 +38,39 @@ foreach(CC_SRCS ${ALL_TEST_SRCS})
     NAME ${CC_TARGET} STRICT
     LIBS zvec
     zvec_ailego
-          core_knn_diskann
-    core_metric_static
-    core_utility_static
-    core_quantizer_static
-    core_knn_hnsw core_knn_hnsw_sparse sparsehash
-    core_knn_flat core_knn_flat_sparse core_knn_ivf
-    core_knn_hnsw_rabitq core_knn_ivf_rabitq core_mix_reducer
+    zvec_core
+    sparsehash
     ${CMAKE_THREAD_LIBS_INIT}
     ${CMAKE_DL_LIBS}
     SRCS ${CC_SRCS} utils/utils.cc
     INCS . .. ../../src
     LDFLAGS ${APPLE_FRAMEWORK_LIBS}
   )
+  db_test_force_load_core(${CC_TARGET})
   cc_test_suite(zvec_index ${CC_TARGET})
 endforeach()
+
+# Android runners deploy the original resources beside each test workdir.
+# Allow relocated test runners to override the fixture path independently of
+# the embedded defaults used by production code.
+if(ANDROID)
+  set(JIEBA_TEST_DICT_DEFAULT_DIR "../jieba_dict")
+else()
+  set(JIEBA_TEST_DICT_DEFAULT_DIR
+      "${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+endif()
+set(JIEBA_TEST_DICT_DIR "${JIEBA_TEST_DICT_DEFAULT_DIR}" CACHE STRING
+    "Path to the original Jieba dictionary and model at test runtime")
 
 # Inject TEST_SOURCE_DIR for fts_column_indexer_test so it can locate testdata/
 if(TARGET fts_column_indexer_test)
   target_compile_definitions(fts_column_indexer_test PRIVATE
     TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/column/fts_column"
-    JIEBA_DICT_DIR="${PROJECT_SOURCE_DIR}/thirdparty/cppjieba/cppjieba-5.6.7/dict")
+    JIEBA_DICT_DIR="${JIEBA_TEST_DICT_DIR}")
+endif()
+
+# Compare embedded Jieba resources with the original dictionary and model.
+if(TARGET jieba_tokenizer_test)
+  target_compile_definitions(jieba_tokenizer_test PRIVATE
+    JIEBA_DICT_DIR="${JIEBA_TEST_DICT_DIR}")
 endif()

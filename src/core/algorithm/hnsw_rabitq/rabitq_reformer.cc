@@ -15,10 +15,10 @@
 #include "rabitq_reformer.h"
 #include <string>
 #include <vector>
-#include <rabitqlib/defines.hpp>
-#include <rabitqlib/index/query.hpp>
-#include <rabitqlib/quantization/rabitq.hpp>
-#include <rabitqlib/utils/rotator.hpp>
+#include <rabitqlib/core/encoder.hpp>
+#include <rabitqlib/core/metric.hpp>
+#include <rabitqlib/core/query.hpp>
+#include <rabitqlib/core/rotator.hpp>
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/string_helper.h>
 #include "core/algorithm/cluster/linear_seeker.h"

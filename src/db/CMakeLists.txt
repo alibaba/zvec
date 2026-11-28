@@ -46,6 +46,7 @@ cc_library(
     antlr4
     FastPFOR
     cppjieba
+    lz4
     snowball
     Arrow::arrow_static
     Arrow::parquet_static

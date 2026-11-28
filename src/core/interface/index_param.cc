@@ -15,6 +15,7 @@
 #include <zvec/ailego/logger/logger.h>
 #include <zvec/core/interface/index_param.h>
 #include "core/interface/utils/utils.h"
+#include "turbo/quantizer/rabitq_quantizer/rabitq_params.h"
 
 namespace zvec {
 namespace core_interface {
@@ -255,6 +256,17 @@ ailego::JsonObject FlatIndexParam::serialize_to_json_object(
   return json_obj;
 }
 
+ailego::JsonObject IVFIndexParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("nlist", ailego::JsonValue(nlist));
+  json_obj.set("niters", ailego::JsonValue(niters));
+  if (!omit_empty_value || use_soar) {
+    json_obj.set("use_soar", ailego::JsonValue(use_soar));
+  }
+  return json_obj;
+}
+
 ailego::JsonObject HNSWIndexParam::serialize_to_json_object(
     bool omit_empty_value) const {
   auto json_obj = BaseIndexParam::serialize_to_json_object(omit_empty_value);
@@ -296,6 +308,7 @@ bool BaseIndexParam::deserialize_from_json_object(
       auto quantizer = QuantizerParam::Create(quantizer_type);
       if (!quantizer->deserialize_from_json_object(quantizer_json_obj)) {
         LOG_ERROR("Error when deserialize json - field:quantizer_param");
+        return false;
       }
       quantizer_param = std::move(quantizer);
     }
@@ -318,6 +331,43 @@ bool FlatIndexParam::deserialize_from_json_object(
   DESERIALIZE_ENUM_FIELD(json_obj, major_order, IndexMeta::MajorOrder);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
   DESERIALIZE_ENUM_FIELD(json_obj, storage_data_type, DataType);
+  return true;
+}
+
+bool IVFIndexParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!BaseIndexParam::deserialize_from_json_object(json_obj)) {
+    return false;
+  }
+
+  if (index_type != IndexType::kIVF) {
+    LOG_ERROR("index_type is not kIVF");
+    return false;
+  }
+
+  DESERIALIZE_VALUE_FIELD(json_obj, nlist);
+  DESERIALIZE_VALUE_FIELD(json_obj, niters);
+  DESERIALIZE_VALUE_FIELD(json_obj, use_soar);
+
+  int total_bits = kDefaultRabitqTotalBits;
+  int sample_count = 0;
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+  // Older IVF callers put RaBitQ settings on the index parameter itself.
+  // Keep those records equivalent when the base parser creates a typed param.
+  auto *rabitq = dynamic_cast<RabitqQuantizerParam *>(quantizer_param.get());
+  ailego::JsonValue encoded;
+  if (rabitq && (json_obj.has("total_bits") || json_obj.has("sample_count")) &&
+      json_obj.get("quantizer_param", &encoded) && encoded.is_object() &&
+      !encoded.as_object().has("total_bits")) {
+    rabitq->total_bits = total_bits;
+    rabitq->num_clusters = nlist;
+    rabitq->sample_count = sample_count;
+    rabitq->niters = niters;
+    if (total_bits < 1 || total_bits > 9 || !IsValidRabitqClusterCount(nlist) ||
+        sample_count < 0 || niters < 1)
+      return false;
+  }
   return true;
 }
 
@@ -468,6 +518,8 @@ bool VamanaIndexParam::deserialize_from_json_object(
   DESERIALIZE_VALUE_FIELD(json_obj, max_occlusion_size);
   DESERIALIZE_VALUE_FIELD(json_obj, saturate_graph);
   DESERIALIZE_VALUE_FIELD(json_obj, use_contiguous_memory);
+  // Compact JSON written before the default changed omitted false.
+  two_pass_build = false;
   DESERIALIZE_VALUE_FIELD(json_obj, two_pass_build);
 
   return true;
@@ -497,6 +549,8 @@ QuantizerParam::Pointer QuantizerParam::Create(QuantizerType t) {
   switch (t) {
     case QuantizerType::kPQ:
       return std::make_shared<PqQuantizerParam>();
+    case QuantizerType::kRabitq:
+      return std::make_shared<RabitqQuantizerParam>();
     default:
       return std::make_shared<QuantizerParam>(t);
   }
@@ -507,7 +561,41 @@ ailego::JsonObject PqQuantizerParam::serialize_to_json_object(
   auto json_obj = QuantizerParam::serialize_to_json_object(omit_empty_value);
   json_obj.set("num_chunk", ailego::JsonValue(num_chunk));
   json_obj.set("num_bits", ailego::JsonValue(num_bits));
+  json_obj.set("fast_scan", ailego::JsonValue(fast_scan));
+  json_obj.set("opq_iter", ailego::JsonValue(opq_iter));
+  json_obj.set("opq_pq_iter", ailego::JsonValue(opq_pq_iter));
   return json_obj;
+}
+
+ailego::Params RabitqQuantizerParam::to_params() const {
+  ailego::Params params;
+  params.set(turbo::RABITQ_TOTAL_BITS, total_bits);
+  params.set(turbo::RABITQ_NUM_CLUSTERS, num_clusters);
+  params.set(turbo::RABITQ_SAMPLE_COUNT, sample_count);
+  params.set(turbo::RABITQ_NITERS, niters);
+  return params;
+}
+
+ailego::JsonObject RabitqQuantizerParam::serialize_to_json_object(
+    bool omit_empty_value) const {
+  auto json_obj = QuantizerParam::serialize_to_json_object(omit_empty_value);
+  json_obj.set("total_bits", ailego::JsonValue(total_bits));
+  json_obj.set("num_clusters", ailego::JsonValue(num_clusters));
+  json_obj.set("sample_count", ailego::JsonValue(sample_count));
+  json_obj.set("niters", ailego::JsonValue(niters));
+  return json_obj;
+}
+
+bool RabitqQuantizerParam::deserialize_from_json_object(
+    const ailego::JsonObject &json_obj) {
+  if (!QuantizerParam::deserialize_from_json_object(json_obj)) return false;
+  DESERIALIZE_VALUE_FIELD(json_obj, total_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, num_clusters);
+  DESERIALIZE_VALUE_FIELD(json_obj, sample_count);
+  DESERIALIZE_VALUE_FIELD(json_obj, niters);
+  return total_bits >= 1 && total_bits <= 9 &&
+         IsValidRabitqClusterCount(num_clusters) && sample_count >= 0 &&
+         niters > 0;
 }
 
 bool PqQuantizerParam::deserialize_from_json_object(
@@ -517,6 +605,9 @@ bool PqQuantizerParam::deserialize_from_json_object(
   }
   DESERIALIZE_VALUE_FIELD(json_obj, num_chunk);
   DESERIALIZE_VALUE_FIELD(json_obj, num_bits);
+  DESERIALIZE_VALUE_FIELD(json_obj, fast_scan);
+  DESERIALIZE_VALUE_FIELD(json_obj, opq_iter);
+  DESERIALIZE_VALUE_FIELD(json_obj, opq_pq_iter);
   return true;
 }
 

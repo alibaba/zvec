@@ -6,7 +6,6 @@ on:
       publish_target:
         description: 'Publish Destination'
         required: true
-        default: 'testpypi'
         type: string
   workflow_dispatch:
     inputs:
@@ -34,15 +33,24 @@ jobs:
       matrix: ${{ steps.main.outputs.matrix }}
     steps:
       - id: main
+        shell: bash
         run: |
-          PLATFORMS=("windows-g9i" "windows-2025" "windows-2022")
+          PLATFORMS=("windows-g9i" "windows-2025" "windows-2022" "windows-11-arm")
           PYTHON_VERSIONS=("3.10" "3.11" "3.12" "3.13" "3.14")
           
           JSON_ARRAY="["
           for p in "${PLATFORMS[@]}"; do
-          for v in "${PYTHON_VERSIONS[@]}"; do
-          JSON_ARRAY+="{\"platform\":\"$p\",\"python-version\":\"$v\"},"
-          done
+            ARCH="x64"
+            if [ "$p" = "windows-11-arm" ]; then
+              ARCH="arm64"
+            fi
+            for v in "${PYTHON_VERSIONS[@]}"; do
+              # CPython's Windows ARM64 builds start at Python 3.11.
+              if [ "$ARCH" = "arm64" ] && [ "$v" = "3.10" ]; then
+                continue
+              fi
+              JSON_ARRAY+="{\"platform\":\"$p\",\"python-version\":\"$v\",\"arch\":\"$ARCH\"},"
+            done
           done
           # Remove the trailing comma and close the bracket
           JSON_ARRAY="${JSON_ARRAY%,}]"
@@ -51,9 +59,23 @@ jobs:
           RESULT="{\"include\":$JSON_ARRAY}"
           echo "matrix=$RESULT" >> "$GITHUB_OUTPUT"
 
-  build_wheels_windows_2025:
-    name: Build wheels on windows-2025 (x64)
-    runs-on: windows-g9i
+  build_wheels_windows:
+    name: Build wheels on ${{ matrix.runner }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-g9i
+            arch: amd64
+            msvc_arch: x64
+            wheel_arch: AMD64
+            wheel_platform: win_amd64
+          - runner: windows-11-arm
+            arch: arm64
+            msvc_arch: arm64
+            wheel_arch: ARM64
+            wheel_platform: win_arm64
     outputs:
       zvec_version: ${{ steps.log_vars.outputs.zvec_version }}
 
@@ -84,11 +106,12 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: '3.11'
+          architecture: ${{ matrix.msvc_arch }}
 
       - name: Set up MSVC environment
         uses: ilammy/msvc-dev-cmd@v1.13.0
         with:
-          arch: x64
+          arch: ${{ matrix.msvc_arch }}
 
       - name: Add Git bin to PATH
         run: echo "C:\Program Files\Git\usr\bin" >> $env:GITHUB_PATH
@@ -104,11 +127,14 @@ jobs:
       - name: Build wheels using cibuildwheel
         # if: steps.cache-wheels.outputs.cache-hit != 'true'
         shell: powershell
+        env:
+          CIBW_ARCHS_WINDOWS: ${{ matrix.wheel_arch }}
+          CIBW_SKIP: cp310-win_arm64
         run: |
           # 1. Generate and capture the version from setuptools_scm
           pip install --upgrade pip
           pip install cibuildwheel==3.4.0
-          pip install setuptools-scm>=8.0
+          pip install 'setuptools-scm>=8.0'
           
           $SCM_VERSION = python -m setuptools_scm
           echo "Detected Version: $SCM_VERSION"
@@ -122,13 +148,19 @@ jobs:
       - name: Install and test wheel
         shell: powershell
         run: |
-          $wheels = (Get-ChildItem wheelhouse/zvec-*.whl)[1] # cp311
-          $wheelPath = $wheels.FullName
+          # Both architectures build cp311; select it explicitly rather than
+          # relying on the ordering of files (ARM64 has no cp310 wheel).
+          $wheels = @(Get-ChildItem "wheelhouse/zvec-*-cp311-cp311-${{ matrix.wheel_platform }}.whl")
+          if ($wheels.Count -ne 1) { throw "Expected exactly one cp311 wheel, found $($wheels.Count)" }
+          $wheelPath = $wheels[0].FullName
 
           python -m venv test_env
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $venvPython = "test_env/Scripts/python.exe"
           & $venvPython -m pip install --upgrade pip
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $venvPython -m pip install $wheelPath
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"
 
       - name: Log wheel variables
@@ -158,19 +190,21 @@ jobs:
       - name: Upload built wheels
         uses: actions/upload-artifact@v7
         with:
-          name: windows-wheels
+          name: windows-wheels-${{ matrix.arch }}
           path: wheelhouse/*.whl
+          if-no-files-found: error
 
   publish_wheels:
     name: Publish wheels
     runs-on: windows-g9i
-    needs: build_wheels_windows_2025
+    needs: build_wheels_windows
 
     steps:
       - name: Download built wheels
         uses: actions/download-artifact@v8
         with:
-          name: windows-wheels
+          pattern: windows-wheels-*
+          merge-multiple: true
           path: wheelhouse/
 
       - name: Set up Python
@@ -188,7 +222,7 @@ jobs:
           twine upload --skip-existing --verbose wheelhouse/*.whl
 
   smoke_test:
-    needs: [ publish_wheels, compute_matrix, build_wheels_windows_2025 ]
+    needs: [ publish_wheels, compute_matrix, build_wheels_windows ]
     strategy:
       fail-fast: false
       max-parallel: 4
@@ -200,12 +234,13 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          architecture: ${{ matrix.arch }}
 
       - name: Smoke test from PyPI
         shell: powershell
         env:
           PUBLISH_TARGET: ${{ inputs.publish_target || 'testpypi' }}
-          ZVEC_VERSION: ${{ needs.build_wheels_windows_2025.outputs.zvec_version }}
+          ZVEC_VERSION: ${{ needs.build_wheels_windows.outputs.zvec_version }}
         run: |
           # Check if version is empty
           if ([string]::IsNullOrWhiteSpace($env:ZVEC_VERSION)) {
@@ -228,7 +263,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $false
           $found = $false
           for ($i = 1; $i -le 30; $i++) {
-            python -m pip install --force-reinstall @indexArgs --dry-run "zvec==$version"
+            python -m pip install --only-binary=zvec --force-reinstall @indexArgs --dry-run "zvec==$version"
             if ($LASTEXITCODE -eq 0) {
               Write-Host "Version $version is available."
               $found = $true
@@ -244,7 +279,10 @@ jobs:
           }
 
           python -m venv test_env
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $venvPython = "test_env/Scripts/python.exe"
           & $venvPython -m pip install --upgrade pip
-          & $venvPython -m pip install --force-reinstall @indexArgs "zvec==$version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $venvPython -m pip install --only-binary=zvec --force-reinstall @indexArgs "zvec==$version"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $venvPython -c "import zvec; print('Import OK:', zvec.__version__)"

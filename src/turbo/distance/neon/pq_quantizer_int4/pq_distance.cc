@@ -20,6 +20,7 @@
 
 #include "neon/pq_quantizer_int4/pq_distance.h"
 #include <zvec/ailego/internal/platform.h>
+#include "neon/common/pq_sdc_batch.h"
 #if defined(AILEGO_ARM64_NEON)
 #include <arm_neon.h>
 #endif
@@ -221,6 +222,13 @@ void pq_adc_int4_batch_distance_neon(const void **candidates_v,
   scalar::pq_adc_int4_batch_distance(candidates_v, lut_v, num, num_chunk, out,
                                      nullptr);
 #endif
+}
+
+void pq_sdc_int4_batch_distance_neon(const void *const *vectors,
+                                     const void *query, const void *dist_table,
+                                     size_t count, size_t num_chunk,
+                                     float *out) {
+  detail::pq_sdc_batch<4>(vectors, query, dist_table, count, num_chunk, out);
 }
 
 }  // namespace zvec::turbo::neon

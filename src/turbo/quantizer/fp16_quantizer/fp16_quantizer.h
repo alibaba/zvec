@@ -25,7 +25,7 @@ namespace turbo {
 
 using namespace zvec::core;
 
-class Fp16Quantizer : public Quantizer {
+class Fp16Quantizer : public Quantizer, public ManyDistanceProvider {
  public:
   Fp16Quantizer() : Quantizer(QuantizeType::kFp16) {}
 
@@ -90,6 +90,10 @@ class Fp16Quantizer : public Quantizer {
 
   float calc_distance_dp_dp(const void *dp1, const void *dp2) const override;
 
+  void calc_distance_dp_dp_batch(const void *const *dp_list, int dp_num,
+                                 const void *dp,
+                                 float *dist_list) const override;
+
   int quantize(const void *query, const core::IndexQueryMeta &qmeta,
                std::string *out, core::IndexQueryMeta *ometa) const override;
 
@@ -98,6 +102,10 @@ class Fp16Quantizer : public Quantizer {
 
   DistanceImpl distance(const void *query,
                         const core::IndexQueryMeta &qmeta) const override;
+
+  ManyToManyDistanceFunc many_distance() const override {
+    return dp_query_many_func_;
+  }
 
   void normalize_score(float *score) const override {
     *score = -(*score);
@@ -136,6 +144,7 @@ class Fp16Quantizer : public Quantizer {
   //! Cached distance dispatch (bound in init()).
   DistanceFunc dp_query_func_{};
   BatchDistanceFunc dp_query_batch_func_{};
+  ManyToManyDistanceFunc dp_query_many_func_{};
 };
 
 }  // namespace turbo

@@ -312,6 +312,14 @@ class MockSegment : public Segment {
     return 0;
   }
 
+  bool has_identity_doc_ids() const override {
+    return false;
+  }
+
+  Status get_global_doc_ids(std::vector<int64_t> &) const override {
+    return Status::OK();
+  }
+
   TablePtr fetch(const std::vector<std::string> &columns,
                  const std::vector<int> &indices) const override {
     std::string s = "";
@@ -336,6 +344,23 @@ class MockSegment : public Segment {
                      int segment_doc_id) const override {
     LOG_ERROR("Not implemented");
     return nullptr;
+  }
+
+  // The mock proves no buffer ownership: always per-candidate fetch.
+  arrow::Result<ForwardReadState> prepare_forward_read(
+      const std::vector<std::string> &columns, bool) override {
+    ARROW_ASSIGN_OR_RAISE(auto table, CreateTable(1000));
+    arrow::FieldVector fields;
+    for (const auto &name : columns) {
+      auto field = table->schema()->GetFieldByName(name);
+      if (!field) {
+        return arrow::Status::Invalid("Unknown forward column: ", name);
+      }
+      fields.push_back(std::move(field));
+    }
+    return ForwardReadState{arrow::schema(std::move(fields)),
+                            static_cast<uint64_t>(table->num_rows()), nullptr,
+                            nullptr};
   }
 
   static std::string get_column_names(const std::vector<std::string> &columns) {

@@ -35,6 +35,7 @@
 #include "db/index/common/id_map.h"
 #include "db/index/common/meta.h"
 #include "db/index/common/version_manager.h"
+#include "db/index/segment/forward_read_view.h"
 #include "db/index/storage/base_forward_store.h"
 
 namespace zvec {
@@ -44,6 +45,26 @@ class CombinedRecordBatchReader;
 class Segment {
  public:
   using Ptr = std::shared_ptr<Segment>;
+
+  // How one query reads forward columns. A null view selects locked
+  // Segment::fetch. Schema and row count are captured together with it.
+  struct ForwardReadState {
+    std::shared_ptr<arrow::Schema> schema;
+    uint64_t num_rows{0};
+    ForwardReadView::Ptr view;
+    // Sealed IPC only, when requested: same results as get_filter() without a
+    // per-candidate segment lock. The delete bitmap is still read live.
+    // Null selects get_filter().
+    IndexFilter::Ptr deletion_filter;
+  };
+
+  // Captures how a query reads `columns` per candidate. Sealed IPC segments
+  // return an owning view over columns prepared at open/seal/DDL; writing,
+  // Parquet and segments whose preparation failed return a null view (locked
+  // fetch, which reads live rows and must be protected from close/DDL).
+  // `with_deletion` also requests deletion_filter.
+  virtual arrow::Result<ForwardReadState> prepare_forward_read(
+      const std::vector<std::string> &columns, bool with_deletion) = 0;
 
   static Result<Ptr> CreateAndOpen(const std::string &path,
                                    const CollectionSchema &schema,
@@ -173,6 +194,13 @@ class Segment {
   virtual ExecBatchPtr fetch(const std::vector<std::string> &columns,
                              int segment_doc_id) const = 0;
 
+  // Valid only while the owning collection is open read-only. Computed by
+  // Open after recovery, before queries can run; not maintained for writes.
+  virtual bool has_identity_doc_ids() const = 0;
+
+  // Map segment row IDs to insertion ordinals in place; preserve -1 padding.
+  virtual Status get_global_doc_ids(std::vector<int64_t> &doc_ids) const = 0;
+
   // Keep Segment alive while consuming the returned reader.
   virtual RecordBatchReaderPtr scan(
       const std::vector<std::string> &columns) const = 0;
@@ -215,6 +243,7 @@ class Segment {
   // Drops the writing forward block under the exclusive segment lock. Callers
   // must use this instead of meta()->remove_writing_forward_block(): readers
   // copy that block out of the meta, so an unlocked reset can free it mid-copy.
+  // Also prepares the sealed read state.
   virtual void remove_writing_forward_block() = 0;
 
   virtual Status destroy() = 0;

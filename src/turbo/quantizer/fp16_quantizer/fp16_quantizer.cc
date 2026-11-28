@@ -16,7 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <vector>
-#include <ailego/math/normalizer.h>
+#include <turbo/norm/normalizer.h>
 #include <zvec/ailego/utility/float_helper.h>
 #include <zvec/core/framework/index_factory.h>
 
@@ -43,13 +43,15 @@ int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   }
 
   // Cache the distance dispatch for the new Quantizer interface.
-  // Physical FP16 storage preserves FP32 cosine arithmetic so native FP16
-  // accumulation cannot reorder close neighbors. Explicit quantization can
-  // still use the native FP16 cosine kernels.
+  // Raw FP16 training requires FP32 L2 accumulation. Physical FP16 storage
+  // also preserves FP32 cosine arithmetic to avoid reordering close neighbors.
+  // Explicit posting quantization otherwise keeps its native FP16 kernels.
+  const bool raw_arithmetic =
+      (metric_name == "SquaredEuclidean" &&
+       params.get_as_bool("fp32_accumulation")) ||
+      (storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine");
   const auto quantize_type =
-      storage_data_type_ == IndexMeta::DT_FP16 && metric_name == "Cosine"
-          ? QuantizeType::kRaw
-          : QuantizeType::kFp16;
+      raw_arithmetic ? QuantizeType::kRaw : QuantizeType::kFp16;
   auto kernels =
       get_distance_kernels(metric_from_name(metric_name), DataType::kFp16,
                            quantize_type, CpuArchType::kAuto);
@@ -59,6 +61,8 @@ int Fp16Quantizer::init(const IndexMeta &meta, const ailego::Params &params) {
   }
   dp_query_func_ = std::move(kernels.dist);
   dp_query_batch_func_ = std::move(kernels.batch);
+  dp_query_many_func_ = get_many_to_many_distance_func(
+      metric_from_name(metric_name), DataType::kFp16, quantize_type);
 
   return 0;
 }
@@ -176,7 +180,7 @@ float Fp16Quantizer::quantize_cosine(const float *input, size_t dim,
   }
 
   float norm = 0.0f;
-  ailego::Normalizer<float>::L2(normalized.data(), dim, &norm);
+  turbo::Normalizer<float>::L2(normalized.data(), dim, &norm);
   ailego::FloatHelper::ToFP16(normalized.data(), dim, output);
   return norm;
 }
@@ -222,6 +226,16 @@ void Fp16Quantizer::calc_distance_dp_query_batch_unquantized(
 float Fp16Quantizer::calc_distance_dp_dp(const void *dp1,
                                          const void *dp2) const {
   return calc_distance_dp_query(dp1, dp2);
+}
+
+void Fp16Quantizer::calc_distance_dp_dp_batch(const void *const *dp_list,
+                                              int dp_num, const void *dp,
+                                              float *dist_list) const {
+  if (dp_num <= 0) {
+    return;
+  }
+  // Encoded FP16 datapoints and queries have the same layout and arithmetic.
+  calc_distance_dp_query_batch(dp_list, dp_num, dp, dist_list);
 }
 
 INDEX_FACTORY_REGISTER_QUANTIZER(Fp16Quantizer);

@@ -13,6 +13,7 @@
 // limitations under the License.
 #pragma once
 
+#include <map>
 #include <zvec/ailego/container/heap.h>
 #include "ivf_entity.h"
 #include "ivf_utility.h"
@@ -57,6 +58,46 @@ class IVFSearcherContext : public IndexSearcher::Context {
     return &result_heap_;
   }
 
+  // Grouped searches retain only group_topk records per encountered group.
+  // Candidates arrive with public keys and final Turbo distances during scan.
+  void set_group_params(uint32_t count, uint32_t topk) override {
+    group_count_ = count;
+    group_topk_ = topk;
+    group_heaps_.clear();
+    group_results_.clear();
+  }
+
+  const IndexGroupDocumentList &group_result() const override {
+    return group_result(0);
+  }
+  const IndexGroupDocumentList &group_result(size_t idx) const override {
+    static const IndexGroupDocumentList empty;
+    return idx < group_results_.size() ? group_results_[idx] : empty;
+  }
+  IndexGroupDocumentList *mutable_group_result() override {
+    return mutable_group_result(0);
+  }
+  IndexGroupDocumentList *mutable_group_result(size_t idx) override {
+    return idx < group_results_.size() ? &group_results_[idx] : nullptr;
+  }
+
+  IVFEntity::CandidateVisitor candidate_visitor() {
+    group_heaps_.clear();
+    if (!group_count_ || !group_topk_ || !group_by().is_valid()) return {};
+    return {[this](uint64_t key, float score) {
+              if (!(score <= threshold())) return;
+              const auto group = group_by()(key);
+              auto entry = group_heaps_.try_emplace(group, group_topk_);
+              entry.first->second.emplace(key, score);
+            },
+            [this](uint64_t key) {
+              auto entry = group_heaps_.find(group_by()(key));
+              return entry != group_heaps_.end() && entry->second.full()
+                         ? std::min(threshold(), entry->second.begin()->score())
+                         : threshold();
+            }};
+  }
+
   //! Update the parameters of context
   int update(const ailego::Params &params) override {
     params.get(PARAM_IVF_SEARCHER_BRUTE_FORCE_THRESHOLD,
@@ -72,8 +113,9 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      std::round(entity_->inverted_list_count() * scan_ratio_)),
                  1u);
 
-    uint32_t nprobe = 0;
-    params.get(PARAM_IVF_SEARCHER_NPROBE, &nprobe);
+    requested_nprobe_ = 0;
+    params.get(PARAM_IVF_SEARCHER_NPROBE, &requested_nprobe_);
+    uint32_t nprobe = requested_nprobe_;
     if (nprobe > 0) {
       nprobe = std::min(nprobe,
                         static_cast<uint32_t>(entity_->inverted_list_count()));
@@ -150,6 +192,8 @@ class IVFSearcherContext : public IndexSearcher::Context {
   //! Reset all the query results
   void reset_results(size_t qnum) {
     results_.resize(qnum);
+    group_results_.assign(qnum, {});
+    group_heaps_.clear();
     stats_vec_.resize(qnum);
     for (size_t i = 0; i < qnum; ++i) {
       results_[i].clear();
@@ -166,7 +210,11 @@ class IVFSearcherContext : public IndexSearcher::Context {
                      const ailego::Params &params, uint32_t magic_num) {
     entity_ = new_entity;
     centroid_searcher_ctx_ = std::move(centroid_ctx);
-    int ret = this->update(params);
+    // Public indexes share a per-thread context. Preserve the request made
+    // before rebinding, and clamp it against the new entity's list count.
+    ailego::Params rebound_params = params;
+    rebound_params.set(PARAM_IVF_SEARCHER_NPROBE, requested_nprobe_);
+    int ret = this->update(rebound_params);
     ivf_check_error_code(ret);
 
     magic_ = magic_num;
@@ -190,21 +238,44 @@ class IVFSearcherContext : public IndexSearcher::Context {
   }
 
   void topk_to_result(uint32_t idx) {
-    if (ailego_unlikely(result_heap_.size() == 0)) {
+    if (group_count_ && group_topk_ && group_by().is_valid()) {
+      auto &groups = group_results_[idx];
+      for (auto &entry : group_heaps_) {
+        entry.second.sort();
+        if (!entry.second.empty()) {
+          groups.emplace_back();
+          groups.back().set_group_id(entry.first);
+          for (const auto &doc : entry.second)
+            groups.back().mutable_docs()->emplace_back(doc.key(), doc.score());
+        }
+      }
+      std::sort(groups.begin(), groups.end(), [](const auto &a, const auto &b) {
+        if (a.docs()[0].score() != b.docs()[0].score())
+          return a.docs()[0].score() < b.docs()[0].score();
+        return a.group_id() < b.group_id();
+      });
+      if (groups.size() > group_count_) groups.resize(group_count_);
+      return;
+    }
+    topk_to_result(idx, result_heap_);
+  }
+
+  void topk_to_result(uint32_t idx, IndexDocumentHeap &heap) {
+    if (ailego_unlikely(heap.size() == 0)) {
       return;
     }
 
     ailego_assert_with(idx < results_.size(), "invalid idx");
-    int size = std::min(topk_, static_cast<uint32_t>(result_heap_.size()));
-    result_heap_.sort();
+    int size = std::min(topk_, static_cast<uint32_t>(heap.size()));
+    heap.sort();
     results_[idx].clear();
     for (int i = 0; i < size; ++i) {
-      auto score = result_heap_[i].score();
+      auto score = heap[i].score();
       if (score > this->threshold()) {
         break;
       }
 
-      key_t key = result_heap_[i].key();
+      key_t key = heap[i].key();
       if (fetch_vector_) {
         IndexStorage::MemoryBlock block;
         entity_->get_vector_by_key(key, block);
@@ -224,12 +295,17 @@ class IVFSearcherContext : public IndexSearcher::Context {
   IVFEntity::Pointer entity_{};
   IndexSearcher::Context::Pointer centroid_searcher_ctx_{};
   IndexDocumentHeap result_heap_;
+  uint32_t group_count_{0};
+  uint32_t group_topk_{0};
+  std::map<std::string, IndexDocumentHeap> group_heaps_;
+  std::vector<IndexGroupDocumentList> group_results_;
   std::vector<IndexDocumentList> results_{};
   std::vector<Stats> stats_vec_{};
 
   bool fetch_vector_{false};
   uint32_t topk_{0};
   uint32_t magic_{0};
+  uint32_t requested_nprobe_{0};
   float scan_ratio_{kDefaultScanRatio};
   uint32_t max_scan_count_{0};
   uint32_t bruteforce_threshold_{kDefaultBfThreshold};

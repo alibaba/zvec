@@ -20,14 +20,19 @@
 #include <cstring>
 #include <cwchar>
 #include <memory>
+#include <new>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
+#include <ailego/pattern/scope_guard.h>
 #include <gtest/gtest.h>
 #include <zvec/ailego/buffer/vector_page_table.h>
 #include <zvec/ailego/io/file.h>
+#include <zvec/ailego/logger/logger.h>
 #include <zvec/ailego/utility/file_helper.h>
 #include "diskann_file_reader.h"
+#include "../../../ailego/buffer/pool_payload_budget.h"
 
 namespace zvec {
 namespace core {
@@ -150,12 +155,11 @@ bool verify_page(const uint8_t *buffer, size_t page, uint8_t bias = 0) {
 }
 
 DWORD replace_open_file_atomically(const wchar_t *replacement_path,
-                                    const wchar_t *target_path) {
+                                   const wchar_t *target_path) {
   // diskann_file_reader.h targets Windows Vista, whose SDK view predates the
   // extended rename declarations. These values and this layout are the Win10
   // FILE_RENAME_INFO_EX ABI used by FileRenameInfoEx.
-  constexpr auto kFileRenameInfoEx =
-      static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
+  constexpr auto kFileRenameInfoEx = static_cast<FILE_INFO_BY_HANDLE_CLASS>(22);
   constexpr DWORD kReplaceIfExists = 0x00000001;
   constexpr DWORD kPosixSemantics = 0x00000002;
   struct ExtendedFileRenameInfo {
@@ -171,10 +175,10 @@ DWORD replace_open_file_atomically(const wchar_t *replacement_path,
   static_assert(offsetof(ExtendedFileRenameInfo, file_name) ==
                 offsetof(FILE_RENAME_INFO, FileName));
 
-  HANDLE replacement_handle = ::CreateFileW(
-      replacement_path, DELETE | SYNCHRONIZE,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  HANDLE replacement_handle =
+      ::CreateFileW(replacement_path, DELETE | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (replacement_handle == INVALID_HANDLE_VALUE) {
     return ::GetLastError();
   }
@@ -185,8 +189,7 @@ DWORD replace_open_file_atomically(const wchar_t *replacement_path,
     return ERROR_FILENAME_EXCED_RANGE;
   }
 
-  const size_t target_path_bytes =
-      target_path_length * sizeof(target_path[0]);
+  const size_t target_path_bytes = target_path_length * sizeof(target_path[0]);
   ExtendedFileRenameInfo rename_info{};
   rename_info.flags = kReplaceIfExists | kPosixSemantics;
   rename_info.root_directory = nullptr;
@@ -225,8 +228,7 @@ class ScopedCurrentDirectory {
       return;
     }
     original_.resize(capacity, L'\0');
-    const DWORD length =
-        ::GetCurrentDirectoryW(capacity, original_.data());
+    const DWORD length = ::GetCurrentDirectoryW(capacity, original_.data());
     if (length == 0 || length >= capacity) {
       original_.clear();
       return;
@@ -269,9 +271,9 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(
-      memory_pool.init(native_page_size +
+      memory_pool.init(2 * native_page_size +
                        ailego::VecBufferPool::metadata_bytes_for_page_count(
                            native_page_count)),
       0);
@@ -286,6 +288,13 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolReadsCachedAndBypassedPages) {
   ASSERT_NE(output, nullptr);
   const size_t offset = native_page_size - kPageSize;
   std::vector<AlignedRead> requests{{offset, 2 * kPageSize, output.get()}};
+  // The required read workspace can use RSS headroom even when the only
+  // cache page is pinned and the cold slice must bypass the cache.
+  auto &rss = ailego::MemoryLimitPool::get_instance();
+  const size_t previous_rss = rss.process_rss_limit();
+  const auto restore_rss = ailego::ScopeGuard::Make(
+      [&] { EXPECT_TRUE(rss.configure_process_rss_limit(previous_rss)); });
+  ASSERT_TRUE(rss.configure_process_rss_limit(size_t{1} << 30));
   const auto before = pool->stats();
   IOContext ctx = nullptr;
   EXPECT_EQ(reader.read(requests, ctx), 0);
@@ -308,7 +317,7 @@ TEST(DiskAnnFileReaderWindowsTest, BufferPoolWithoutPageTableUsesBypassOnly) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
-  auto &memory_pool = ailego::MemoryLimitPool::get_instance();
+  auto &memory_pool = ::zvec::ailego::PoolPayloadBudget::get_instance();
   ASSERT_EQ(memory_pool.init(1), 0);
   auto pool = std::make_shared<ailego::VecBufferPool>(file.path(), false);
   ASSERT_FALSE(pool->cache_enabled());
@@ -399,8 +408,7 @@ TEST(DiskAnnFileReaderWindowsTest, OpenSupportsUtf8Path) {
   EXPECT_EQ(ctx, nullptr);
 }
 
-TEST(DiskAnnFileReaderWindowsTest,
-     RelativePathSurvivesWorkingDirectoryChange) {
+TEST(DiskAnnFileReaderWindowsTest, RelativePathSurvivesWorkingDirectoryChange) {
   TemporaryFile file;
   ASSERT_TRUE(file.valid());
   ASSERT_TRUE(file.write_pages());
@@ -623,8 +631,7 @@ TEST(DiskAnnFileReaderWindowsTest, DestroyContextDrainsOutstandingBatch) {
     // reader does not opt into FILE_SKIP_COMPLETION_PORT_ON_SUCCESS, teardown
     // must still dequeue its completion packet along with pending reads.
     const size_t length = i == 0 ? 0 : kPageSize;
-    requests.emplace_back(i * kPageSize, length,
-                          output.get() + i * kPageSize);
+    requests.emplace_back(i * kPageSize, length, output.get() + i * kPageSize);
   }
 
   PendingBatch batch;
@@ -727,9 +734,9 @@ TEST(DiskAnnFileReaderWindowsTest,
             ERROR_SUCCESS);
 
   WindowsAlignedFileReader original_reader;
-  ASSERT_EQ(original_reader.open_from_handle(original.path(),
-                                             source.native_handle()),
-            0);
+  ASSERT_EQ(
+      original_reader.open_from_handle(original.path(), source.native_handle()),
+      0);
   HANDLE stable_handle =
       WindowsAlignedFileReaderTestPeer::stable_file_handle(original_reader);
   ASSERT_NE(stable_handle, INVALID_HANDLE_VALUE);
@@ -828,4 +835,55 @@ TEST(DiskAnnFileReaderWindowsTest, ShortReadResetsContextForNextBatch) {
   EXPECT_TRUE(verify_page(output.get(), 0));
   EXPECT_EQ(destroy_io_ctx(ctx), 0);
   EXPECT_EQ(ctx, nullptr);
+}
+
+TEST(DiskAnnFileReaderWindowsTest, CompletionLogFailureStillDrainsBatch) {
+  namespace ailego = zvec::ailego;
+  class FailingLogger final : public ailego::Logger {
+   public:
+    int init(const ailego::Params &) override {
+      return 0;
+    }
+    int cleanup() override {
+      return 0;
+    }
+    void log(int, const char *, int, const char *format, va_list) override {
+      if (std::strstr(format, "completed with") == nullptr) return;
+      threw = true;
+      throw std::bad_alloc();
+    }
+    bool threw{false};
+  };
+
+  TemporaryFile file;
+  ASSERT_TRUE(file.valid());
+  ASSERT_TRUE(file.write_pages());
+  WindowsAlignedFileReader reader;
+  reader.open(file.path());
+  AlignedBuffer output = make_aligned_buffer(2 * kPageSize);
+  ASSERT_NE(nullptr, output);
+  std::vector<AlignedRead> requests{
+      {0, kPageSize, output.get()},
+      {kPageSize, kPageSize, output.get() + kPageSize}};
+  PendingBatch batch;
+  IOContext ctx = nullptr;
+  ASSERT_EQ(0, setup_io_ctx(ctx));
+  const auto cleanup = ailego::ScopeGuard::Make([&] { destroy_io_ctx(ctx); });
+  ASSERT_EQ(0, reader.submit(batch, requests, ctx));
+  // Force the short-read diagnostic on a terminal packet. The other request
+  // can still be outstanding or present in the same dequeued batch.
+  ++batch.expected_lengths[0];
+  auto logger = std::make_shared<FailingLogger>();
+  auto previous = ailego::LoggerBroker::Register(logger);
+  const auto restore_logger = ailego::ScopeGuard::Make(
+      [&] { ailego::LoggerBroker::Register(std::move(previous)); });
+
+  std::vector<uint32_t> completed;
+  EXPECT_EQ(IndexError_Runtime, reader.get_completed(batch, ctx, 2, completed));
+  EXPECT_TRUE(logger->threw);
+  EXPECT_TRUE(completed.empty());
+  EXPECT_FALSE(batch.has_async_requests());
+  ASSERT_EQ(0, reader.read(requests, ctx));
+  EXPECT_TRUE(verify_page(output.get(), 0));
+  EXPECT_TRUE(verify_page(output.get() + kPageSize, 1));
 }

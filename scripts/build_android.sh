@@ -67,7 +67,7 @@ cmake -S . -B "$BUILD_DIR" -G Ninja \
     -DBUILD_ZVEC_AILEGO_SHARED=OFF \
     -DBUILD_ZVEC_CORE_SHARED=OFF \
     -DBUILD_PYTHON_BINDINGS=OFF \
-    -DBUILD_TOOLS=OFF \
+    -DBUILD_BENCHMARKS=OFF \
     -DBUILD_CPP_EXAMPLES=ON \
     -DENABLE_NATIVE=OFF \
     -DAUTO_DETECT_ARCH=OFF \
@@ -260,6 +260,15 @@ echo ">>> Step 5: Running ${#TEST_BINS[@]} unit tests on emulator..."
 DEVICE_TEST_DIR="/data/local/tmp/zvec_tests"
 DEVICE_LIB_DIR="$DEVICE_TEST_DIR/lib"
 $ADB_BIN shell "mkdir -p $DEVICE_TEST_DIR $DEVICE_LIB_DIR" 2>/dev/null
+
+# Original Jieba resources are comparison fixtures, not SDK data.
+# Tests read ../jieba_dict from their isolated working directories.
+DEVICE_JIEBA_DICT_DIR="$DEVICE_TEST_DIR/jieba_dict"
+"$ADB_BIN" shell "mkdir -p $DEVICE_JIEBA_DICT_DIR"
+for dict_file in jieba.dict.utf8 hmm_model.utf8; do
+    "$ADB_BIN" push "thirdparty/cppjieba/cppjieba-5.6.7/dict/$dict_file" \
+        "$DEVICE_JIEBA_DICT_DIR/$dict_file" > /dev/null
+done
 
 # Push all shared libraries that tests may depend on
 echo "  Pushing shared libraries..."

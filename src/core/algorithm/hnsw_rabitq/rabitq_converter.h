@@ -15,7 +15,7 @@
 
 #include <memory>
 #include <vector>
-#include <rabitqlib/utils/rotator.hpp>
+#include <rabitqlib/core/rotator.hpp>
 #include "zvec/core/framework/index_cluster.h"
 #include "zvec/core/framework/index_converter.h"
 #include "zvec/core/framework/index_reformer.h"
@@ -50,7 +50,8 @@ class RabitqConverter : public IndexConverter {
   using IndexConverter::train;
 
   //! Train the data with the specified thread resources
-  int train(IndexHolder::Pointer holder, IndexThreads::Pointer threads);
+  int train(IndexHolder::Pointer holder,
+            IndexThreads::Pointer threads) override;
 
   //! Transform the data - quantize vectors using RaBitQ
   int transform(IndexHolder::Pointer holder) override;

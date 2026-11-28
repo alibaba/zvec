@@ -67,12 +67,6 @@ def io_backend_description() -> str:
     libaio. Windows reports its overlapped-I/O backend.
     """
 
-def set_default_jieba_dict_dir(dir: str) -> None:
-    """Register the process-wide default jieba dict directory."""
-
-def get_default_jieba_dict_dir() -> str:
-    """Read the currently registered default jieba dict directory."""
-
 __all__: list = [
     "AddColumnOption",
     "AlterColumnOption",
@@ -121,13 +115,11 @@ __all__: list = [
     "VectorSchema",
     "WeightedReRanker",
     "create_and_open",
-    "get_default_jieba_dict_dir",
     "init",
     "io_backend_description",
     "io_backend_type",
     "open",
     "require_module",
-    "set_default_jieba_dict_dir",
 ]
 
 class _Collection:
@@ -174,6 +166,12 @@ class _Collection:
     def Query(
         self, arg0: param._SearchQuery
     ) -> list[tuple[str, float, dict | None, dict | None] | None]: ...
+    def QueryInternalIds(
+        self, query: param._SearchQuery, return_scores: bool = False
+    ) -> typing.Any: ...
+    def ResolveInternalIds(
+        self, ids: collections.abc.Sequence[int]
+    ) -> list[str | None]: ...
     def Schema(self) -> schema._CollectionSchema: ...
     def Stats(self) -> schema.CollectionStats: ...
     def Update(self, arg0: collections.abc.Sequence[_Doc]) -> list[typing.Status]: ...

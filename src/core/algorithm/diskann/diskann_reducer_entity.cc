@@ -65,21 +65,20 @@ int DiskAnnReducerEntity::load_segments(bool /*check_crc*/) {
 }
 
 int DiskAnnReducerEntity::load_header_segment() {
-  const void *data = nullptr;
+  IndexStorage::MemoryBlock data;
   meta_segment_ = container_->get(kDiskAnnMetaSegmentId);
   if (!meta_segment_ ||
       meta_segment_->data_size() < sizeof(DiskAnnMetaHeader)) {
     LOG_ERROR("Miss or invalid segment %s", kDiskAnnMetaSegmentId.c_str());
     return IndexError_InvalidFormat;
   }
-  if (meta_segment_->read(0, reinterpret_cast<const void **>(&data),
-                          sizeof(DiskAnnMetaHeader)) !=
+  if (meta_segment_->read(0, data, sizeof(DiskAnnMetaHeader)) !=
       sizeof(DiskAnnMetaHeader)) {
     LOG_ERROR("Read segment %s failed", kDiskAnnMetaSegmentId.c_str());
     return IndexError_ReadData;
   }
 
-  ::memcpy(reinterpret_cast<uint8_t *>(&meta_header_), data,
+  ::memcpy(reinterpret_cast<uint8_t *>(&meta_header_), data.data(),
            sizeof(DiskAnnMetaHeader));
 
   return 0;
@@ -109,15 +108,14 @@ int DiskAnnReducerEntity::load_key_segment() {
 
   // load key mapping
   key_mapping_segment_ = container_->get(kDiskAnnKeyMappingSegmentId);
-  const void *data = nullptr;
-  if (key_mapping_segment_->read(0, reinterpret_cast<const void **>(&data),
-                                 key_data_len) != key_data_len) {
+  IndexStorage::MemoryBlock data;
+  if (key_mapping_segment_->read(0, data, key_data_len) != key_data_len) {
     LOG_ERROR("Read segment %s failed", kDiskAnnKeyMappingSegmentId.c_str());
     return IndexError_ReadData;
   }
 
   key_buffer_.resize(key_data_len);
-  memcpy(&(key_buffer_[0]), data, key_data_len);
+  memcpy(&(key_buffer_[0]), data.data(), key_data_len);
 
   return 0;
 }
@@ -125,7 +123,7 @@ int DiskAnnReducerEntity::load_key_segment() {
 bool DiskAnnReducerEntity::do_crc_check(
     std::vector<SegmentPointer> &segments) const {
   constexpr size_t blk_size = 4096;
-  const void *data;
+  IndexStorage::MemoryBlock data;
 
   for (auto &segment : segments) {
     size_t offset = 0;
@@ -133,11 +131,11 @@ bool DiskAnnReducerEntity::do_crc_check(
     uint32_t crc = 0;
     while (offset < segment->data_size()) {
       size_t size = std::min(blk_size, segment->data_size() - offset);
-      if ((rd_size = segment->read(offset, &data, size)) <= 0) {
+      if ((rd_size = segment->read(offset, data, size)) <= 0) {
         break;
       }
       offset += rd_size;
-      crc = ailego::Crc32c::Hash(data, rd_size, crc);
+      crc = ailego::Crc32c::Hash(data.data(), rd_size, crc);
     }
     if (crc != segment->data_crc()) {
       return false;
@@ -176,15 +174,15 @@ diskann_id_t DiskAnnReducerEntity::get_id(diskann_key_t key) const {
 }
 
 diskann_key_t DiskAnnReducerEntity::get_key(diskann_id_t id) const {
-  const void *key;
-  if (ailego_unlikely(key_segment_->read(id * sizeof(diskann_key_t), &key,
+  IndexStorage::MemoryBlock key;
+  if (ailego_unlikely(key_segment_->read(id * sizeof(diskann_key_t), key,
                                          sizeof(diskann_key_t)) !=
                       sizeof(diskann_key_t))) {
     LOG_ERROR("Read key from segment failed");
     return kInvalidKey;
   }
 
-  return *(reinterpret_cast<const diskann_key_t *>(key));
+  return *(reinterpret_cast<const diskann_key_t *>(key.data()));
 }
 
 const void *DiskAnnReducerEntity::get_vector(diskann_id_t id) const {
@@ -194,15 +192,15 @@ const void *DiskAnnReducerEntity::get_vector(diskann_id_t id) const {
   size_t offset = sector_id * DiskAnnUtil::kSectorSize;
 
   if (sector_id != sector_id_) {
-    const void *sector_data;
-    if (ailego_unlikely(vector_segment_->read(offset, &sector_data,
-                                              read_size) != read_size)) {
+    IndexStorage::MemoryBlock sector_data;
+    if (ailego_unlikely(vector_segment_->read(offset, sector_data, read_size) !=
+                        read_size)) {
       LOG_ERROR("Read vector from segment failed");
       return nullptr;
     }
 
     sector_id_ = sector_id;
-    sector_buffer_.assign(reinterpret_cast<const char *>(sector_data),
+    sector_buffer_.assign(reinterpret_cast<const char *>(sector_data.data()),
                           read_size);
   }
 

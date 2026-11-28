@@ -13,26 +13,74 @@
 // limitations under the License.
 
 #include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <iterator>
+#include <new>
+#include <optional>
 #include <random>
 #include <string>
+#include <thread>
 #include <tuple>
 #include <utility>
 #include <vector>
 #include <gtest/gtest.h>
+#include <turbo/quantizer/fp32_quantizer/fp32_quantizer.h>
 #include <turbo/quantizer/quantizer.h>
 #include <zvec/ailego/buffer/block_eviction_queue.h>
+#include <zvec/ailego/parallel/thread_pool.h>
 #include <zvec/core/framework/index_framework.h>
 #include <zvec/core/interface/index.h>
 #include <zvec/core/interface/index_factory.h>
 #include <zvec/core/interface/index_param_builders.h>
+#include "algorithm/hnsw/hnsw_algorithm.h"
+#include "algorithm/hnsw/hnsw_build_dumper.h"
 #include "algorithm/hnsw/hnsw_context.h"
 #include "algorithm/hnsw/hnsw_params.h"
 #include "algorithm/hnsw/hnsw_streamer.h"
 #include "tests/test_util.h"
+#include "utility/stable_vector_holder.h"
+#include "../../ailego/buffer/pool_payload_budget.h"
+
+// Fault injection is opt-in and thread-local. All other allocations use the
+// normal malloc/free path.
+namespace bulk_alloc_test {
+thread_local size_t countdown = 0;
+thread_local bool (*should_fail)() = nullptr;
+thread_local void (*on_delete)(void *) = nullptr;
+thread_local void *state = nullptr;
+
+void Reset() {
+  countdown = 0;
+  should_fail = nullptr;
+  on_delete = nullptr;
+  state = nullptr;
+}
+}  // namespace bulk_alloc_test
+
+void *operator new(std::size_t size) {
+  if ((bulk_alloc_test::countdown && --bulk_alloc_test::countdown == 0) ||
+      (bulk_alloc_test::should_fail && bulk_alloc_test::should_fail())) {
+    bulk_alloc_test::should_fail = nullptr;
+    throw std::bad_alloc();
+  }
+  if (void *ptr = std::malloc(size ? size : 1)) return ptr;
+  throw std::bad_alloc();
+}
+
+void operator delete(void *ptr) noexcept {
+  if (ptr && bulk_alloc_test::on_delete) bulk_alloc_test::on_delete(ptr);
+  std::free(ptr);
+}
+
+void operator delete(void *ptr, std::size_t) noexcept {
+  ::operator delete(ptr);
+}
 
 using namespace zvec::core_interface;
 
@@ -97,6 +145,32 @@ class TestExternalVectorSource final : public zvec::core::VectorSource {
   const std::vector<std::vector<float>> *vectors_;
 };
 
+class TestContiguousVectorSource final
+    : public zvec::core::ContiguousVectorSource {
+ public:
+  TestContiguousVectorSource(const std::vector<std::vector<float>> &vectors,
+                             size_t padding)
+      : stride_elements_(kDimension + padding),
+        data_(vectors.size() * stride_elements_, -999.0f) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      std::copy(vectors[i].begin(), vectors[i].end(),
+                data_.begin() + i * stride_elements_);
+    }
+  }
+
+  zvec::core::ContiguousBatch get_contiguous_view() const override {
+    return {data_.data(),
+            0,
+            static_cast<uint32_t>(data_.size() / stride_elements_),
+            stride_elements_ * sizeof(float),
+            {}};
+  }
+
+ private:
+  size_t stride_elements_;
+  std::vector<float> data_;
+};
+
 std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
   std::mt19937 gen(2026);
   std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
@@ -111,6 +185,19 @@ std::vector<std::vector<float>> RandomVectors(size_t count = kVectorCount) {
     norm = std::sqrt(norm);
     for (float &value : vector) {
       value /= norm;
+    }
+  }
+  return vectors;
+}
+
+std::vector<std::vector<float>> ExternalVectors(MetricType metric) {
+  auto vectors = RandomVectors(kGraphVectorCount);
+  if (metric == MetricType::kCosine) {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      const float scale = static_cast<float>(i % 7 + 1);
+      for (float &value : vectors[i]) {
+        value *= scale;
+      }
     }
   }
   return vectors;
@@ -155,10 +242,11 @@ const char *MetricName(MetricType metric) {
 
 SearchRowList SearchRows(Index *index, const std::vector<float> &query,
                          bool linear, bool fetch_vector = false,
-                         const zvec::core::VectorSource *source = nullptr) {
+                         const zvec::core::VectorSource *source = nullptr,
+                         uint32_t ef_search = 100) {
   auto query_param = HNSWQueryParamBuilder()
                          .with_topk(kTopK)
-                         .with_ef_search(100)
+                         .with_ef_search(ef_search)
                          .with_is_linear(linear)
                          .with_fetch_vector(fetch_vector)
                          .build();
@@ -203,6 +291,41 @@ void CheckGraphSearchEnabled(Index *index) {
   ASSERT_GT(index->get_doc_count(), hnsw_context->get_bruteforce_threshold());
 }
 
+SearchRowList CanonicalizeScoreTies(SearchRowList rows) {
+  // Result heaps compare scores only. Canonicalize IDs within each exact tie
+  // without changing the ranking of distinct scores or accepting different IDs.
+  for (auto begin = rows.begin(); begin != rows.end();) {
+    auto end = std::find_if(std::next(begin), rows.end(),
+                            [score = begin->second](const auto &row) {
+                              return row.second != score;
+                            });
+    std::sort(begin, end);
+    begin = end;
+  }
+  return rows;
+}
+
+TEST(HnswTurboResultComparison, AllowsOnlyExactScoreTiePermutations) {
+  const SearchRowList linear{
+      {1000, 0.0f}, {729, 1.19504f}, {581, 1.19504f}, {716, 1.20319f}};
+  const SearchRowList graph{
+      {1000, 0.0f}, {581, 1.19504f}, {729, 1.19504f}, {716, 1.20319f}};
+  EXPECT_EQ(CanonicalizeScoreTies(linear), CanonicalizeScoreTies(graph));
+
+  auto wrong_id = graph;
+  wrong_id[1].first = 582;
+  EXPECT_NE(CanonicalizeScoreTies(linear), CanonicalizeScoreTies(wrong_id));
+  auto wrong_score = graph;
+  wrong_score[1].second = std::nextafter(wrong_score[1].second, 2.0f);
+  EXPECT_NE(CanonicalizeScoreTies(linear), CanonicalizeScoreTies(wrong_score));
+  auto wrong_rank = graph;
+  std::swap(wrong_rank.front(), wrong_rank.back());
+  EXPECT_NE(CanonicalizeScoreTies(linear), CanonicalizeScoreTies(wrong_rank));
+  auto missing = graph;
+  missing.pop_back();
+  EXPECT_NE(CanonicalizeScoreTies(linear), CanonicalizeScoreTies(missing));
+}
+
 void CheckGraphRecall(const SearchRowList &linear_rows,
                       const SearchRowList &graph_rows) {
   ASSERT_EQ(kTopK, linear_rows.size());
@@ -214,7 +337,9 @@ void CheckGraphRecall(const SearchRowList &linear_rows,
         [key = graph_row.first](const auto &row) { return row.first == key; });
     if (match != linear_rows.end()) {
       ++matches;
-      EXPECT_FLOAT_EQ(match->second, graph_row.second);
+      // Single-vector and batch kernels can round differently near zero,
+      // where EXPECT_FLOAT_EQ's ULP comparison is too strict (e.g. cosine).
+      EXPECT_NEAR(match->second, graph_row.second, 1e-6f);
     }
   }
   EXPECT_GE(matches, 9U) << "Graph search must recover at least 90% of the "
@@ -292,21 +417,11 @@ void CheckTurboAddSearchReopen(MetricType metric, QuantizerType quantizer,
   zvec::test_util::RemoveTestFiles(path);
 }
 
-void CheckExternalTurboAddSearchReopen(MetricType metric,
-                                       QuantizerType quantizer,
-                                       const char *quantizer_name,
-                                       const std::string &path) {
+void CheckExternalTurboAddSearchReopen(
+    MetricType metric, QuantizerType quantizer, const char *quantizer_name,
+    const std::string &path, const std::vector<std::vector<float>> &vectors,
+    const zvec::core::VectorSource &source) {
   zvec::test_util::RemoveTestFiles(path);
-  auto vectors = RandomVectors(kGraphVectorCount);
-  if (metric == MetricType::kCosine) {
-    for (size_t i = 0; i < vectors.size(); ++i) {
-      const float scale = static_cast<float>(i % 7 + 1);
-      for (float &value : vectors[i]) {
-        value *= scale;
-      }
-    }
-  }
-  TestExternalVectorSource source(&vectors);
   auto param = MakeParam(metric, quantizer);
   param->use_external_vector = true;
 
@@ -363,9 +478,13 @@ void CheckExternalTurboAddSearchReopen(MetricType metric,
   zvec::test_util::RemoveTestFiles(path);
 }
 
-void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
-                                    const char *quantizer_name,
-                                    const std::string &path) {
+void CheckOriginalProviderUsesTurbo(
+    MetricType metric, QuantizerType quantizer, const char *quantizer_name,
+    const std::string &path, int rabitq_bits = 7,
+    StorageOptions::StorageType storage_type =
+        StorageOptions::StorageType::kMMAP,
+    bool contiguous = false, bool merge_from_flat = false,
+    std::optional<QuantizerType> reopen_quantizer = std::nullopt) {
   zvec::test_util::RemoveTestFiles(path);
   auto vectors = RandomVectors(kGraphVectorCount);
   if (metric == MetricType::kCosine) {
@@ -391,27 +510,68 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
   provider_meta.set_metric(MetricName(metric), 0, zvec::ailego::Params{});
 
   auto param = MakeParam(metric, quantizer);
+  if (quantizer == QuantizerType::kRabitq)
+    param->quantizer_param =
+        std::make_shared<RabitqQuantizerParam>(rabitq_bits);
   param->provider = provider;
   param->provider_meta = provider_meta;
+  param->use_contiguous_memory = contiguous;
   auto index = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, index);
   ASSERT_EQ(quantizer_name, index->index_searcher()->meta().quantizer_name());
-  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, index->open(path, {storage_type, true}));
   auto streamer = std::dynamic_pointer_cast<zvec::core::HnswStreamer>(
       index->index_searcher());
   ASSERT_NE(nullptr, streamer);
   EXPECT_TRUE(streamer->uses_turbo_distance());
   EXPECT_TRUE(streamer->uses_turbo_build_distance());
 
-  AddVectors(index.get(), vectors);
+  if (merge_from_flat) {
+    const std::string source_path = path + ".flat";
+    zvec::test_util::RemoveTestFiles(source_path);
+    auto flat_param = FlatIndexParamBuilder()
+                          .with_metric_type(metric)
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .build();
+    auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(0, source->open(source_path, {storage_type, true}));
+    AddVectors(source.get(), vectors);
+    ASSERT_EQ(0, source->flush());
+    ASSERT_EQ(0, source->close());
+    source = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_NE(nullptr, source);
+    ASSERT_EQ(0, source->open(source_path, {storage_type, false}));
+    ASSERT_EQ(0, index->merge({source}, IndexFilter()));
+    EXPECT_EQ(vectors.size(), index->get_doc_count());
+    ASSERT_EQ(0, source->close());
+    zvec::test_util::RemoveTestFiles(source_path);
+  } else {
+    AddVectors(index.get(), vectors);
+  }
   CheckGraphSearchEnabled(index.get());
+  // This test checks encoding and persistence, not approximate-search recall.
+  // A raw-vector graph with a random 1-bit RaBitQ model can miss quantized
+  // top-10 neighbors at ef=100. Give RaBitQ enough candidates to traverse the
+  // entire graph and require exact agreement except for score ties. Keep the
+  // graph path active; bounded traversal and pruning have a separate test.
+  const bool exhaustive_graph = quantizer == QuantizerType::kRabitq;
+  const uint32_t graph_ef =
+      exhaustive_graph ? static_cast<uint32_t>(vectors.size()) : 100;
   std::vector<SearchRowList> linear_results;
   std::vector<SearchRowList> graph_results;
   for (uint32_t query_id : kGraphQueryIds) {
     SCOPED_TRACE(query_id);
     auto linear_rows = SearchRows(index.get(), vectors[query_id], true);
-    auto graph_rows = SearchRows(index.get(), vectors[query_id], false);
-    CheckGraphRecall(linear_rows, graph_rows);
+    auto graph_rows = SearchRows(index.get(), vectors[query_id], false, false,
+                                 nullptr, graph_ef);
+    if (exhaustive_graph) {
+      EXPECT_EQ(CanonicalizeScoreTies(linear_rows),
+                CanonicalizeScoreTies(graph_rows));
+    } else {
+      CheckGraphRecall(linear_rows, graph_rows);
+    }
     ASSERT_FALSE(graph_rows.empty());
     EXPECT_EQ(query_id, graph_rows.front().first);
     linear_results.push_back(std::move(linear_rows));
@@ -420,10 +580,23 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
 
   ASSERT_EQ(0, index->close());
 
+  if (quantizer == QuantizerType::kRabitq) param->provider.reset();
+  if (reopen_quantizer) {
+    // A different quantizer can be restored, but scores still use the caller's
+    // metric.
+    const auto other_metric = metric == MetricType::kL2sq
+                                  ? MetricType::kInnerProduct
+                                  : MetricType::kL2sq;
+    auto mismatch = IndexFactory::CreateAndInitIndex(
+        *MakeParam(other_metric, *reopen_quantizer));
+    ASSERT_TRUE(mismatch);
+    EXPECT_EQ(zvec::core::IndexError_Mismatch,
+              mismatch->open(path, {storage_type, false, true}));
+    param = MakeParam(metric, *reopen_quantizer);
+  }
   auto reopened = IndexFactory::CreateAndInitIndex(*param);
   ASSERT_NE(nullptr, reopened);
-  ASSERT_EQ(0,
-            reopened->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_EQ(0, reopened->open(path, {storage_type, false}));
   EXPECT_EQ(quantizer_name,
             reopened->index_searcher()->meta().quantizer_name());
   CheckGraphSearchEnabled(reopened.get());
@@ -431,11 +604,16 @@ void CheckOriginalProviderUsesTurbo(MetricType metric, QuantizerType quantizer,
     SCOPED_TRACE(kGraphQueryIds[i]);
     auto linear_rows =
         SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], true);
-    auto graph_rows =
-        SearchRows(reopened.get(), vectors[kGraphQueryIds[i]], false);
+    auto graph_rows = SearchRows(reopened.get(), vectors[kGraphQueryIds[i]],
+                                 false, false, nullptr, graph_ef);
     EXPECT_EQ(linear_results[i], linear_rows);
     EXPECT_EQ(graph_results[i], graph_rows);
-    CheckGraphRecall(linear_rows, graph_rows);
+    if (exhaustive_graph) {
+      EXPECT_EQ(CanonicalizeScoreTies(linear_rows),
+                CanonicalizeScoreTies(graph_rows));
+    } else {
+      CheckGraphRecall(linear_rows, graph_rows);
+    }
   }
   ASSERT_EQ(0, reopened->close());
   zvec::test_util::RemoveTestFiles(path);
@@ -639,8 +817,22 @@ TEST_P(HnswTurboIndexTest, AddSearchReopenFetch) {
 
 TEST_P(HnswTurboIndexTest, ExternalVectorsUseTurbo) {
   const auto &[quantizer, metric] = GetParam();
+  auto vectors = ExternalVectors(metric.type);
+  TestExternalVectorSource source(&vectors);
   CheckExternalTurboAddSearchReopen(metric.type, quantizer.type, quantizer.name,
-                                    index_path("external"));
+                                    index_path("external"), vectors, source);
+}
+
+TEST_P(HnswTurboIndexTest, ContiguousExternalVectorsUseTurbo) {
+  const auto &[quantizer, metric] = GetParam();
+  auto vectors = ExternalVectors(metric.type);
+  for (size_t padding : {0, 3}) {
+    SCOPED_TRACE(padding);
+    TestContiguousVectorSource source(vectors, padding);
+    ASSERT_NO_FATAL_FAILURE(CheckExternalTurboAddSearchReopen(
+        metric.type, quantizer.type, quantizer.name,
+        index_path("contiguous_external"), vectors, source));
+  }
 }
 
 TEST_P(HnswTurboIndexTest, OriginalProviderBuildUsesTurbo) {
@@ -688,6 +880,871 @@ TEST_P(HnswTurboIndexTest, MergePreservesTurboLayout) {
   ASSERT_EQ(kTopK, rows.size());
   EXPECT_EQ(73U, rows[0].first);
 
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, source->close());
+  zvec::test_util::RemoveTestFiles(source_path);
+  zvec::test_util::RemoveTestFiles(target_path);
+}
+
+TEST(HnswBulkMergeTest, DumperPreservesPayloadsBeyondFormerMetadataLimit) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_many_segments.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  constexpr uint32_t kSegments = 30000;
+  // Include the version segment. The former fixed 1 MiB table overwrote
+  // HnswT3S23907 when it grew; every record must survive reopening.
+  zvec::core::HnswBuildDumper dumper(kSegments + 1);
+  ASSERT_EQ(0, dumper.create(path));
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    uint32_t payload[16];
+    std::fill(std::begin(payload), std::end(payload), i + 1);
+    ASSERT_EQ(sizeof(payload), dumper.write(payload, sizeof(payload)));
+    ASSERT_EQ(
+        0, dumper.append("HnswT3S" + std::to_string(i), sizeof(payload), 0, 0));
+  }
+  ASSERT_EQ(0, dumper.close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, false));
+  EXPECT_EQ(kSegments + 1, storage->get_all().size());
+  for (uint32_t i = 0; i < kSegments; ++i) {
+    auto segment = storage->get("HnswT3S" + std::to_string(i));
+    ASSERT_NE(nullptr, segment);
+    zvec::core::IndexStorage::MemoryBlock block;
+    ASSERT_EQ(64U, segment->read(0, block, 64));
+    const auto *values = static_cast<const uint32_t *>(block.data());
+    for (size_t j = 0; j < 16; ++j) ASSERT_EQ(i + 1, values[j]) << i;
+  }
+  ASSERT_EQ(0, storage->close());
+}
+
+TEST(HnswBulkMergeTest, DumperRejectsUnderestimatedMetadataBudget) {
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_metadata_budget.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  zvec::core::HnswBuildDumper dumper(1);
+  ASSERT_EQ(0, dumper.create(path));
+  const uint32_t value = 42;
+  ASSERT_EQ(sizeof(value), dumper.write(&value, sizeof(value)));
+  EXPECT_EQ(zvec::core::IndexError_IndexFull,
+            dumper.append("HnswT3S0", sizeof(value), 0, 0));
+}
+
+TEST(HnswBulkMergeTest, AlignedChunkCapacitySurvivesPackingAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_capacity_graph.index";
+  const std::string packed_path = "hnsw_bulk_capacity_packed.index";
+  const std::string meta_path = "hnsw_bulk_capacity_meta.index";
+  AILEGO_DEFER([&]() {
+    for (const auto &path : {graph_path, packed_path, meta_path}) {
+      zvec::test_util::RemoveTestFiles(path);
+    }
+  });
+  // m=50 rounds each compact node chunk from 2 MiB to 3.25 MiB. Use two
+  // chunks so accounting must remove the actual capacity of every old chunk.
+  constexpr uint32_t count = 8193;
+  auto vectors = RandomVectors(count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t vector_size) {
+    entity.set_vector_size(vector_size);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(count);
+  };
+  auto graph_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, graph_storage);
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(kDimension * sizeof(float));
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  size_t old_node_chunks = 0;
+  for (;; ++old_node_chunks) {
+    auto chunk = graph_storage->get(core::ChunkBroker::make_segment_id(
+        core::ChunkBroker::CHUNK_TYPE_NODE, old_node_chunks));
+    if (!chunk) break;
+    ASSERT_GT(chunk->capacity(), core::HnswEntity::kDefaultChunkSize);
+  }
+  ASSERT_EQ(2U, old_node_chunks);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(
+      0, graph.dump_with_vectors(dumper, source, kDimension * sizeof(float)));
+  ASSERT_EQ(0, dumper->close());
+
+  auto packed_storage =
+      core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  size_t total_capacity = 0;
+  size_t node_capacity = 0;
+  size_t node_chunks = 0;
+  for (const auto &[name, chunk] : packed_storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) total_capacity += chunk->capacity();
+    if (name.rfind("HnswT3S", 0) == 0) {
+      node_capacity = chunk->capacity();
+      ++node_chunks;
+    }
+  }
+  ASSERT_GT(node_chunks, old_node_chunks);
+  ASSERT_EQ(0, packed_storage->close());
+  // The exact output capacity is full; one extra byte is sufficient to pack.
+  // Compute the budget from real segments, independently of dump_meta().
+  core::IndexStreamer::Stats meta_stats;
+  core::ChunkBroker broker(meta_stats);
+  uint32_t configured_chunk_size = core::HnswEntity::kDefaultChunkSize;
+  ASSERT_EQ(0, broker.open(graph_storage, configured_chunk_size, false));
+  auto meta_dumper = std::make_shared<core::HnswBuildDumper>(2);
+  ASSERT_EQ(0, meta_dumper->create(meta_path));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                             total_capacity));
+  EXPECT_EQ(0, broker.dump_meta(meta_dumper, node_chunks, node_capacity,
+                                total_capacity + 1));
+  ASSERT_EQ(0, meta_dumper->close());
+  ASSERT_EQ(0, broker.close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  packed_storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_NE(nullptr, packed_storage);
+  ASSERT_EQ(0, packed_storage->init({}));
+  ASSERT_EQ(0, packed_storage->open(packed_path, false));
+  core::IndexStreamer::Stats reopened_stats;
+  core::HnswMmapStreamerEntity reopened(reopened_stats);
+  ASSERT_EQ(0, init_entity(reopened, kDimension * sizeof(float)));
+  ASSERT_EQ(0, reopened.open(packed_storage, total_capacity + node_capacity + 1,
+                             false));
+  const uint32_t nodes_per_chunk = node_capacity / reopened.node_size();
+  const uint32_t next_chunk_id = node_chunks * nodes_per_chunk;
+  ASSERT_GT(next_chunk_id, count);
+  // Force allocation of one more node chunk after loading the persisted
+  // total_size. An overestimated total would reject this append too early.
+  EXPECT_EQ(
+      0, reopened.add_vector_with_id(0, next_chunk_id, vectors.front().data()));
+  EXPECT_EQ(core::IndexError_IndexFull,
+            reopened.add_vector_with_id(0, next_chunk_id + nodes_per_chunk,
+                                        vectors.front().data()));
+  ASSERT_EQ(0, reopened.close());
+  ASSERT_EQ(0, packed_storage->close());
+}
+
+// Exercise huge-page segment capacities without requiring a hugetlbfs mount.
+// The underlying mmap storage still performs the real file I/O and reopening.
+class HugePageTestStorage final : public zvec::core::IndexStorage {
+ public:
+  HugePageTestStorage()
+      : storage_(zvec::core::IndexFactory::CreateStorage("MMapFileStorage")) {}
+
+  int init(const zvec::ailego::Params &params) override {
+    return storage_ ? storage_->init(params) : zvec::core::IndexError_NoMemory;
+  }
+  int cleanup() override {
+    return storage_->cleanup();
+  }
+  int open(const std::string &path, bool create_if_missing) override {
+    return storage_->open(path, create_if_missing);
+  }
+  int flush() override {
+    return storage_->flush();
+  }
+  int close() override {
+    return storage_->close();
+  }
+  int append(const std::string &id, size_t size) override {
+    return storage_->append(
+        id, zvec::ailego::MemoryHelper::AlignHugePageSize(size));
+  }
+  void refresh(uint64_t checkpoint) override {
+    storage_->refresh(checkpoint);
+  }
+  uint64_t check_point() const override {
+    return storage_->check_point();
+  }
+  Segment::Pointer get(const std::string &id, int level = -1) override {
+    return storage_->get(id, level);
+  }
+  bool has(const std::string &id) const override {
+    return storage_->has(id);
+  }
+  uint32_t magic() const override {
+    return storage_->magic();
+  }
+  bool is_huge_page() const override {
+    return true;
+  }
+  bool is_dirty() const override {
+    return storage_->is_dirty();
+  }
+
+ private:
+  zvec::core::IndexStorage::Pointer storage_;
+};
+
+TEST(HnswBulkMergeTest, HugePagePackingPreservesLayoutAcrossReopenAndAppend) {
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string graph_path = "hnsw_bulk_huge_graph.index";
+  const std::string packed_path = "hnsw_bulk_huge_packed.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(graph_path);
+    zvec::test_util::RemoveTestFiles(packed_path);
+  });
+  // With m=50 and 36 dimensions, 4096 packed nodes occupy 2.25 MiB,
+  // rounded to a 4 MiB huge-page capacity. Reusing that capacity as the
+  // logical chunk size would incorrectly yield 8192 nodes after reopening.
+  constexpr uint32_t count = 8193;
+  constexpr uint32_t appended_count = 12289;
+  constexpr size_t vector_size = kDimension * sizeof(float);
+  auto vectors = RandomVectors(appended_count);
+  TestExternalVectorSource source(&vectors);
+  auto init_entity = [&](core::HnswStreamerEntity &entity, size_t bytes) {
+    entity.set_vector_size(bytes);
+    entity.set_l0_neighbor_cnt(100);
+    entity.set_upper_neighbor_cnt(50);
+    entity.set_scaling_factor(50);
+    return entity.init(appended_count);
+  };
+  auto graph_storage = std::make_shared<HugePageTestStorage>();
+  ASSERT_EQ(0, graph_storage->init({}));
+  ASSERT_EQ(0, graph_storage->open(graph_path, true));
+  core::IndexStreamer::Stats graph_stats;
+  core::HnswExternalStreamerEntity graph(graph_stats);
+  graph.set_packed_vector_size(vector_size);
+  ASSERT_EQ(0, init_entity(graph, 0));
+  ASSERT_EQ(0, graph.open(graph_storage, 128U << 20, false));
+  for (uint32_t id = 0; id < count; ++id) {
+    ASSERT_EQ(0, graph.add_vector_with_id(0, id, vectors[id].data()));
+  }
+  graph.update_ep_and_level(0, 0);
+  auto dumper =
+      std::make_shared<core::HnswBuildDumper>(1 + graph.packed_chunk_count());
+  ASSERT_EQ(0, dumper->create(packed_path));
+  ASSERT_EQ(0, graph.dump_with_vectors(dumper, source, vector_size));
+  ASSERT_EQ(0, dumper->close());
+  ASSERT_EQ(0, graph.close());
+  ASSERT_EQ(0, graph_storage->close());
+
+  for (bool append : {true, false}) {
+    auto storage = std::make_shared<HugePageTestStorage>();
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(packed_path, false));
+    core::IndexStreamer::Stats stats;
+    core::HnswMmapStreamerEntity reopened(stats);
+    ASSERT_EQ(0, init_entity(reopened, vector_size));
+    ASSERT_EQ(0, reopened.open(storage, 128U << 20, false));
+    const uint32_t expected_count = append ? count : appended_count;
+    ASSERT_EQ(expected_count, reopened.doc_cnt());
+    for (uint32_t id = 0; id < expected_count; ++id) {
+      EXPECT_EQ(id, reopened.get_key(id));
+      core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(0, reopened.get_vector(id, block));
+      ASSERT_NE(nullptr, block.data());
+      ASSERT_EQ(0, std::memcmp(vectors[id].data(), block.data(), vector_size))
+          << "id=" << id;
+    }
+    if (append) {
+      // Fill the last packed chunk, then allocate a new one after reopening.
+      // add_vector also verifies that the next automatic id is unchanged.
+      for (uint32_t id = count; id < appended_count; ++id) {
+        core::node_id_t assigned = core::kInvalidNodeId;
+        ASSERT_EQ(0, reopened.add_vector(0, id, vectors[id].data(), &assigned));
+        ASSERT_EQ(id, assigned);
+      }
+      ASSERT_EQ(appended_count, reopened.doc_cnt());
+      ASSERT_TRUE(storage->has("HnswT3S3"));
+    }
+    ASSERT_EQ(0, reopened.close());
+    ASSERT_EQ(0, storage->close());
+  }
+}
+
+struct BulkContextState {
+  size_t workers;
+  bool fail_first;
+  mutable std::atomic<size_t> context_calls{0};
+  mutable std::atomic<size_t> contexts_ready{0};
+  std::atomic<size_t> adds{0};
+  std::atomic<size_t> premature_adds{0};
+  bool fail_worker_allocation{false};
+  bool fail_task_allocation{false};
+  zvec::ailego::ThreadPool *pool{nullptr};
+  std::array<const void *, 4> context_ptrs{};
+  std::atomic<size_t> active_adds{0};
+  std::atomic<size_t> context_deletes{0};
+  std::atomic<size_t> early_context_deletes{0};
+  std::atomic<bool> failure_triggered{false};
+  std::atomic<bool> failed_with_worker_active{false};
+  std::atomic<bool> release_worker{false};
+};
+
+bool WaitForFlag(const std::atomic<bool> &flag) {
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (!flag.load() && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  return flag.load();
+}
+
+TEST(HnswBulkMergeDeathTest, AllocationFailureReleasesLevelPromotionLock) {
+#if GTEST_HAS_DEATH_TEST
+  namespace core = zvec::core;
+  namespace ailego = zvec::ailego;
+  const std::string path = "hnsw_bulk_level_lock.index";
+  AILEGO_DEFER([&]() { zvec::test_util::RemoveTestFiles(path); });
+  // Windows and threadsafe death tests re-execute the test binary. Only the
+  // child may open this file, so it cannot reopen the parent's live mapping.
+  const auto run = [&]() {
+    auto vectors = RandomVectors(3);
+    TestExternalVectorSource source(&vectors);
+    auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init({}));
+    ASSERT_EQ(0, storage->open(path, true));
+    core::IndexStreamer::Stats stats;
+    auto entity = std::make_shared<core::HnswExternalStreamerEntity>(stats);
+    entity->set_vector_size(0);
+    entity->set_packed_vector_size(kDimension * sizeof(float));
+    entity->set_chunk_size(1U << 20);
+    entity->set_l0_neighbor_cnt(2);
+    entity->set_upper_neighbor_cnt(2);
+    entity->set_scaling_factor(5);
+    entity->set_ef_construction(4);
+    ASSERT_EQ(0, entity->init(4));
+    ASSERT_EQ(0, entity->open(storage, 8U << 20, false));
+    for (uint32_t id = 0; id < 3; ++id) {
+      ASSERT_EQ(0, entity->add_vector_with_id(id == 0 ? 0 : 1, id,
+                                              vectors[id].data()));
+    }
+    entity->update_ep_and_level(0, 0);
+    core::IndexMeta meta(core::IndexMeta::DataType::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params{});
+    auto metric = core::IndexFactory::CreateMetric("SquaredEuclidean");
+    ASSERT_NE(nullptr, metric);
+    ASSERT_EQ(0, metric->init(meta, {}));
+    std::array<std::unique_ptr<core::HnswContext>, 2> contexts;
+    for (size_t i = 0; i < contexts.size(); ++i) {
+      contexts[i] = std::make_unique<core::HnswContext>(kDimension, metric,
+                                                        entity->clone());
+      contexts[i]->set_min_scan_limit(4);
+      contexts[i]->set_max_scan_limit(4);
+      ASSERT_EQ(0, contexts[i]->init(core::HnswContext::kStreamerContext));
+      contexts[i]->set_vector_source(&source);
+      contexts[i]->reset_query_raw(vectors[i + 1].data(), meta);
+    }
+    core::HnswAlgorithm<core::HnswExternalStreamerEntity> algorithm(*entity);
+    bool failed = false;
+    std::thread first([&]() {
+      bulk_alloc_test::countdown = 1;
+      try {
+        // The first allocation grows level_topk after acquiring the
+        // promotion lock, inside the real insertion implementation.
+        algorithm.add_node(1, 1, contexts[0].get());
+      } catch (const std::bad_alloc &) {
+        failed = true;
+      }
+      bulk_alloc_test::Reset();
+    });
+    first.join();
+    if (!failed || entity->cur_max_level() != 0) std::_Exit(2);
+    std::atomic<bool> completed{false};
+    int result = core::IndexError_Runtime;
+    std::thread second([&]() {
+      result = algorithm.add_node(2, 1, contexts[1].get());
+      completed.store(true);
+    });
+    if (!WaitForFlag(completed)) std::_Exit(3);
+    second.join();
+    if (result != 0 || contexts[1]->error() || entity->cur_max_level() != 1 ||
+        entity->entry_point() != 2) {
+      std::_Exit(4);
+    }
+    contexts = {};
+    ASSERT_EQ(0, entity->close());
+    ASSERT_EQ(0, storage->close());
+    std::_Exit(0);
+  };
+  // Isolate a regressed deadlock so the timeout fails this test instead of
+  // leaving the suite blocked or detaching a worker from its live context.
+  ASSERT_EXIT(run(), ::testing::ExitedWithCode(0), "");
+#else
+  GTEST_SKIP() << "Requires death-test support to isolate a possible deadlock";
+#endif
+}
+
+bool ShouldFailBulkTaskAllocation() {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  // Deque allocation behavior varies between standard libraries. Wait until
+  // one task has been submitted before failing another allocation.
+  if (state->pool->pending_count() == 0 && state->pool->active_count() == 0) {
+    return false;
+  }
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (state->active_adds.load() == 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  state->failed_with_worker_active.store(state->active_adds.load() != 0);
+  state->failure_triggered.store(true);
+  return true;
+}
+
+void CheckBulkContextDeletion(void *ptr) {
+  auto *state = static_cast<BulkContextState *>(bulk_alloc_test::state);
+  for (const void *context : state->context_ptrs) {
+    if (context == ptr) {
+      state->context_deletes.fetch_add(1);
+      if (state->active_adds.load() != 0) {
+        state->early_context_deletes.fetch_add(1);
+      }
+    }
+  }
+}
+
+class CheckedBulkStreamer : public zvec::core::HnswStreamer {
+ public:
+  explicit CheckedBulkStreamer(BulkContextState *state) : state_(state) {}
+
+  int open_with_borrowed_vectors(
+      zvec::core::IndexStorage::Pointer storage,
+      const zvec::core::VectorSource *source) override {
+    const int ret = HnswStreamer::open_with_borrowed_vectors(storage, source);
+    borrowed_build_ = ret == 0;
+    return ret;
+  }
+
+  zvec::core::IndexStreamer::Context::Pointer create_context() const override {
+    if (!borrowed_build_) return HnswStreamer::create_context();
+    const auto call = state_->context_calls.fetch_add(1);
+    if (state_->fail_first && call == 0) return nullptr;
+    auto context = HnswStreamer::create_context();
+    if (context) {
+      state_->context_ptrs[call] = context.get();
+      const auto ready = state_->contexts_ready.fetch_add(1) + 1;
+      if (state_->fail_task_allocation && ready == state_->workers) {
+        bulk_alloc_test::state = state_;
+        bulk_alloc_test::should_fail = ShouldFailBulkTaskAllocation;
+        bulk_alloc_test::on_delete = CheckBulkContextDeletion;
+      }
+    }
+    return context;
+  }
+
+  int add_with_id_impl(
+      uint32_t id, const void *data, const zvec::core::IndexQueryMeta &meta,
+      zvec::core::IndexStreamer::Context::Pointer &context) override {
+    if (state_->contexts_ready.load() != state_->workers) {
+      state_->premature_adds.fetch_add(1);
+    }
+    state_->adds.fetch_add(1);
+    if (state_->fail_worker_allocation) throw std::bad_alloc();
+    if (state_->fail_task_allocation) {
+      state_->active_adds.fetch_add(1);
+      while (!state_->release_worker.load()) std::this_thread::yield();
+      state_->active_adds.fetch_sub(1);
+      return zvec::core::IndexError_Runtime;
+    }
+    return HnswStreamer::add_with_id_impl(id, data, meta, context);
+  }
+
+ private:
+  BulkContextState *state_;
+  bool borrowed_build_{false};
+};
+
+class ScopedBulkStreamerFactory {
+ public:
+  explicit ScopedBulkStreamerFactory(BulkContextState &state) {
+    // Factory preserves references in its argument tuple. Pass a pointer
+    // prvalue: MSVC's default mode treats a same-type static_cast as an
+    // lvalue, which would leave a reference to a local pointer parameter.
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        CheckedBulkStreamer>
+        replace("HnswStreamer", &state);
+  }
+  ~ScopedBulkStreamerFactory() {
+    zvec::ailego::Factory<zvec::core::IndexStreamer>::Register<
+        zvec::core::HnswStreamer>
+        restore("HnswStreamer");
+  }
+};
+
+TEST(HnswBulkMergeTest, PreparesAllContextsBeforeWritesAndPropagatesFailure) {
+  for (int failure : {0, 1, 2}) {
+    namespace ailego = zvec::ailego;
+    const std::string source_path = "hnsw_bulk_context_source.index";
+    const std::string target_path = "hnsw_bulk_context_target.index";
+    AILEGO_DEFER([&]() {
+      zvec::test_util::RemoveTestFiles(source_path);
+      zvec::test_util::RemoveTestFiles(target_path);
+    });
+    zvec::ailego::ThreadPool pool(4, false);
+    const bool fail_first = failure == 1;
+    BulkContextState state{std::min<size_t>(4, pool.count()), fail_first};
+    state.fail_worker_allocation = failure == 2;
+    auto flat_param = FlatIndexParamBuilder()
+                          .with_data_type(DataType::DT_FP32)
+                          .with_dimension(kDimension)
+                          .with_metric_type(MetricType::kL2sq)
+                          .build();
+    auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+    auto target = IndexFactory::CreateAndInitIndex(
+        *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+    ASSERT_NE(nullptr, source);
+    ASSERT_NE(nullptr, target);
+    ASSERT_EQ(0, source->open(source_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, target->open(target_path,
+                              {StorageOptions::StorageType::kMMAP, true}));
+    auto vectors = RandomVectors();
+    AddVectors(source.get(), vectors);
+    {
+      ScopedBulkStreamerFactory factory(state);
+      EXPECT_EQ(failure ? zvec::core::IndexError_NoMemory : 0,
+                target->merge({source}, IndexFilter(), {4, &pool}));
+    }
+    EXPECT_EQ(fail_first ? 1U : state.workers, state.context_calls.load());
+    EXPECT_EQ(0U, state.premature_adds.load());
+    if (state.fail_worker_allocation) {
+      EXPECT_GT(state.adds.load(), 0U);
+    } else {
+      EXPECT_EQ(fail_first ? 0U : kVectorCount, state.adds.load());
+    }
+    EXPECT_EQ(failure ? 0U : kVectorCount, target->get_doc_count());
+    if (failure) {
+      // The original empty target remains open and can accept a later write.
+      EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+    }
+    EXPECT_EQ(0, target->close());
+    EXPECT_EQ(0, source->close());
+  }
+}
+
+TEST(HnswBulkMergeTest, TaskAllocationFailureWaitsBeforeDestroyingContexts) {
+  namespace ailego = zvec::ailego;
+  BulkContextState state{0, false};
+  AILEGO_DEFER([]() { bulk_alloc_test::Reset(); });
+  ailego::ThreadPool pool(2, false);
+  if (pool.count() < 2) GTEST_SKIP() << "Requires two workers";
+  state.workers = pool.count();
+  state.fail_task_allocation = true;
+  state.pool = &pool;
+  const std::string source_path = "hnsw_bulk_task_source.index";
+  const std::string target_path = "hnsw_bulk_task_target.index";
+  AILEGO_DEFER([&]() {
+    zvec::test_util::RemoveTestFiles(source_path);
+    zvec::test_util::RemoveTestFiles(target_path);
+  });
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .with_metric_type(MetricType::kL2sq)
+                        .build();
+  auto source = IndexFactory::CreateAndInitIndex(*flat_param);
+  auto target = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, target);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  std::atomic<bool> merge_finished{false};
+  std::thread controller([&]() {
+    while (state.contexts_ready.load() < state.workers &&
+           !merge_finished.load()) {
+      std::this_thread::yield();
+    }
+    WaitForFlag(state.failure_triggered);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    state.release_worker.store(true);
+  });
+  AILEGO_DEFER([&]() {
+    merge_finished.store(true);
+    state.release_worker.store(true);
+    if (controller.joinable()) controller.join();
+  });
+  int ret;
+  {
+    ScopedBulkStreamerFactory factory(state);
+    ret = target->merge({source}, IndexFilter(), {2, &pool});
+    bulk_alloc_test::Reset();
+  }
+  merge_finished.store(true);
+  controller.join();
+  EXPECT_EQ(zvec::core::IndexError_NoMemory, ret);
+  EXPECT_EQ(state.workers, state.context_calls.load());
+  EXPECT_EQ(state.workers, state.contexts_ready.load());
+  EXPECT_TRUE(state.failure_triggered.load());
+  EXPECT_TRUE(state.failed_with_worker_active.load());
+  EXPECT_EQ(state.workers, state.context_deletes.load());
+  EXPECT_EQ(0U, state.early_context_deletes.load());
+  EXPECT_EQ(0U, state.active_adds.load());
+  EXPECT_EQ(0U, target->get_doc_count());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
+  EXPECT_EQ(0, target->add({DenseVector{vectors[0].data()}}, 0));
+  EXPECT_EQ(0, target->close());
+  EXPECT_EQ(0, source->close());
+}
+
+TEST(HnswBulkMergeTest, FailedQueueAllocationLeavesPoolReusable) {
+  namespace ailego = zvec::ailego;
+  std::atomic<bool> release{false};
+  std::atomic<bool> started{false};
+  std::atomic<size_t> completed{0};
+  ailego::ThreadPool pool(1, false);
+  AILEGO_DEFER([&]() {
+    bulk_alloc_test::Reset();
+    pool.stop();
+    release.store(true);
+  });
+  auto blockers = pool.make_group();
+  blockers->submit(ailego::Closure::New([&]() {
+    started.store(true);
+    while (!release.load()) std::this_thread::yield();
+  }));
+  ASSERT_TRUE(WaitForFlag(started));
+  auto group = pool.make_group();
+  std::vector<ailego::ClosureHandler> tasks;
+  tasks.reserve(1024);
+  for (size_t i = 0; i < 1024; ++i) {
+    tasks.push_back(ailego::Closure::New([&]() { completed.fetch_add(1); }));
+  }
+  size_t accepted = 0;
+  bool failed = false;
+  bulk_alloc_test::countdown = 1;
+  try {
+    for (auto &task : tasks) {
+      group->submit(std::move(task));
+      ++accepted;
+    }
+  } catch (const std::bad_alloc &) {
+    failed = true;
+  }
+  bulk_alloc_test::Reset();
+  EXPECT_TRUE(failed);
+  EXPECT_EQ(accepted, group->pending_count());
+  EXPECT_EQ(accepted, pool.pending_count());
+  // Avoid hanging the test if counter consistency regresses.
+  if (group->pending_count() != accepted || pool.pending_count() != accepted) {
+    return;
+  }
+  release.store(true);
+  blockers->wait_finish();
+  group->wait_finish();
+  EXPECT_EQ(accepted, completed.load());
+  bool reused = false;
+  pool.execute_and_wait([&]() { reused = true; });
+  EXPECT_TRUE(reused);
+}
+
+class HnswBulkMergeTest
+    : public testing::TestWithParam<std::tuple<MetricType, bool, bool>> {};
+
+TEST_P(HnswBulkMergeTest, FilteredMixedSourcesReopenAndAppend) {
+  const auto &[metric, graph_source, read_only_source] = GetParam();
+  const std::string prefix =
+      "hnsw_bulk_" + std::to_string(static_cast<int>(metric)) + "_" +
+      std::to_string(graph_source) + "_" + std::to_string(read_only_source);
+  const std::string source_path = prefix + "_source.index";
+  const std::string tail_path = prefix + "_tail.index";
+  const std::string target_path = prefix + "_target.index";
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path + "*");
+  }
+  // The retained output spans multiple ordinary node chunks even though the
+  // graph-only build fits in one. Scale cosine inputs to exercise norm tails.
+  auto vectors = RandomVectors(14000);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    for (float &value : vectors[i]) value *= static_cast<float>(i % 7 + 1);
+  }
+  auto flat_param = FlatIndexParamBuilder()
+                        .with_metric_type(metric)
+                        .with_data_type(DataType::DT_FP32)
+                        .with_dimension(kDimension)
+                        .build();
+  auto graph_param = MakeParam(metric, QuantizerType::kNone);
+  BaseIndexParam::Pointer source_param =
+      graph_source ? std::static_pointer_cast<BaseIndexParam>(graph_param)
+                   : std::static_pointer_cast<BaseIndexParam>(flat_param);
+  auto source = IndexFactory::CreateAndInitIndex(*source_param);
+  auto tail = IndexFactory::CreateAndInitIndex(*flat_param);
+  ASSERT_NE(nullptr, source);
+  ASSERT_NE(nullptr, tail);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0,
+            tail->open(tail_path, {StorageOptions::StorageType::kMMAP, true}));
+  constexpr size_t kSplit = 9000;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    auto &index = i < kSplit ? source : tail;
+    ASSERT_EQ(0, index->add({DenseVector{vectors[i].data()}},
+                            i < kSplit ? i : i - kSplit));
+  }
+  if (read_only_source) {
+    ASSERT_EQ(0, source->close());
+    ASSERT_EQ(0, tail->close());
+    source = IndexFactory::CreateAndInitIndex(*source_param);
+    tail = IndexFactory::CreateAndInitIndex(*flat_param);
+    ASSERT_EQ(0, source->open(source_path, {StorageOptions::StorageType::kMMAP,
+                                            false, true}));
+    ASSERT_EQ(0, tail->open(tail_path,
+                            {StorageOptions::StorageType::kMMAP, false, true}));
+  }
+  auto provider = source->create_index_provider();
+  auto *stable = dynamic_cast<zvec::core::StableVectorHolder *>(provider.get());
+  ASSERT_NE(nullptr, stable);
+  std::shared_ptr<const void> lifetime;
+  ASSERT_EQ(0, stable->retain_stable_data(&lifetime));
+  auto iterator = provider->create_iterator();
+  ASSERT_TRUE(iterator->is_valid());
+  const auto *first = static_cast<const float *>(iterator->data());
+  std::vector<float> saved(first, first + kDimension);
+  for (size_t i = 0; i < kSplit; ++i) {
+    ASSERT_TRUE(iterator->is_valid());
+    ASSERT_NE(nullptr, iterator->data());
+    iterator->next();
+  }
+  iterator.reset();
+  provider.reset();
+  EXPECT_TRUE(std::equal(saved.begin(), saved.end(), first));
+
+  auto target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  std::vector<uint32_t> calls(vectors.size(), 0);
+  IndexFilter filter;
+  filter.set([&](uint64_t key) {
+    EXPECT_LT(key, calls.size());
+    if (key >= calls.size()) return true;
+    ++calls[key];
+    return key % 4 == 1;
+  });
+  zvec::ailego::ThreadPool pool(4, false);
+  ASSERT_EQ(0, target->merge({source, tail}, filter, {4, &pool}));
+  EXPECT_TRUE(std::all_of(calls.begin(), calls.end(),
+                          [](uint32_t count) { return count == 1; }));
+  ASSERT_EQ(10500U, target->get_doc_count());
+  std::vector<size_t> kept;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    if (i % 4 != 1) kept.push_back(i);
+  }
+  std::vector<SearchRowList> rows_before_reopen;
+  auto check = [&](bool reopened) {
+    size_t query_index = 0;
+    for (size_t id : {size_t{0}, size_t{4095}, kept.size() - 1}) {
+      VectorDataBuffer fetched;
+      ASSERT_EQ(0, target->fetch(id, &fetched));
+      const auto &bytes =
+          std::get<DenseVectorBuffer>(fetched.vector_buffer).data;
+      ASSERT_EQ(kDimension * sizeof(float), bytes.size());
+      for (size_t dim = 0; dim < kDimension; ++dim) {
+        float value;
+        std::memcpy(&value, bytes.data() + dim * sizeof(float), sizeof(float));
+        EXPECT_NEAR(vectors[kept[id]][dim], value, 2e-6f);
+      }
+      auto graph = SearchRows(target.get(), vectors[kept[id]], false);
+      ASSERT_EQ(kTopK, graph.size());
+      if (reopened) {
+        EXPECT_EQ(rows_before_reopen[query_index], graph);
+      } else {
+        rows_before_reopen.push_back(graph);
+      }
+      ++query_index;
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(check(false));
+  ASSERT_EQ(0, target->close());
+  target = IndexFactory::CreateAndInitIndex(*graph_param);
+  ASSERT_EQ(0, target->open(target_path,
+                            {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_NO_FATAL_FAILURE(check(true));
+  const uint32_t appended_id = kept.size();
+  ASSERT_EQ(0, target->add({DenseVector{vectors[1].data()}}, appended_id));
+  // A subsequent merge must append using the ordinary mutable format.
+  ASSERT_EQ(0, target->merge({tail}, IndexFilter(), {2, nullptr}));
+  EXPECT_EQ(15501U, target->get_doc_count());
+  ASSERT_EQ(0, target->close());
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileReadStorage");
+  ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, storage->open(target_path, false));
+  for (const auto &[name, segment] : storage->get_all()) {
+    if (name.rfind("HnswT", 0) == 0) {
+      EXPECT_EQ(0U, segment->data_crc());
+    }
+    if (segment->data_crc() != 0) {
+      zvec::core::IndexStorage::MemoryBlock block;
+      ASSERT_EQ(segment->data_size(),
+                segment->read(0, block, segment->data_size()));
+      EXPECT_EQ(
+          segment->data_crc(),
+          zvec::ailego::Crc32c::Hash(block.data(), segment->data_size(), 0));
+    }
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, source->close());
+  ASSERT_EQ(0, tail->close());
+  lifetime.reset();
+  for (const auto &path : {source_path, tail_path, target_path}) {
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    StableSources, HnswBulkMergeTest,
+    testing::Combine(testing::Values(MetricType::kL2sq, MetricType::kCosine,
+                                     MetricType::kInnerProduct),
+                     testing::Bool(), testing::Bool()));
+
+TEST(HnswBulkMergeTest, EmptyFilterAndCrashResidueKeepTargetUsable) {
+  const std::string source_path = "hnsw_bulk_empty_source.index";
+  const std::string target_path = "hnsw_bulk_empty_target.index";
+  zvec::test_util::RemoveTestFiles(source_path + "*");
+  zvec::test_util::RemoveTestFiles(target_path + "*");
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto source = IndexFactory::CreateAndInitIndex(*param);
+  auto target = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(
+      0, source->open(source_path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(
+      0, target->open(target_path, {StorageOptions::StorageType::kMMAP, true}));
+  auto vectors = RandomVectors();
+  AddVectors(source.get(), vectors);
+  size_t calls = 0;
+  IndexFilter all;
+  all.set([&](uint64_t) {
+    ++calls;
+    return true;
+  });
+  ASSERT_EQ(0, target->merge({source}, all));
+  EXPECT_EQ(kVectorCount, calls);
+  EXPECT_EQ(0U, target->get_doc_count());
+  EXPECT_TRUE(target->is_trained());
+  // Scratch from an interrupted attempt must neither block the next build
+  // nor be mistaken for files owned by the current attempt.
+  const std::string residue = target_path + ".hnsw-pack.stale";
+  ASSERT_TRUE(zvec::ailego::File::MakePath(residue));
+  ASSERT_EQ(0, target->merge({source}, IndexFilter()));
+  EXPECT_EQ(kVectorCount, target->get_doc_count());
+  EXPECT_TRUE(zvec::ailego::File::IsExist(residue));
+  zvec::test_util::RemoveTestPath(residue);
   ASSERT_EQ(0, target->close());
   ASSERT_EQ(0, source->close());
   zvec::test_util::RemoveTestFiles(source_path);
@@ -824,8 +1881,8 @@ INSTANTIATE_TEST_SUITE_P(
 class HnswLegacyReopenTest : public testing::TestWithParam<StorageOptions> {
  protected:
   static void SetUpTestSuite() {
-    ASSERT_EQ(0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 *
-                                                                    1024));
+    ASSERT_EQ(0, ::zvec::ailego::PoolPayloadBudget::get_instance().init(
+                     100 * 1024 * 1024));
   }
 };
 
@@ -874,23 +1931,25 @@ TEST_P(HnswLegacyReopenTest, LegacyFp32LayoutReopenFallsBack) {
     return;
   }
 
-  auto index = IndexFactory::CreateAndInitIndex(
-      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
-  ASSERT_NE(nullptr, index);
-  ASSERT_EQ(0, index->open(path, GetParam()));
-  EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
-  auto rows = SearchRows(index.get(), vectors[37], true);
-  ASSERT_EQ(kTopK, rows.size());
-  EXPECT_EQ(37U, rows[0].first);
+  for (auto type : {QuantizerType::kNone, QuantizerType::kRabitq}) {
+    auto index =
+        IndexFactory::CreateAndInitIndex(*MakeParam(MetricType::kL2sq, type));
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, GetParam()));
+    EXPECT_TRUE(index->index_searcher()->meta().quantizer_name().empty());
+    auto rows = SearchRows(index.get(), vectors[37], true);
+    ASSERT_EQ(kTopK, rows.size());
+    EXPECT_EQ(37U, rows[0].first);
 
-  VectorDataBuffer fetched;
-  ASSERT_EQ(0, index->fetch(37, &fetched));
-  const auto *fetched_vector = reinterpret_cast<const float *>(
-      std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
-  for (uint32_t i = 0; i < kDimension; ++i) {
-    EXPECT_FLOAT_EQ(vectors[37][i], fetched_vector[i]);
+    VectorDataBuffer fetched;
+    ASSERT_EQ(0, index->fetch(37, &fetched));
+    const auto *fetched_vector = reinterpret_cast<const float *>(
+        std::get<DenseVectorBuffer>(fetched.vector_buffer).data.data());
+    for (uint32_t i = 0; i < kDimension; ++i) {
+      EXPECT_FLOAT_EQ(vectors[37][i], fetched_vector[i]);
+    }
+    ASSERT_EQ(0, index->close());
   }
-  ASSERT_EQ(0, index->close());
   zvec::test_util::RemoveTestFiles(path);
 }
 
@@ -1044,3 +2103,831 @@ INSTANTIATE_TEST_SUITE_P(AddApis, HnswExternalCoreCompatibilityTest,
 }  // namespace
 }  // namespace core
 }  // namespace zvec
+
+namespace zvec::core {
+namespace {
+class CountingPersistedQuantizer : public turbo::Fp32Quantizer {
+ public:
+  bool requires_original_vectors() const override {
+    return true;
+  }
+  int serialize(std::string *out) const override {
+    ++writes;
+    *out = "model";
+    return 0;
+  }
+  int deserialize(const void *data, size_t size) override {
+    ++reads;
+    return size == 5 && std::memcmp(data, "model", 5) == 0
+               ? 0
+               : IndexError_InvalidFormat;
+  }
+  static inline int reads = 0;
+  static inline int writes = 0;
+};
+INDEX_FACTORY_REGISTER_QUANTIZER(CountingPersistedQuantizer);
+}  // namespace
+}  // namespace zvec::core
+
+TEST(HnswModelPersistence, ReadOnlyReopenReadsModelOnce) {
+  namespace core = zvec::core;
+  using Model = core::CountingPersistedQuantizer;
+  const std::string path = "hnsw_count_model_reads.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto quantizer =
+      core::IndexFactory::CreateQuantizer("CountingPersistedQuantizer");
+  ASSERT_TRUE(quantizer);
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, zvec::ailego::Params{});
+  ASSERT_EQ(0, quantizer->init(meta, {}));
+  meta.set_quantizer("CountingPersistedQuantizer", 0, zvec::ailego::Params{});
+  auto streamer = core::IndexFactory::CreateStreamer("HnswStreamer");
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(streamer && storage);
+  ASSERT_EQ(0, streamer->init(meta, {}, quantizer));
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  ASSERT_EQ(0, streamer->flush(0));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+
+  Model::reads = Model::writes = 0;
+  auto index = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_TRUE(index);
+  ASSERT_EQ(
+      0, index->open(path, {StorageOptions::StorageType::kMMAP, false, true}));
+  ASSERT_EQ(0, index->close());
+  EXPECT_EQ(1, Model::reads);
+  EXPECT_EQ(0, Model::writes);
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+#if RABITQ_SUPPORTED
+TEST(HnswTurboRabitq, MergeEncodesOriginalVectorsWithDestinationModel) {
+  using Provider =
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>;
+  const auto vectors = RandomVectors(2);
+  auto params_for = [&](const std::vector<std::vector<float>> &originals) {
+    auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+    auto model = std::make_shared<RabitqQuantizerParam>(7);
+    model->num_clusters = originals.size();
+    param->quantizer_param = model;
+    auto provider = std::make_shared<Provider>(kDimension);
+    for (const auto &v : originals) {
+      zvec::ailego::NumericalVector<float> row(kDimension);
+      std::copy(v.begin(), v.end(), row.begin());
+      EXPECT_TRUE(provider->emplace(provider->count(), row));
+    }
+    param->provider = provider;
+    param->provider_meta =
+        zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+    return param;
+  };
+  const StorageOptions create{StorageOptions::StorageType::kMMAP, true};
+  std::vector<Index::Pointer> sources;
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    auto path = "rabitq_merge_source_" + std::to_string(i) + ".index";
+    zvec::test_util::RemoveTestFiles(path);
+    auto source = IndexFactory::CreateAndInitIndex(*params_for({vectors[i]}));
+    ASSERT_TRUE(source);
+    ASSERT_EQ(0, source->open(path, create));
+    AddVectors(source.get(), {vectors[i]});
+    sources.push_back(source);
+  }
+  const std::string target_path = "rabitq_merge_target.index";
+  const std::string direct_path = "rabitq_merge_direct.index";
+  zvec::test_util::RemoveTestFiles(target_path);
+  zvec::test_util::RemoveTestFiles(direct_path);
+  auto params = params_for(vectors);
+  auto target = IndexFactory::CreateAndInitIndex(*params);
+  auto direct = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(target && direct);
+  ASSERT_EQ(0, target->open(target_path, create));
+  ASSERT_EQ(0, direct->open(direct_path, create));
+  AddVectors(direct.get(), vectors);
+  ASSERT_EQ(0, target->merge(sources, {}));
+  const auto compare = [&] {
+    for (size_t i = 0; i < vectors.size(); ++i) {
+      auto expected = SearchRows(direct.get(), vectors[i], false);
+      auto actual = SearchRows(target.get(), vectors[i], false);
+      ASSERT_EQ(2u, expected.size());
+      ASSERT_EQ(2u, actual.size());
+      EXPECT_EQ(i, actual.front().first);
+      for (size_t n = 0; n < actual.size(); ++n) {
+        EXPECT_EQ(expected[n].first, actual[n].first);
+        EXPECT_NEAR(expected[n].second, actual[n].second, 1e-4f);
+      }
+    }
+  };
+  ASSERT_NO_FATAL_FAILURE(compare());
+  ASSERT_EQ(0, target->close());
+  params->provider.reset();
+  target = IndexFactory::CreateAndInitIndex(*params);
+  ASSERT_TRUE(target);
+  ASSERT_EQ(0, target->open(target_path, {create.type, false, true}));
+  ASSERT_NO_FATAL_FAILURE(compare());
+  ASSERT_EQ(0, target->close());
+  ASSERT_EQ(0, direct->close());
+  for (size_t i = 0; i < sources.size(); ++i) {
+    ASSERT_EQ(0, sources[i]->close());
+    zvec::test_util::RemoveTestFiles("rabitq_merge_source_" +
+                                     std::to_string(i) + ".index");
+  }
+  zvec::test_util::RemoveTestFiles(target_path);
+  zvec::test_util::RemoveTestFiles(direct_path);
+}
+
+TEST(HnswTurboRabitq, MergesReopenedFlatUsingDatapointEncoding) {
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {3, 9}) {
+      SCOPED_TRACE(static_cast<int>(metric));
+      SCOPED_TRACE(bits);
+      CheckOriginalProviderUsesTurbo(
+          metric, QuantizerType::kRabitq, "RabitqQuantizer",
+          "hnsw_turbo_rabitq_merge.index", bits,
+          StorageOptions::StorageType::kMMAP, false, true);
+    }
+  }
+}
+
+TEST(HnswTurboRabitq, BuildsFromOriginalAndReopensWithoutProvider) {
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {1, 4, 7, 8, 9}) {
+      SCOPED_TRACE(static_cast<int>(metric));
+      SCOPED_TRACE(bits);
+      CheckOriginalProviderUsesTurbo(metric, QuantizerType::kRabitq,
+                                     "RabitqQuantizer",
+                                     "hnsw_turbo_rabitq.index", bits);
+    }
+  }
+}
+
+TEST(HnswTurboRabitq, RestoresPersistedQuantizerWithDifferentConfiguration) {
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {3, 9}) {
+      // kNone restores from the default FP32 configuration; kRabitq restores
+      // from a different code width (the default is 7 bits).
+      for (auto reopen : {QuantizerType::kNone, QuantizerType::kRabitq}) {
+        SCOPED_TRACE(static_cast<int>(metric));
+        SCOPED_TRACE(bits);
+        SCOPED_TRACE(static_cast<int>(reopen));
+        CheckOriginalProviderUsesTurbo(
+            metric, QuantizerType::kRabitq, "RabitqQuantizer",
+            "hnsw_turbo_rabitq_restore.index", bits,
+            StorageOptions::StorageType::kMMAP, false, false, reopen);
+      }
+    }
+  }
+}
+
+TEST(HnswTurboRabitq,
+     RequiresOriginalVectorsForInsertAndRejectsUnsupportedLayouts) {
+  const std::string path = "hnsw_turbo_rabitq_missing_provider.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  EXPECT_NE(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  EXPECT_EQ(zvec::core::IndexError_NoReady, index->train());
+  EXPECT_FALSE(index->is_trained());
+  index.reset();
+  zvec::test_util::RemoveTestFiles(path);
+  param->use_external_vector = true;
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*param));
+  param->use_external_vector = false;
+  param->quantizer_param = std::make_shared<RabitqQuantizerParam>(10);
+  EXPECT_EQ(nullptr, IndexFactory::CreateAndInitIndex(*param));
+}
+
+TEST(HnswTurboRabitq, EmptyProviderDoesNotPersistAnUntrainedModel) {
+  const std::string path = "hnsw_turbo_rabitq_empty_provider.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto provider = std::make_shared<
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>>(
+      kDimension);
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+  param->provider = provider;
+  param->provider_meta =
+      zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  param->provider_meta.set_metric("SquaredEuclidean", 0,
+                                  zvec::ailego::Params{});
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  EXPECT_NE(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  EXPECT_EQ(zvec::core::IndexError_NoReady, index->train());
+  EXPECT_FALSE(index->is_trained());
+  index.reset();
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+  ASSERT_EQ(0, storage->open(path, false));
+  EXPECT_EQ(nullptr, storage->get("hnsw.quantizer"));
+  ASSERT_EQ(0, storage->close());
+
+  // Supplying training data makes a fresh creation usable and reopenable.
+  const auto vectors = RandomVectors(64);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    zvec::ailego::NumericalVector<float> row(kDimension);
+    std::copy(vectors[i].begin(), vectors[i].end(), row.begin());
+    ASSERT_TRUE(provider->emplace(i, row));
+  }
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+  ASSERT_EQ(0, index->train());
+  EXPECT_TRUE(index->is_trained());
+  AddVectors(index.get(), vectors);
+  const auto expected = SearchRows(index.get(), vectors[0], true);
+  ASSERT_FALSE(expected.empty());
+  EXPECT_EQ(0u, expected.front().first);
+  ASSERT_EQ(0, index->close());
+  param->provider.reset();
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  EXPECT_EQ(expected, SearchRows(index.get(), vectors[0], true));
+  ASSERT_EQ(0, index->close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+TEST(HnswTurboRabitq, BufferPoolAndContiguousStorage) {
+  ASSERT_EQ(
+      0, zvec::ailego::MemoryLimitPool::get_instance().init(100 * 1024 * 1024));
+  CheckOriginalProviderUsesTurbo(MetricType::kL2sq, QuantizerType::kRabitq,
+                                 "RabitqQuantizer",
+                                 "hnsw_turbo_rabitq_buffer.index", 7,
+                                 StorageOptions::StorageType::kBufferPool);
+  CheckOriginalProviderUsesTurbo(MetricType::kL2sq, QuantizerType::kRabitq,
+                                 "RabitqQuantizer",
+                                 "hnsw_turbo_rabitq_contiguous.index", 7,
+                                 StorageOptions::StorageType::kMMAP, true);
+}
+
+TEST(HnswTurboRabitq, FailedLegacyOpenPreservesConfiguredQuantizer) {
+  const std::string legacy = "hnsw_rabitq_failed_legacy.index";
+  const auto fresh = legacy + ".new";
+  zvec::test_util::RemoveTestFiles(legacy);
+  zvec::test_util::RemoveTestFiles(fresh);
+  const auto vectors = RandomVectors(32);
+  ASSERT_NO_FATAL_FAILURE(BuildLegacyFp32Hnsw(legacy, vectors));
+  auto param = MakeParam(MetricType::kInnerProduct, QuantizerType::kRabitq);
+  auto provider = std::make_shared<
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>>(
+      kDimension);
+  for (const auto &values : vectors) {
+    zvec::ailego::NumericalVector<float> row(kDimension);
+    std::copy(values.begin(), values.end(), row.begin());
+    ASSERT_TRUE(provider->emplace(provider->count(), row));
+  }
+  param->provider = provider;
+  param->provider_meta =
+      zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  param->provider_meta.set_metric("InnerProduct", 0, zvec::ailego::Params{});
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_TRUE(index);
+  EXPECT_NE(0, index->open(legacy,
+                           {StorageOptions::StorageType::kMMAP, false, true}));
+  ASSERT_EQ(0, index->open(fresh, {StorageOptions::StorageType::kMMAP, true}));
+  EXPECT_EQ("RabitqQuantizer",
+            index->index_searcher()->meta().quantizer_name());
+  ASSERT_NO_FATAL_FAILURE(AddVectors(index.get(), vectors));
+  EXPECT_FALSE(SearchRows(index.get(), vectors.front(), true).empty());
+  ASSERT_EQ(0, index->close());
+
+  for (bool wrong_dim : {false, true}) {
+    auto config = MakeParam(MetricType::kInnerProduct, QuantizerType::kNone);
+    if (wrong_dim)
+      ++config->dimension;
+    else
+      config->data_type = DataType::DT_FP16;
+    auto reader = IndexFactory::CreateAndInitIndex(*config);
+    ASSERT_TRUE(reader);
+    EXPECT_EQ(
+        zvec::core::IndexError_Mismatch,
+        reader->open(fresh, {StorageOptions::StorageType::kMMAP, false, true}));
+  }
+  zvec::test_util::RemoveTestFiles(legacy);
+  zvec::test_util::RemoveTestFiles(fresh);
+}
+
+TEST(HnswTurboRabitq, RejectsCorruptOrUntrainedPersistedModel) {
+  for (bool untrained : {false, true}) {
+    SCOPED_TRACE(untrained);
+    const std::string path = "hnsw_turbo_rabitq_corrupt.index";
+    zvec::test_util::RemoveTestFiles(path);
+    auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+    auto provider = std::make_shared<
+        zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>>(
+        kDimension);
+    for (const auto &values : RandomVectors(32)) {
+      zvec::ailego::NumericalVector<float> row(kDimension);
+      std::copy(values.begin(), values.end(), row.begin());
+      ASSERT_TRUE(provider->emplace(provider->count(), row));
+    }
+    param->provider = provider;
+    param->provider_meta =
+        zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+    param->provider_meta.set_metric("SquaredEuclidean", 0,
+                                    zvec::ailego::Params{});
+    auto index = IndexFactory::CreateAndInitIndex(*param);
+    ASSERT_NE(nullptr, index);
+    ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    ASSERT_EQ(0, index->close());
+    auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_EQ(0, storage->init(zvec::ailego::Params{}));
+    ASSERT_EQ(0, storage->open(path, false));
+    auto segment = storage->get("hnsw.quantizer");
+    ASSERT_NE(nullptr, segment);
+    if (untrained) {
+      auto quantizer =
+          zvec::core::IndexFactory::CreateQuantizer("RabitqQuantizer");
+      ASSERT_NE(nullptr, quantizer);
+      ASSERT_EQ(0,
+                quantizer->init(param->provider_meta, zvec::ailego::Params{}));
+      ASSERT_TRUE(quantizer->require_train());
+      std::string state;
+      ASSERT_EQ(0, quantizer->serialize(&state));
+      ASSERT_LE(state.size(), segment->data_size());
+      ASSERT_EQ(state.size(), segment->write(0, state.data(), state.size()));
+      ASSERT_EQ(state.size(), segment->resize(state.size()));
+      segment->update_data_crc(
+          zvec::ailego::Crc32c::Hash(state.data(), state.size(), 0));
+    } else {
+      const char bad_magic = 0;
+      ASSERT_EQ(1u, segment->write(0, &bad_magic, 1));
+    }
+    segment.reset();
+    ASSERT_EQ(0, storage->close());
+    for (const auto &config :
+         {MakeParam(MetricType::kL2sq, QuantizerType::kNone), param}) {
+      auto reopened = IndexFactory::CreateAndInitIndex(*config);
+      ASSERT_NE(nullptr, reopened);
+      EXPECT_EQ(untrained ? zvec::core::IndexError_NoReady
+                          : zvec::core::IndexError_InvalidChecksum,
+                reopened->open(
+                    path, {StorageOptions::StorageType::kMMAP, false, true}));
+      const auto fresh = path + ".fresh";
+      zvec::test_util::RemoveTestFiles(fresh);
+      ASSERT_EQ(
+          0, reopened->open(fresh, {StorageOptions::StorageType::kMMAP, true}));
+      EXPECT_EQ(config == param ? "RabitqQuantizer" : "Fp32Quantizer",
+                reopened->index_searcher()->meta().quantizer_name());
+      const auto vectors = RandomVectors(16);
+      AddVectors(reopened.get(), vectors);
+      const auto rows = SearchRows(reopened.get(), vectors[3], true);
+      ASSERT_FALSE(rows.empty());
+      EXPECT_EQ(3u, rows.front().first);
+      ASSERT_EQ(0, reopened->close());
+      zvec::test_util::RemoveTestFiles(fresh);
+    }
+    zvec::test_util::RemoveTestFiles(path);
+  }
+}
+
+namespace {
+class InspectableRabitqHnsw : public HNSWIndex {
+ public:
+  using Index::init;
+  // Keep the context statistics available after search; the public wrapper
+  // normally resets the thread-local context after collecting its results.
+  int search(const VectorData &query, const BaseIndexQueryParam::Pointer &param,
+             SearchResult *result) override {
+    auto &ctx = acquire_context();
+    ctx->reset();
+    int ret = _prepare_for_search(query, param, ctx);
+    if (ret != 0) return ret;
+    return _dense_search(query, param, result, ctx);
+  }
+  zvec::core::HnswContext *context() {
+    return dynamic_cast<zvec::core::HnswContext *>(acquire_context().get());
+  }
+  std::string quantizer_state() {
+    std::string state;
+    EXPECT_EQ(0, turbo_quantizer_->serialize(&state));
+    return state;
+  }
+};
+}  // namespace
+
+TEST(HnswTurboRabitq, ScreensDuringTraversalAndClearsRefinementForBuild) {
+  const std::string path = "hnsw_turbo_rabitq_stages.index";
+  zvec::test_util::RemoveTestFiles(path);
+  auto vectors = RandomVectors(kGraphVectorCount);
+  auto provider = std::make_shared<
+      zvec::core::MultiPassIndexProvider<zvec::core::IndexMeta::DT_FP32>>(
+      kDimension);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    zvec::ailego::NumericalVector<float> value(kDimension);
+    std::copy(vectors[i].begin(), vectors[i].end(), value.begin());
+    ASSERT_TRUE(provider->emplace(i, value));
+  }
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kRabitq);
+  param->provider = provider;
+  param->provider_meta =
+      zvec::core::IndexMeta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  param->provider_meta.set_metric("SquaredEuclidean", 0,
+                                  zvec::ailego::Params{});
+  InspectableRabitqHnsw index;
+  ASSERT_EQ(0, index.init(*param));
+  ASSERT_EQ(0, index.open(path, {StorageOptions::StorageType::kMMAP, true}));
+  const auto trained_state = index.quantizer_state();
+  AddVectors(&index, vectors);
+  auto linear = SearchRows(&index, vectors[37], true);
+  auto graph = SearchRows(&index, vectors[37], false);
+  CheckGraphRecall(linear, graph);
+  auto *ctx = index.context();
+  ASSERT_NE(nullptr, ctx);
+  EXPECT_TRUE(ctx->dist_calculator().has_refinement());
+  EXPECT_GT(ctx->dist_calculator().refinement_count(), 0u);
+  EXPECT_GT(ctx->dist_calculator().bound_pruned_count(), 0u);
+  EXPECT_GT(ctx->dist_calculator().estimate_count(),
+            ctx->dist_calculator().refinement_count());
+
+  // Alternating search and construction must never evaluate raw FP32 vectors
+  // through a stale RaBitQ coarse-distance callback.
+  const uint32_t id = vectors.size();
+  zvec::ailego::NumericalVector<float> extra(kDimension);
+  std::copy(vectors[37].begin(), vectors[37].end(), extra.begin());
+  ASSERT_TRUE(provider->emplace(id, extra));
+  ASSERT_EQ(0, index.add(VectorData{DenseVector{extra.data()}}, id));
+  EXPECT_FALSE(index.context()->dist_calculator().has_refinement());
+  EXPECT_EQ(trained_state, index.quantizer_state());
+
+  auto query_param =
+      HNSWQueryParamBuilder().with_topk(kTopK).with_ef_search(100).build();
+  query_param->filter = std::make_shared<IndexFilter>();
+  query_param->filter->set([](uint64_t key) { return key % 2 == 0; });
+  SearchResult filtered;
+  ASSERT_EQ(0, index.search(VectorData{DenseVector{vectors[37].data()}},
+                            query_param, &filtered));
+  EXPECT_EQ(kTopK, filtered.doc_list_.size());
+  for (const auto &doc : filtered.doc_list_) EXPECT_EQ(1u, doc.key() % 2);
+  EXPECT_TRUE(index.context()->dist_calculator().has_refinement());
+  EXPECT_GT(index.context()->dist_calculator().refinement_count(), 0u);
+  query_param->filter.reset();
+  query_param->group_by_param = std::make_shared<GroupByParam>();
+  query_param->group_by_param->group_count = 3;
+  query_param->group_by_param->group_topk = 2;
+  query_param->group_by_param->group_by = [](uint64_t key) {
+    return std::to_string(key % 3);
+  };
+  SearchResult grouped;
+  ASSERT_EQ(0, index.search(VectorData{DenseVector{vectors[37].data()}},
+                            query_param, &grouped));
+  EXPECT_EQ(3u, grouped.group_doc_list_.size());
+  for (const auto &group : grouped.group_doc_list_) {
+    EXPECT_EQ(2u, group.docs().size());
+    for (const auto &doc : group.docs())
+      EXPECT_EQ(group.group_id(), std::to_string(doc.key() % 3));
+  }
+  ASSERT_EQ(0, index.close());
+
+  // A provider on reopen must not silently retrain and reinterpret old codes.
+  InspectableRabitqHnsw reopened;
+  ASSERT_EQ(0, reopened.init(*param));
+  ASSERT_EQ(0,
+            reopened.open(path, {StorageOptions::StorageType::kMMAP, false}));
+  EXPECT_EQ(trained_state, reopened.quantizer_state());
+  auto rows = SearchRows(&reopened, vectors[37], false);
+  ASSERT_FALSE(rows.empty());
+  ASSERT_EQ(0, reopened.close());
+  zvec::test_util::RemoveTestFiles(path);
+}
+
+#else
+TEST(HnswTurboRabitq, RejectsUnsupportedPlatform) {
+  const std::string path = "hnsw_unsupported_rabitq.index";
+  zvec::test_util::RemoveTestFiles(path);
+  for (auto metric :
+       {MetricType::kL2sq, MetricType::kCosine, MetricType::kInnerProduct}) {
+    for (int bits : {1, 7, 9}) {
+      auto param = MakeParam(metric, QuantizerType::kRabitq);
+      param->quantizer_param = std::make_shared<RabitqQuantizerParam>(bits);
+      auto index = IndexFactory::CreateAndInitIndex(*param);
+      ASSERT_NE(nullptr, index);
+      EXPECT_EQ(zvec::core::IndexError_Unsupported,
+                index->open(path, {StorageOptions::StorageType::kMMAP, true}));
+    }
+  }
+  EXPECT_FALSE(zvec::ailego::File::IsExist(path));
+  // A default reader must also reject an on-disk RaBitQ descriptor.
+  auto storage = zvec::core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_TRUE(storage);
+  ASSERT_EQ(0, storage->init({}));
+  ASSERT_EQ(0, storage->open(path, true));
+  zvec::core::IndexMeta meta(zvec::core::IndexMeta::DT_FP32, kDimension);
+  meta.set_quantizer("RabitqQuantizer", 0, zvec::ailego::Params{});
+  ASSERT_EQ(0,
+            zvec::core::IndexHelper::SerializeToStorage(meta, storage.get()));
+  ASSERT_EQ(0, storage->close());
+  auto reader = IndexFactory::CreateAndInitIndex(
+      *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+  ASSERT_TRUE(reader);
+  EXPECT_EQ(
+      zvec::core::IndexError_Unsupported,
+      reader->open(path, {StorageOptions::StorageType::kMMAP, false, true}));
+  reader.reset();
+  zvec::test_util::RemoveTestFiles(path);
+
+  // Unsupported builds must not register a usable RaBitQ backend.
+  EXPECT_EQ(nullptr,
+            zvec::core::IndexFactory::CreateQuantizer("RabitqQuantizer"));
+}
+#endif  // RABITQ_SUPPORTED
+TEST(HnswQuantizerTest, RejectsEmptyRequiredModelAndPropagatesSerializeErrors) {
+  using namespace zvec;
+  class EmptyModelQuantizer : public turbo::Fp32Quantizer {
+   public:
+    bool requires_original_vectors() const override {
+      return true;
+    }
+    int serialize(std::string *out) const override {
+      out->clear();
+      return result;
+    }
+    int result{0};
+  };
+  const std::string path = "hnsw_empty_quantizer_model.index";
+  for (int result : {0, int(core::IndexError_WriteData)}) {
+    SCOPED_TRACE(result);
+    test_util::RemoveTestFiles(path);
+    core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+    meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+    auto quantizer = std::make_shared<EmptyModelQuantizer>();
+    ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+    quantizer->result = result;
+    auto seed = IndexFactory::CreateAndInitIndex(
+        *MakeParam(MetricType::kL2sq, QuantizerType::kNone));
+    ASSERT_NE(nullptr, seed);
+    core::IndexStreamer::Pointer streamer =
+        std::make_shared<core::HnswStreamer>();
+    ASSERT_EQ(0, streamer->init(
+                     meta, seed->index_searcher()->meta().streamer_params(),
+                     quantizer));
+    auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+    ASSERT_NE(nullptr, storage);
+    ASSERT_EQ(0, storage->init(ailego::Params()));
+    ASSERT_EQ(0, storage->open(path, true));
+    EXPECT_EQ(result ? result : core::IndexError_InvalidFormat,
+              streamer->open(storage));
+    EXPECT_EQ(nullptr, storage->get("hnsw.quantizer"));
+    streamer.reset();
+    ASSERT_EQ(0, storage->close());
+  }
+  test_util::RemoveTestFiles(path);
+}
+
+TEST(HnswPqIndexTest, ReadOnlyOpenSkipsBuildPreparation) {
+  using namespace zvec;
+  class CountingQuantizer : public turbo::Fp32Quantizer {
+   public:
+    int prepare_build() override {
+      ++prepare_count;
+      return 0;
+    }
+    int prepare_count{0};
+  };
+
+  const std::string path = "hnsw_read_only_prepare.index";
+  test_util::RemoveTestFiles(path);
+  core::IndexMeta meta(core::IndexMeta::DT_FP32, kDimension);
+  meta.set_metric("SquaredEuclidean", 0, ailego::Params());
+  auto quantizer = std::make_shared<CountingQuantizer>();
+  ASSERT_EQ(0, quantizer->init(meta, ailego::Params()));
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto seed = IndexFactory::CreateAndInitIndex(*param);
+  core::IndexStreamer::Pointer streamer =
+      std::make_shared<core::HnswStreamer>();
+  ASSERT_EQ(
+      0, streamer->init(meta, seed->index_searcher()->meta().streamer_params(),
+                        quantizer));
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  EXPECT_EQ(1, quantizer->prepare_count);
+  ASSERT_EQ(0, streamer->close());
+
+  quantizer->prepare_count = 0;
+  ASSERT_EQ(0, streamer->open(storage, true));
+  EXPECT_EQ(0, quantizer->prepare_count);
+  auto context = streamer->create_context();
+  std::vector<float> vector(kDimension, 1.0f);
+  core::IndexQueryMeta qmeta;
+  qmeta.set_meta(meta.data_type(), meta.dimension());
+  EXPECT_NE(0, streamer->add_impl(0, vector.data(), qmeta, context));
+  EXPECT_NE(0, streamer->add_with_id_impl(0, vector.data(), qmeta, context));
+  ASSERT_EQ(0, streamer->close());
+
+  // The legacy open entry point still means writable, including after a
+  // read-only open on the same streamer.
+  ASSERT_EQ(0, streamer->open(storage));
+  EXPECT_EQ(1, quantizer->prepare_count);
+  context = streamer->create_context();
+  ASSERT_EQ(0, streamer->add_with_id_impl(0, vector.data(), qmeta, context));
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+  test_util::RemoveTestFiles(path);
+}
+
+TEST(HnswPqIndexTest, ReopenAndAddUsesDataCodes) {
+  using namespace zvec;
+  const std::string path = "hnsw_pq_reopen_test.index";
+  test_util::RemoveTestFiles(path);
+  const auto vectors = RandomVectors(256);
+  auto holder =
+      std::make_shared<core::MultiPassIndexHolder<core::IndexMeta::DT_FP32>>(
+          kDimension);
+  for (size_t i = 0; i < vectors.size(); ++i) {
+    ailego::NumericalVector<float> v(kDimension);
+    std::copy(vectors[i].begin(), vectors[i].end(), v.data());
+    holder->emplace(i, v);
+  }
+  core::IndexMeta raw(core::IndexMeta::DT_FP32, kDimension);
+  raw.set_metric("SquaredEuclidean", 0, ailego::Params());
+  ailego::Params params;
+  params.set("num_chunk", 4U);
+  auto quantizer = core::IndexFactory::CreateQuantizer("PqInt8Quantizer");
+  ASSERT_EQ(0, quantizer->init(raw, params));
+  ASSERT_EQ(0, quantizer->train(holder));
+  auto meta = quantizer->meta();
+  meta.set_quantizer("PqInt8Quantizer", 0, params);
+  auto param = MakeParam(MetricType::kL2sq, QuantizerType::kNone);
+  auto seed = IndexFactory::CreateAndInitIndex(*param);
+  core::IndexStreamer::Pointer streamer =
+      std::make_shared<core::HnswStreamer>();
+  ASSERT_EQ(
+      0, streamer->init(meta, seed->index_searcher()->meta().streamer_params(),
+                        quantizer));
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(path, true));
+  ASSERT_EQ(0, streamer->open(storage));
+  auto ctx = streamer->create_context();
+  core::IndexQueryMeta codes;
+  codes.set_meta(meta.data_type(), meta.dimension(),
+                 static_cast<uint32_t>(quantizer->type()),
+                 meta.extra_meta_size());
+  std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+  for (size_t i = 0; i < 32; ++i) {
+    quantizer->quantize_data(vectors[i].data(), code.data());
+    ASSERT_EQ(0, streamer->add_with_id_impl(i, code.data(), codes, ctx));
+  }
+  ASSERT_EQ(0, streamer->close());
+  ASSERT_EQ(0, storage->close());
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(path, {StorageOptions::StorageType::kMMAP, false}));
+  ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[32].data()}}, 32));
+  quantizer->quantize_data(vectors[32].data(), code.data());
+  std::string expected;
+  ASSERT_EQ(0, quantizer->dequantize(code.data(), codes, &expected));
+  VectorDataBuffer fetched;
+  ASSERT_EQ(0, index->fetch(32, &fetched));
+  EXPECT_EQ(expected, std::get<DenseVectorBuffer>(fetched.vector_buffer).data);
+  auto rows = SearchRows(index.get(), vectors[32], true);
+  ASSERT_FALSE(rows.empty());
+  EXPECT_EQ(32U, rows.front().first);
+  ASSERT_EQ(0, index->close());
+  test_util::RemoveTestFiles(path);
+}
+
+class HnswPqLifecycleTest
+    : public testing::TestWithParam<
+          std::tuple<int, bool, MetricType, StorageOptions::StorageType>> {};
+
+TEST_P(HnswPqLifecycleTest, TrainMergeReopenAndAppend) {
+  using namespace zvec;
+  const auto [bits, rotate, metric, storage_type] = GetParam();
+  const std::string raw_path = "hnsw_pq_raw.index";
+  const std::string pq_path = "hnsw_pq_target.index";
+  const std::string merge_path = "hnsw_pq_merge.index";
+  for (auto &path : {raw_path, pq_path, merge_path})
+    test_util::RemoveTestFiles(path);
+  ::zvec::ailego::PoolPayloadBudget::get_instance().init(256 * 1024 * 1024);
+  auto vectors = RandomVectors(300);
+  auto raw_param = FlatIndexParamBuilder()
+                       .with_dimension(kDimension)
+                       .with_data_type(DataType::DT_FP32)
+                       .with_metric_type(metric)
+                       .build();
+  auto raw = IndexFactory::CreateAndInitIndex(*raw_param);
+  ASSERT_NE(nullptr, raw);
+  ASSERT_EQ(0, raw->open(raw_path, {storage_type, true}));
+  AddVectors(raw.get(), vectors);
+  PqQuantizerParam pq(bits == 8 ? 5 : 4, bits, rotate);
+  pq.opq_iter = 2;
+  pq.opq_pq_iter = 2;
+  auto param = MakeDefaultParam(metric);
+  param->quantizer_param = pq.clone();
+  auto index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, index);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, true}));
+  EXPECT_EQ(0U, index->get_doc_count());
+  EXPECT_NE(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 0));
+  EXPECT_NE(0, index->train());
+  ASSERT_EQ(0, index->merge({raw}, IndexFilter()));
+  EXPECT_EQ(vectors.size(), index->get_doc_count());
+  auto before = SearchRows(index.get(), vectors[11], true);
+  auto graph_before = SearchRows(index.get(), vectors[11], false);
+  ASSERT_FALSE(before.empty());
+  ASSERT_EQ(0, index->close());
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, false, true}));
+  EXPECT_EQ(before, SearchRows(index.get(), vectors[11], true));
+  EXPECT_EQ(graph_before, SearchRows(index.get(), vectors[11], false));
+  EXPECT_NE(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 300));
+  ASSERT_EQ(0, index->close());
+  // A writable reopen must restore the SDC table before adding vectors.
+  index = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_EQ(0, index->open(pq_path, {storage_type, false}));
+  EXPECT_EQ(before, SearchRows(index.get(), vectors[11], true));
+  ASSERT_EQ(0, index->add(VectorData{DenseVector{vectors[0].data()}}, 300));
+  EXPECT_EQ(301U, index->get_doc_count());
+
+  // Candidate extraction accepts the PQ query layout and preserves scores.
+  auto query_param =
+      HNSWQueryParamBuilder().with_topk(kTopK).with_ef_search(100).build();
+  const VectorData query{DenseVector{vectors[11].data()}};
+  SearchResult expected_rows;
+  ASSERT_EQ(0, index->search(query, query_param, &expected_rows));
+  std::vector<int64_t> ids(kTopK);
+  std::vector<float> scores(kTopK);
+  ASSERT_EQ(0, index->search_internal_ids(query, query_param, ids.data(),
+                                          scores.data()));
+  ASSERT_EQ(kTopK, expected_rows.doc_list_.size());
+  for (size_t i = 0; i < kTopK; ++i) {
+    EXPECT_EQ(expected_rows.doc_list_[i].key(), static_cast<uint64_t>(ids[i]));
+    EXPECT_FLOAT_EQ(expected_rows.doc_list_[i].score(), scores[i]);
+  }
+
+  if (metric == MetricType::kInnerProduct) {
+    // Compare against reconstructed PQ vectors, not another search route that
+    // could share the same missing score conversion.
+    for (const auto &doc : expected_rows.doc_list_) {
+      VectorDataBuffer decoded;
+      ASSERT_EQ(0, index->fetch(doc.key(), &decoded));
+      const auto &data =
+          std::get<DenseVectorBuffer>(decoded.vector_buffer).data;
+      const auto *reconstructed = reinterpret_cast<const float *>(data.data());
+      float dot = 0.0f;
+      for (size_t d = 0; d < kDimension; ++d) {
+        dot += vectors[11][d] * reconstructed[d];
+      }
+      EXPECT_NEAR(dot, doc.score(), 1e-4f * std::max(1.0f, std::abs(dot)));
+    }
+    ASSERT_GT(scores.front(), 0.0f);
+    query_param->radius = scores.front() + 1.0f;
+    ASSERT_EQ(0, index->search(query, query_param, &expected_rows));
+    EXPECT_TRUE(expected_rows.doc_list_.empty());
+    ASSERT_EQ(0, index->search_internal_ids(query, query_param, ids.data(),
+                                            scores.data()));
+    EXPECT_TRUE(std::all_of(ids.begin(), ids.end(),
+                            [](int64_t id) { return id == -1; }));
+  }
+
+  // Train a separate codebook from reconstructed source vectors. Codes from
+  // the first index must be decoded and encoded again, even with equal layout.
+  auto merged = IndexFactory::CreateAndInitIndex(*param);
+  ASSERT_NE(nullptr, merged);
+  ASSERT_EQ(0, merged->open(merge_path, {storage_type, true}));
+  ASSERT_EQ(0, merged->merge({index}, IndexFilter()));
+  ASSERT_EQ(0, merged->flush());
+  auto storage = core::IndexFactory::CreateStorage("MMapFileStorage");
+  ASSERT_EQ(0, storage->init(ailego::Params()));
+  ASSERT_EQ(0, storage->open(merge_path, false));
+  std::shared_ptr<turbo::Quantizer> quantizer;
+  ASSERT_EQ(0, core::HnswStreamer::RestoreQuantizer(
+                   storage, merged->index_searcher()->meta(), &quantizer));
+  std::string code(quantizer->quantized_datapoint_vector_length(), '\0');
+  for (uint32_t id : {0U, 11U, 299U, 300U}) {
+    VectorDataBuffer source, actual;
+    ASSERT_EQ(0, index->fetch(id, &source));
+    const auto &decoded =
+        std::get<DenseVectorBuffer>(source.vector_buffer).data;
+    quantizer->quantize_data(decoded.data(), code.data());
+    std::string expected;
+    ASSERT_EQ(0, quantizer->dequantize(code.data(), core::IndexQueryMeta(),
+                                       &expected));
+    ASSERT_EQ(0, merged->fetch(id, &actual));
+    EXPECT_EQ(expected, std::get<DenseVectorBuffer>(actual.vector_buffer).data);
+  }
+  ASSERT_EQ(0, storage->close());
+  ASSERT_EQ(0, merged->close());
+  ASSERT_EQ(0, index->close());
+  ASSERT_EQ(0, raw->close());
+  for (auto &path : {raw_path, pq_path, merge_path})
+    test_util::RemoveTestFiles(path);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    Pq, HnswPqLifecycleTest,
+    testing::Combine(
+        testing::Values(4, 8), testing::Bool(),
+        testing::Values(MetricType::kL2sq, MetricType::kInnerProduct,
+                        MetricType::kCosine),
+        testing::Values(StorageOptions::StorageType::kMMAP,
+                        StorageOptions::StorageType::kBufferPool)));
