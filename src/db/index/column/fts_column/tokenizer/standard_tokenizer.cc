@@ -930,6 +930,17 @@ std::vector<Token> tokenize_ascii(const std::string &text,
 
 }  // namespace
 
+bool StandardTokenizer::is_cjk(uint32_t codepoint) {
+  if (codepoint > kUnicodeMaxCodepoint) {
+    return false;
+  }
+  auto script = lookup_script_class(codepoint);
+  return script == WordBreakClass::Ideographic ||
+         script == WordBreakClass::Hiragana ||
+         script == WordBreakClass::Hangul ||
+         lookup_word_break_class(codepoint) == WordBreakClass::Katakana;
+}
+
 Status StandardTokenizer::init(const ailego::JsonObject &config) {
   max_token_length_ = kDefaultMaxTokenLength;
   auto length_val = config["max_token_length"];
