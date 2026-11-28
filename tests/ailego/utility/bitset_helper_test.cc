@@ -47,11 +47,9 @@ TEST(BitsetHelper, Benchmark) {
 }
 
 TEST(BitsetHelper, SafeClearAndOperations) {
-  // Test clear on default-constructed (null) bitset - should not crash or call memset(nullptr)
   ailego::BitsetHelper bitset;
   bitset.clear();
 
-  // Test mount, operations and clear
   uint32_t buf[4] = {0};
   bitset.mount(buf, sizeof(buf));
   bitset.set(10);
@@ -64,7 +62,6 @@ TEST(BitsetHelper, SafeClearAndOperations) {
     EXPECT_EQ(0u, buf[i]);
   }
 
-  // Test clear after umount - should not crash
   bitset.umount();
   bitset.clear();
 }
