@@ -299,6 +299,23 @@ class ExternalCache : public EvictableBlockOwner {
     return table_.size();
   }
 
+  // Only bounded, owned copies may escape this shared-lock callback. It must
+  // not reenter the cache or allocate from the managed memory pool. A caller
+  // can decline the fast path by returning nullopt.
+  template <typename Read>
+  std::optional<bool> read_if_cached(const Key &key, Read &&read) {
+    std::shared_lock<Mutex> lock(mutex_);
+    auto iter = table_.find(key);
+    if (iter == table_.end() || iter->second.loading ||
+        iter->second.ref_count.load(std::memory_order_acquire) < 0) {
+      return std::nullopt;
+    }
+    const Payload &payload = iter->second.payload;
+    auto result = std::forward<Read>(read)(payload);
+    if (result) iter->second.referenced.store(true, std::memory_order_relaxed);
+    return result;
+  }
+
   //! Drop cache residency for retired backing objects. Existing pins and
   //! in-flight loads remain valid; their final release removes the payload.
   template <typename Predicate>

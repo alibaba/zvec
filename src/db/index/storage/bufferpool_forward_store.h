@@ -14,7 +14,9 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include <arrow/api.h>
 #include <arrow/compute/api.h>
@@ -27,6 +29,9 @@
 #include "base_forward_store.h"
 
 namespace zvec {
+
+struct ParquetFileContext;
+class Doc;
 
 /// BufferPoolForwardStore implements a forward store that uses a buffer pool
 /// to efficiently manage data access from parquet files.
@@ -52,12 +57,32 @@ class BufferPoolForwardStore
   TablePtr fetch(const std::vector<std::string> &columns,
                  const std::vector<int> &indices) override;
 
+  struct FetchBlock {
+    BufferPoolForwardStore *store;
+    // (request output position, block-local row)
+    std::vector<std::pair<int, int>> rows;
+  };
+
+  // Gather a request across blocks into owned arrays, holding only the current
+  // source group's cache pin while copying. Null requests the normal
+  // owned-copy fallback.
+  static TablePtr fetch_blocks(const std::vector<std::string> &columns,
+                               const std::vector<FetchBlock> &blocks,
+                               int row_count);
+
   /// Fetch specific columns and row indices from the data source
   /// \param columns The list of column names to fetch
   /// \param index The row index to fetch
   /// \return An ExecBatch containing the requested data or nullptr on failure
   ExecBatchPtr fetch(const std::vector<std::string> &columns,
                      int index) override;
+
+  // Optional scalar/array row fast path. Unsupported layouts/types return
+  // nullptr so the caller can retain the existing scalar conversion path.
+  std::shared_ptr<Doc> fetch_doc(
+      const std::vector<std::string> &columns,
+      const std::shared_ptr<arrow::Schema> &schema, int index,
+      std::optional<uint64_t> known_doc_id = std::nullopt);
 
   /// Scan specified columns from the data source
   /// \param columns The list of column names to scan
@@ -110,6 +135,7 @@ class BufferPoolForwardStore
   // Parquet-specific members
   /// The RandomAccessFile for reading data
   std::shared_ptr<arrow::io::RandomAccessFile> file_;
+  std::shared_ptr<const ParquetFileContext> file_context_;
 
   /// The parquet file reader
   std::unique_ptr<parquet::arrow::FileReader> parquet_reader_;
